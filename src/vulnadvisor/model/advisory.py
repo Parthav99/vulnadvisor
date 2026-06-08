@@ -9,6 +9,31 @@ from vulnadvisor.model.dependency import Dependency
 _CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 
 
+class AffectedRange(BaseModel):
+    """One affected version interval from an advisory.
+
+    A ``fixed`` version (when present) is the first version that is no longer affected by this
+    interval; ``last_affected`` marks the highest affected version when no fix exists.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    introduced: str | None = None
+    fixed: str | None = None
+    last_affected: str | None = None
+
+
+class AffectedPackage(BaseModel):
+    """The affected ranges/versions of a single package within an advisory."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str
+    ecosystem: str | None = None
+    ranges: tuple[AffectedRange, ...] = ()
+    versions: tuple[str, ...] = ()
+
+
 class Advisory(BaseModel):
     """A single vulnerability advisory matched to a package version (typically from OSV).
 
@@ -34,6 +59,7 @@ class Advisory(BaseModel):
     cvss_vector: str | None = None
     modified: str | None = None
     source: str = "OSV"
+    affected: tuple[AffectedPackage, ...] = ()
 
     @property
     def cve_ids(self) -> tuple[str, ...]:

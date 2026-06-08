@@ -39,7 +39,7 @@ def test_scan_renders_ranked_three_cards(
     assert "Attack summary" in out
     assert "Risk" in out
     assert "Action" in out
-    assert "Fix: pip install --upgrade jinja2" in out
+    assert 'Fix: pip install --upgrade "jinja2>=2.10.1"' in out
     assert "Fix now" in out  # CRITICAL verdict for this KEV + high-EPSS finding
 
 

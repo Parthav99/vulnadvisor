@@ -15,6 +15,8 @@ from vulnadvisor.advisories import (
 from vulnadvisor.engine.scoring import score_match
 from vulnadvisor.model import (
     Advisory,
+    AffectedPackage,
+    AffectedRange,
     Dependency,
     DependencySource,
     EpssScore,
@@ -85,6 +87,12 @@ def sample_findings() -> list[ScoredFinding]:
             aliases=("CVE-2019-10906",),
             summary="Jinja2 sandbox escape via str.format_map.",
             cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+            affected=(
+                AffectedPackage(
+                    name="jinja2",
+                    ranges=(AffectedRange(introduced="0", fixed="2.10.1"),),
+                ),
+            ),
         ),
         epss=EpssScore(cve="CVE-2019-10906", probability=0.945, percentile=0.991),
         in_kev=True,
@@ -102,6 +110,12 @@ def sample_findings() -> list[ScoredFinding]:
             aliases=("CVE-2018-1000656",),
             summary="Flask denial of service via crafted JSON.",
             cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+            affected=(
+                AffectedPackage(
+                    name="flask",
+                    ranges=(AffectedRange(introduced="0", fixed="0.12.3"),),
+                ),
+            ),
         ),
         epss=EpssScore(cve="CVE-2018-1000656", probability=0.02, percentile=0.40),
         in_kev=False,

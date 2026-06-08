@@ -2,6 +2,8 @@
 
 from vulnadvisor.model.advisory import (
     Advisory,
+    AffectedPackage,
+    AffectedRange,
     EpssScore,
     MatchedAdvisory,
     MatchResult,
@@ -12,10 +14,13 @@ from vulnadvisor.model.import_mapping import (
     MappingConfidence,
     MappingSource,
 )
+from vulnadvisor.model.safe_fix import SafeFix
 from vulnadvisor.model.score import PriorityBand, Score, ScoredFinding
 
 __all__ = [
     "Advisory",
+    "AffectedPackage",
+    "AffectedRange",
     "Dependency",
     "DependencySource",
     "EpssScore",
@@ -25,6 +30,7 @@ __all__ = [
     "MatchResult",
     "MatchedAdvisory",
     "PriorityBand",
+    "SafeFix",
     "Score",
     "ScoredFinding",
 ]

@@ -21,10 +21,11 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.text import Text
 
+from vulnadvisor.engine.safe_fix import resolve_safe_fix
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
 
-__all__ = ["badge_for_band", "fix_command", "render_report", "render_to_string"]
+__all__ = ["badge_for_band", "render_report", "render_to_string"]
 
 _RED_BANDS = (PriorityBand.CRITICAL, PriorityBand.HIGH)
 _MAX_SUMMARY_CHARS = 320
@@ -66,12 +67,17 @@ def _render_finding(finding: ScoredFinding) -> Panel:
     version = dependency.version or "(unpinned)"
 
     badge = badge_for_band(score.band)
+    safe_fix = resolve_safe_fix(dependency, advisory)
+    command = fix_command(dependency, safe_fix)
+    fix_line = f"Fix: {command}" if command is not None else "Fix: no fixed version available yet"
+
     card_a = _card("A - Attack summary", _attack_summary(finding))
     card_b = _card("B - Risk", f"Badge: {badge}\n{score.rationale}")
     card_c = _card(
         "C - Action",
         f"Verdict: {score.verdict}  (priority {score.value:.1f}, {score.band.value})\n"
-        f"Fix: {fix_command(dependency)}\n"
+        f"{fix_line}\n"
+        f"{safe_fix.note}\n"
         "Evidence: package-level match (reachability analysis not yet run)",
     )
 

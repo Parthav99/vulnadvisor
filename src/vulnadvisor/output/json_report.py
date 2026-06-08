@@ -15,7 +15,8 @@ Schema (``schema_version`` 1.0) — top-level object::
           "epss":       {"probability": <float>, "percentile": <float>} | null,
           "in_kev":     <bool>,
           "score":      {"value": <float>, "band", "verdict", "rationale", "cvss_known": <bool>},
-          "fix":        {"command": <str>}
+          "fix":        {"command": <str>|null, "fixed_version": <str>|null, "has_fix": <bool>,
+                          "is_major_jump": <bool>, "available_fixes": [...], "note": <str>}
         }
       ]
     }
@@ -27,6 +28,7 @@ import json
 from collections.abc import Sequence
 from typing import Any
 
+from vulnadvisor.engine.safe_fix import resolve_safe_fix
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
 
@@ -41,6 +43,7 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
     advisory = finding.matched.advisory
     epss = finding.matched.epss
     score = finding.score
+    safe_fix = resolve_safe_fix(dependency, advisory)
     return {
         "dependency": {
             "name": dependency.name,
@@ -70,7 +73,14 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
             "rationale": score.rationale,
             "cvss_known": score.cvss_known,
         },
-        "fix": {"command": fix_command(dependency)},
+        "fix": {
+            "command": fix_command(dependency, safe_fix),
+            "fixed_version": safe_fix.fixed_version,
+            "has_fix": safe_fix.has_fix,
+            "is_major_jump": safe_fix.is_major_jump,
+            "available_fixes": list(safe_fix.available_fixes),
+            "note": safe_fix.note,
+        },
     }
 
 

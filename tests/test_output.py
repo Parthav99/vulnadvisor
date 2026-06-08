@@ -37,7 +37,10 @@ def test_json_report_structure(sample_findings: list[ScoredFinding]) -> None:
     assert first["advisory"]["cve_ids"] == ["CVE-2019-10906"]
     assert first["in_kev"] is True
     assert first["score"]["band"] == "critical"
-    assert first["fix"]["command"] == "pip install --upgrade Jinja2"
+    assert first["fix"]["command"] == 'pip install --upgrade "Jinja2>=2.10.1"'
+    assert first["fix"]["fixed_version"] == "2.10.1"
+    assert first["fix"]["has_fix"] is True
+    assert first["fix"]["is_major_jump"] is False
 
 
 def test_json_is_valid_and_ascii(sample_findings: list[ScoredFinding]) -> None:
@@ -77,6 +80,8 @@ def test_sarif_structure_and_levels(sample_findings: list[ScoredFinding]) -> Non
     assert results[0]["level"] == "error"  # critical -> error
     assert results[1]["level"] == "note"  # low -> note
     assert results[0]["properties"]["in_kev"] is True
+    assert results[0]["properties"]["fixed_version"] == "2.10.1"
+    assert results[0]["properties"]["fix_command"] == 'pip install --upgrade "Jinja2>=2.10.1"'
     # GitHub-facing security-severity is present and numeric.
     sev = run["tool"]["driver"]["rules"][0]["properties"]["security-severity"]
     assert 0.0 <= float(sev) <= 10.0

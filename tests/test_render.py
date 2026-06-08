@@ -2,12 +2,9 @@ from pathlib import Path
 
 from vulnadvisor.cli.render import (
     badge_for_band,
-    fix_command,
     render_to_string,
 )
 from vulnadvisor.model import (
-    Dependency,
-    DependencySource,
     PriorityBand,
     ScoredFinding,
 )
@@ -27,7 +24,8 @@ def test_render_contains_three_cards_and_badges(
     assert "Badge: GREEN" in out
     assert "Fix now" in out
     assert "Monitor" in out
-    assert "Fix: pip install --upgrade Jinja2" in out
+    assert 'Fix: pip install --upgrade "Jinja2>=2.10.1"' in out
+    assert "Minimal safe upgrade: 2.10.1." in out
 
 
 def test_render_degraded_notice() -> None:
@@ -42,15 +40,6 @@ def test_badge_helper() -> None:
     assert badge_for_band(PriorityBand.MEDIUM) == "YELLOW"
     assert badge_for_band(PriorityBand.LOW) == "GREEN"
     assert badge_for_band(PriorityBand.INFO) == "GREEN"
-
-
-def test_fix_command_per_source() -> None:
-    def dep(source: DependencySource) -> Dependency:
-        return Dependency(name="flask", raw_name="Flask", version="0.12", source=source)
-
-    assert fix_command(dep(DependencySource.REQUIREMENTS_TXT)) == "pip install --upgrade Flask"
-    assert fix_command(dep(DependencySource.POETRY_LOCK)) == "poetry update Flask"
-    assert fix_command(dep(DependencySource.PIPFILE_LOCK)) == "pipenv update Flask"
 
 
 def test_render_snapshot(sample_findings: list[ScoredFinding]) -> None:

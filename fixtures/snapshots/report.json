@@ -51,7 +51,14 @@
         "cvss_known": true
       },
       "fix": {
-        "command": "pip install --upgrade Jinja2"
+        "command": "pip install --upgrade \"Jinja2>=2.10.1\"",
+        "fixed_version": "2.10.1",
+        "has_fix": true,
+        "is_major_jump": false,
+        "available_fixes": [
+          "2.10.1"
+        ],
+        "note": "Minimal safe upgrade: 2.10.1."
       }
     },
     {
@@ -87,7 +94,14 @@
         "cvss_known": true
       },
       "fix": {
-        "command": "pip install --upgrade Flask"
+        "command": "pip install --upgrade \"Flask>=0.12.3\"",
+        "fixed_version": "0.12.3",
+        "has_fix": true,
+        "is_major_jump": false,
+        "available_fixes": [
+          "0.12.3"
+        ],
+        "note": "Minimal safe upgrade: 0.12.3."
       }
     }
   ]

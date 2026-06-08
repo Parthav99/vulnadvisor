@@ -11,6 +11,17 @@
                     "type": "CVSS_V3",
                     "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H"
                 }
+            ],
+            "affected": [
+                {
+                    "package": {"ecosystem": "PyPI", "name": "jinja2"},
+                    "ranges": [
+                        {
+                            "type": "ECOSYSTEM",
+                            "events": [{"introduced": "0"}, {"fixed": "2.10.1"}]
+                        }
+                    ]
+                }
             ]
         }
     ]

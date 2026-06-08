@@ -12,7 +12,13 @@ from typing import Any
 
 from vulnadvisor.advisories.parsing import safe_float, safe_json, safe_str
 from vulnadvisor.advisories.transport import Transport
-from vulnadvisor.model.advisory import Advisory, EpssScore
+from vulnadvisor.deps.parsers import canonicalize_name
+from vulnadvisor.model.advisory import (
+    Advisory,
+    AffectedPackage,
+    AffectedRange,
+    EpssScore,
+)
 from vulnadvisor.model.dependency import Dependency
 from vulnadvisor.store.cache import SqliteCache
 
@@ -101,7 +107,60 @@ def _parse_osv_vuln(entry: Any) -> Advisory | None:
         cvss_vector=cvss_vector,
         modified=safe_str(entry.get("modified")),
         source="OSV",
+        affected=_parse_affected(entry.get("affected")),
     )
+
+
+def _parse_affected(value: Any) -> tuple[AffectedPackage, ...]:
+    """Parse an OSV ``affected`` array into typed affected-package records."""
+    if not isinstance(value, list):
+        return ()
+    packages: list[AffectedPackage] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        package = entry.get("package")
+        raw_name = safe_str(package.get("name")) if isinstance(package, dict) else None
+        ecosystem = safe_str(package.get("ecosystem")) if isinstance(package, dict) else None
+        packages.append(
+            AffectedPackage(
+                name=canonicalize_name(raw_name) if raw_name else "",
+                ecosystem=ecosystem,
+                ranges=_parse_ranges(entry.get("ranges")),
+                versions=_as_str_tuple(entry.get("versions")),
+            )
+        )
+    return tuple(packages)
+
+
+def _parse_ranges(value: Any) -> tuple[AffectedRange, ...]:
+    """Parse OSV range ``events`` into ``AffectedRange`` records (one per fix/last_affected)."""
+    if not isinstance(value, list):
+        return ()
+    ranges: list[AffectedRange] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        events = entry.get("events")
+        if not isinstance(events, list):
+            continue
+        introduced: str | None = None
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            if "introduced" in event:
+                introduced = safe_str(event.get("introduced"))
+            elif "fixed" in event:
+                ranges.append(
+                    AffectedRange(introduced=introduced, fixed=safe_str(event.get("fixed")))
+                )
+            elif "last_affected" in event:
+                ranges.append(
+                    AffectedRange(
+                        introduced=introduced, last_affected=safe_str(event.get("last_affected"))
+                    )
+                )
+    return tuple(ranges)
 
 
 def _first_cvss_vector(severity: Any) -> str | None:

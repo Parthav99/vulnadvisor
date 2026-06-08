@@ -4,6 +4,47 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 3.2 — Safe-fix version resolution  →  release v0.2  (2026-06-08)
+
+**Status:** complete, Validation Gate passing. **Milestone M3 done; tagged v0.2.**
+
+**What changed**
+- Added `packaging==26.2` (pinned, approved) for PEP 440 version math.
+- `model/advisory.py`: `AffectedRange` + `AffectedPackage`; `Advisory.affected` now captures OSV
+  affected ranges. `advisories/clients.py` parses `affected[].ranges[].events`
+  (introduced/fixed/last_affected) defensively.
+- `model/safe_fix.py`: `SafeFix` (current/fixed version, has_fix, is_major_jump, available_fixes,
+  note). `engine/safe_fix.py`: `resolve_safe_fix(dep, advisory)` — picks the smallest fixed
+  version greater than the installed one (the nearest non-vulnerable upgrade), flags no-fix and
+  major-version jumps.
+- `output/remediation.py`: `fix_command(dep, safe_fix)` now pins `>=<fixed_version>` and matches
+  the manifest type (pip / poetry / pipenv); returns `None` when no fix exists.
+- Card C, JSON `fix` block, and SARIF result properties all carry the resolved fix
+  (`fixed_version`, `command`, `is_major_jump`, `available_fixes`, `note`).
+- Bumped version to **0.2.0**. New `tests/test_safe_fix.py` (11 cases); updated fixtures,
+  conftest advisories (with affected ranges), and regenerated snapshots.
+
+**Why these choices**
+- "Smallest fixed version > current" is the **minimal** upgrade and is correct for the common
+  single-range case and sensible across multiple fixed branches (a test covers 2.1 -> 2.3, not
+  1.5). Invalid/non-PEP440 fixed strings are skipped, not crashed on.
+- We **flag** rather than hide the hard cases: no fix yet (monitor/mitigate) and major-version
+  jumps (possibly breaking) — honest remediation beats a confident-but-wrong "just upgrade".
+- `fix` computed in the emitters from `finding.matched` (advisory now has affected data), so the
+  pipeline/`ScoredFinding` stayed unchanged.
+
+**Validation evidence**
+- ruff + format clean; `mypy --strict src` clean (34 files); **pytest 144 passed**.
+- Tests cover fix-available, no-fix (last_affected only / nothing above current), major-jump,
+  unpinned current, invalid versions; command is correct per manifest type (pip/poetry/pipenv).
+- **Live run**: real OSV data gives `jinja2 2.10 -> 2.10.1` (minimal) and `-> 3.1.5` (major-jump
+  flagged); `flask 0.12 -> 0.12.3` and `-> 1.0` (major-jump). JSON/SARIF carry the commands.
+
+**Open questions**
+- None blocking. M3 complete (v0.2). Next: M4 reachability — `callgraph/` import graph (Task 4.1).
+
+---
+
 ## Task 3.1 — JSON + SARIF output and exit codes  (2026-06-08)
 
 **Status:** complete, Validation Gate passing. (M3 in progress; v0.2 tag comes after Task 3.2.)

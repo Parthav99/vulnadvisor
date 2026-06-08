@@ -74,7 +74,8 @@ CVSS base scores are computed from the advisory's CVSS v3.x vector per the offic
 - **terminal** (default) — the three-card view.
 - **json** — a stable machine report (`schema_version` 1.0). Top-level: `tool`,
   `degraded_sources`, `summary` (`total` + `by_band`), and `findings[]` (each with
-  `dependency`, `advisory` incl. `cve_ids`/`cvss_base`, `epss`, `in_kev`, `score`, `fix`).
+  `dependency`, `advisory` incl. `cve_ids`/`cvss_base`, `epss`, `in_kev`, `score`, and `fix`
+  with the minimal safe `fixed_version`, the exact `command`, and an `is_major_jump` flag).
   Findings are ordered by descending priority.
 - **sarif** — valid **SARIF 2.1.0**, so results show up in the GitHub Security tab. Band maps to
   SARIF `level` (error/warning/note) and `security-severity` is set so GitHub orders by our
