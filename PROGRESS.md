@@ -4,6 +4,44 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 2.2 — Deterministic scoring engine  (2026-06-08)
+
+**Status:** complete, Validation Gate passing.
+
+**What changed**
+- `engine/cvss.py`: `cvss_base_score(vector)` — pure CVSS v3.0/3.1 base-score computation per the
+  FIRST spec (correct Roundup); returns `None` for v2/v4/malformed so we never trust a wrong
+  number.
+- `model/score.py`: `PriorityBand` enum, `Score` (value/band/verdict/rationale + the inputs),
+  `ScoredFinding(matched, score)`. Re-exported from `model/__init__.py`.
+- `engine/scoring.py`: `compute_score`, `advisory_severity`, `score_match`, `score_matches`
+  (deterministic descending sort with stable tie-breakers). Formula documented in the module
+  docstring and the README.
+- `tests/test_engine_scoring.py` (29 tests): CVSS values (9.8/8.8/10.0/3.3/0.0), unsupported
+  vectors, determinism property, boundary band table, KEV floor, unknown-CVSS/EPSS handling,
+  sorting determinism.
+- README: added a "Priority scoring (deterministic)" section with the formula + verdict table.
+
+**Why these choices (the formula)**
+- `risk = 0.6*EPSS + 0.4*(CVSS/10)`, `value = 100*risk`. EPSS is weighted above severity because
+  triage is about *real-world exploit likelihood* — that is the noise-reduction lever. A
+  high-CVSS / near-zero-EPSS vuln is intentionally deprioritized (still reported, not dropped).
+- **Soundness guards:** KEV membership floors the score to 90 (CRITICAL) regardless of other
+  signals; unknown EPSS falls back to severity-only (not multiplied by 0); unknown CVSS uses a
+  moderate 5.0 default flagged `cvss_known=False` (never scored as 0). These keep us from
+  silently downgrading a finding when data is missing.
+- Fully deterministic & pure: no clock/RNG/I/O; `score_matches` sorts by `(-value, advisory.id,
+  dep.name, version)` so identical inputs always yield identical ordering (asserted).
+
+**Validation evidence**
+- ruff + format clean; `mypy --strict src` clean (26 files); **pytest 98 passed**.
+- Determinism property holds; boundary table covers KEV / EPSS high+low / no-CVSS cases.
+
+**Open questions**
+- Still pending: `uv add packaging` for Task 3.2 (safe-fix version-range math).
+
+---
+
 ## Task 2.1 — Advisory clients (OSV, EPSS, KEV) with cache  (2026-06-08)
 
 **Status:** complete, Validation Gate passing.

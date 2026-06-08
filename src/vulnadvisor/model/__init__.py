@@ -12,6 +12,7 @@ from vulnadvisor.model.import_mapping import (
     MappingConfidence,
     MappingSource,
 )
+from vulnadvisor.model.score import PriorityBand, Score, ScoredFinding
 
 __all__ = [
     "Advisory",
@@ -23,4 +24,7 @@ __all__ = [
     "MappingSource",
     "MatchResult",
     "MatchedAdvisory",
+    "PriorityBand",
+    "Score",
+    "ScoredFinding",
 ]
