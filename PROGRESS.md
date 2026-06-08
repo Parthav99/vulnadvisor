@@ -4,6 +4,45 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 4.1 — Import graph of first-party code  (2026-06-08)
+
+**Status:** complete, Validation Gate passing. (M4 reachability begins.)
+
+**What changed**
+- `model/imports.py`: `ImportSite` (file:line:col, kind, module, relative `level`, aliased
+  `names`, `imported_roots()`), `DynamicImportSite` (kind + detail + location), `ImportedName`,
+  `ImportParseError`, and `ImportGraph` (with `import_roots()` / `external_import_roots()`).
+- `callgraph/import_graph.py`: `build_import_graph(project_dir)` — AST walk of every `.py`
+  (skipping `.venv`/`build`/caches/etc.), capturing plain + from + relative imports and flagging
+  dynamic constructs (`importlib`/`import_module`, `__import__`, `eval`, `exec`). Syntax errors
+  are recorded as `parse_errors`, never raised. Plus `map_imports_to_distributions(graph, deps)`
+  building a reverse index (import root -> distribution) via the Task 1.2 resolver.
+- Fixture project `fixtures/projects/sample_imports/` (aliases + relative + dynamic + subpackage)
+  and `tests/test_import_graph.py` (12 tests). Excluded `fixtures/` from Ruff (deliberate test
+  inputs with odd ordering / intentional syntax errors).
+
+**Why these choices**
+- **Soundness:** an unparseable file is surfaced as a `parse_error` (a known gap) rather than
+  silently dropped — reachability must stay cautious about files it could not read. Dynamic
+  sites are recorded so Task 4.2 can mark possibly-hidden usage `DYNAMIC-UNKNOWN`.
+- Relative imports contribute no external root (they are first-party); first-party top-level
+  modules are inferred from the project root and `src/` so we can separate own-code from deps.
+- The graph is pure/deterministic (sorted by file/line/col); distribution mapping is a separate
+  function that reuses M1.2, keeping AST analysis free of dependency I/O.
+
+**Validation evidence**
+- ruff + format clean; `mypy --strict src` clean (36 files); **pytest 155 passed**.
+- Tests assert aliases (`numpy as np`, `os.path as osp`), from-imports, relative levels
+  (`.`, `.helper`, `..main`), all four dynamic-site kinds, excluded-dir skipping, and
+  syntax-error recording. **Live run** on our own `src`: 134 import sites, first-party
+  `vulnadvisor`, mapped distributions = packaging / pydantic / typer (stdlib correctly excluded).
+
+**Open questions**
+- Stdlib roots currently fall through as "unmapped" (fine — they're not distributions). If we
+  later want to label them, we can add a stdlib set. Not needed for tiering.
+
+---
+
 ## Task 3.2 — Safe-fix version resolution  →  release v0.2  (2026-06-08)
 
 **Status:** complete, Validation Gate passing. **Milestone M3 done; tagged v0.2.**

@@ -14,6 +14,15 @@ from vulnadvisor.model.import_mapping import (
     MappingConfidence,
     MappingSource,
 )
+from vulnadvisor.model.imports import (
+    DynamicImportKind,
+    DynamicImportSite,
+    ImportedName,
+    ImportGraph,
+    ImportKind,
+    ImportParseError,
+    ImportSite,
+)
 from vulnadvisor.model.safe_fix import SafeFix
 from vulnadvisor.model.score import PriorityBand, Score, ScoredFinding
 
@@ -23,8 +32,15 @@ __all__ = [
     "AffectedRange",
     "Dependency",
     "DependencySource",
+    "DynamicImportKind",
+    "DynamicImportSite",
     "EpssScore",
+    "ImportGraph",
+    "ImportKind",
     "ImportMapping",
+    "ImportParseError",
+    "ImportSite",
+    "ImportedName",
     "MappingConfidence",
     "MappingSource",
     "MatchResult",
