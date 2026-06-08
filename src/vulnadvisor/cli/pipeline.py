@@ -17,6 +17,7 @@ from vulnadvisor.model.imports import ImportGraph
 from vulnadvisor.model.reachability import Reachability
 from vulnadvisor.model.score import ScoredFinding
 from vulnadvisor.reachability.tiering import compute_reachability, refine_reachability
+from vulnadvisor.store.analysis_cache import AnalysisCache
 
 __all__ = ["ScanReport", "scan_project"]
 
@@ -37,16 +38,18 @@ def scan_project(
     matcher: AdvisoryMatcher,
     *,
     symbol_names_for: SymbolNamesFor | None = None,
+    analysis_cache: AnalysisCache | None = None,
 ) -> ScanReport:
     """Collect dependencies under ``path``, match advisories, assign reachability, and score.
 
     Package-level reachability is computed once per dependency from the import graph. When
     ``symbol_names_for`` supplies vulnerable symbol names for an advisory, function-level call-path
     analysis refines the tier (IMPORTED-AND-CALLED with the path, or DYNAMIC-UNKNOWN), per finding.
+    An optional ``analysis_cache`` skips re-parsing files whose content is unchanged across runs.
     """
     dependencies = collect_dependencies(path)
     result = matcher.match(dependencies)
-    graph = build_import_graph(path)
+    graph = build_import_graph(path, cache=analysis_cache)
 
     base_by_dep: dict[str, Reachability] = {}
     findings: list[ScoredFinding] = []

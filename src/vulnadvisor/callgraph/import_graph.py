@@ -19,12 +19,14 @@ from vulnadvisor.model.dependency import Dependency
 from vulnadvisor.model.imports import (
     DynamicImportKind,
     DynamicImportSite,
+    FileAnalysis,
     ImportedName,
     ImportGraph,
     ImportKind,
     ImportParseError,
     ImportSite,
 )
+from vulnadvisor.store.analysis_cache import AnalysisCache, cache_key
 
 __all__ = ["build_import_graph", "map_imports_to_distributions"]
 
@@ -100,14 +102,12 @@ def _names(node: ast.Import | ast.ImportFrom) -> tuple[ImportedName, ...]:
     return tuple(ImportedName(name=alias.name, asname=alias.asname) for alias in node.names)
 
 
-def _analyze_source(
-    text: str, rel: str, filename: str
-) -> tuple[list[ImportSite], list[DynamicImportSite], ImportParseError | None]:
-    """Parse one source file's text, returning its imports, dynamic sites, and any parse error."""
+def _analyze_source(text: str, rel: str, filename: str) -> FileAnalysis:
+    """Parse one file's text into a :class:`FileAnalysis` (imports, dynamics, any parse error)."""
     try:
         tree = ast.parse(text, filename=filename)
     except SyntaxError as exc:
-        return [], [], ImportParseError(file=rel, message=f"syntax error: {exc}")
+        return FileAnalysis(parse_error=ImportParseError(file=rel, message=f"syntax error: {exc}"))
 
     imports: list[ImportSite] = []
     dynamics: list[DynamicImportSite] = []
@@ -146,7 +146,22 @@ def _analyze_source(
                         detail=_func_repr(node.func),
                     )
                 )
-    return imports, dynamics, None
+    return FileAnalysis(imports=tuple(imports), dynamic_sites=tuple(dynamics))
+
+
+def _analyze_cached(
+    text: str, rel: str, filename: str, cache: AnalysisCache | None
+) -> FileAnalysis:
+    """Return the file's analysis, served from ``cache`` on a content-hash hit, else computed."""
+    if cache is None:
+        return _analyze_source(text, rel, filename)
+    key = cache_key(rel, text)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    analysis = _analyze_source(text, rel, filename)
+    cache.set(key, analysis)
+    return analysis
 
 
 def _iter_python_files(root: Path) -> list[Path]:
@@ -161,9 +176,17 @@ def _iter_python_files(root: Path) -> list[Path]:
 
 
 def build_import_graph(
-    project_dir: Path, *, first_party_modules: Iterable[str] | None = None
+    project_dir: Path,
+    *,
+    first_party_modules: Iterable[str] | None = None,
+    cache: AnalysisCache | None = None,
 ) -> ImportGraph:
-    """Build the :class:`ImportGraph` for the project rooted at ``project_dir``."""
+    """Build the :class:`ImportGraph` for the project rooted at ``project_dir``.
+
+    When ``cache`` is provided, each file's analysis is looked up by its content hash and only
+    re-parsed on a miss (unchanged files are skipped on repeat scans). The cache is a pure speed
+    optimization: results are identical with or without it.
+    """
     root = Path(project_dir)
     first_party = (
         set(first_party_modules) if first_party_modules is not None else _infer_first_party(root)
@@ -181,11 +204,11 @@ def build_import_graph(
             errors.append(ImportParseError(file=rel, message=f"cannot read: {exc}"))
             continue
         analyzed += 1
-        file_imports, file_dynamics, error = _analyze_source(text, rel, str(path))
-        imports.extend(file_imports)
-        dynamics.extend(file_dynamics)
-        if error is not None:
-            errors.append(error)
+        analysis = _analyze_cached(text, rel, str(path), cache)
+        imports.extend(analysis.imports)
+        dynamics.extend(analysis.dynamic_sites)
+        if analysis.parse_error is not None:
+            errors.append(analysis.parse_error)
 
     imports.sort(key=lambda s: (s.file, s.lineno, s.col))
     dynamics.sort(key=lambda s: (s.file, s.lineno, s.col))

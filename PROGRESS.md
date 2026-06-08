@@ -4,6 +4,46 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 6.2 — Incremental caching  (2026-06-08)
+
+**Status:** complete, Validation Gate passing. (M6 — fast CI re-runs.)
+
+**What changed**
+- `model/imports.py`: new `FileAnalysis` model (frozen, serializable) — the per-file analysis
+  unit (imports, dynamic sites, optional parse error). `_analyze_source` now returns it.
+- `store/analysis_cache.py`: `AnalysisCache` — a SQLite-backed, content-addressed store of
+  `FileAnalysis` keyed on `cache_key(rel, text)` = `"{rel}\x00{sha256(content)}"`. Tracks
+  `hits`/`misses` so re-analysis can be proven skipped. `content_hash`, `cache_key`,
+  `default_analysis_cache_path()` (honors `VULNADVISOR_CACHE`, dir or file).
+- `callgraph/import_graph.py`: `build_import_graph(..., cache=None)` looks up each file by content
+  hash via `_analyze_cached` and only re-parses on a miss. Results are identical with/without it.
+- `cli/pipeline.py`: `scan_project(..., analysis_cache=None)` threads the cache into the graph.
+- `cli/main.py`: `scan` builds a default on-disk `AnalysisCache` and adds `--no-cache` to disable.
+- `tests/test_analysis_cache.py` (9 tests).
+
+**Why these choices (soundness-neutral speed)**
+- Invalidation is content hashing, never a timer — a stale entry can never mask a current
+  finding. An edited file's hash changes -> fresh key -> exactly that one file is re-analyzed;
+  every other key still hits.
+- The relative path is part of the key so identical-content files (e.g. empty `__init__.py`) never
+  share an entry and get the wrong embedded `file=`.
+- A corrupt/undeserializable entry is treated as a miss (re-analyze) — the cache never raises into
+  a scan. Cache stays on-disk, per-user; no telemetry.
+
+**Validation evidence**
+- Unchanged re-run = all hits, zero re-analysis (`misses == 0`); editing one file -> exactly
+  `misses == 1` (tested deterministically via hit/miss counters).
+- Cached graph is byte-identical to the uncached graph (tested).
+- Live benchmark, 300-file project: cold 2005.6 ms (301 misses) -> warm 41.9 ms (301 hits, 0
+  misses) = 47.8x faster on an unchanged re-run.
+- Gate: `ruff check` / `ruff format --check` clean, `mypy --strict src` clean (45 files),
+  `pytest` 220 passed.
+
+**Open questions**
+- Call-path search (`find_vulnerable_call_paths`) still re-parses on demand; it only runs for
+  matched advisories (narrow), so it's left uncached for now. Candidate for caching if profiling
+  shows it dominates on large matched sets.
+
 ## Task 6.1 — Demand-driven call-graph + path search  (2026-06-08)
 
 **Status:** complete, security-critical Validation Gate passing. (M6 — function-level reachability.)

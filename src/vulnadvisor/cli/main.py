@@ -19,6 +19,7 @@ from vulnadvisor.model.advisory import Advisory
 from vulnadvisor.output.gating import parse_fail_on, should_fail
 from vulnadvisor.output.json_report import to_json
 from vulnadvisor.output.sarif import to_sarif_json
+from vulnadvisor.store.analysis_cache import AnalysisCache, default_analysis_cache_path
 from vulnadvisor.store.cache import SqliteCache, default_cache_path
 from vulnadvisor.store.dataset import SymbolDataset, default_dataset_path
 from vulnadvisor.symbols.backfill import TOP_PYPI_PACKAGES, backfill
@@ -147,6 +148,13 @@ def scan(
             help="Exit non-zero when any finding meets/exceeds this band or score (0-100).",
         ),
     ] = None,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help="Disable the incremental per-file analysis cache (always re-parse every file).",
+        ),
+    ] = False,
 ) -> None:
     """Scan PATH for vulnerable dependencies and emit ranked, prioritized results.
 
@@ -165,7 +173,17 @@ def scan(
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--fail-on") from exc
 
-    report = scan_project(path, build_matcher(), symbol_names_for=build_symbol_names_for())
+    analysis_cache = None if no_cache else AnalysisCache(default_analysis_cache_path())
+    try:
+        report = scan_project(
+            path,
+            build_matcher(),
+            symbol_names_for=build_symbol_names_for(),
+            analysis_cache=analysis_cache,
+        )
+    finally:
+        if analysis_cache is not None:
+            analysis_cache.close()
 
     if output_format is OutputFormat.JSON:
         print(to_json(report.findings, report.degraded_sources, tool_version=_resolve_version()))

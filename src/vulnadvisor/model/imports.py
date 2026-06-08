@@ -94,6 +94,21 @@ class ImportParseError(BaseModel):
     message: str
 
 
+class FileAnalysis(BaseModel):
+    """The cacheable result of statically analyzing a single source file.
+
+    This is the unit of incremental caching: keyed on the file's content hash, an unchanged file
+    is never re-parsed. It carries exactly what :func:`build_import_graph` needs to assemble the
+    whole-project graph — the file's import sites, dynamic constructs, and any parse error.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    imports: tuple[ImportSite, ...] = ()
+    dynamic_sites: tuple[DynamicImportSite, ...] = ()
+    parse_error: ImportParseError | None = None
+
+
 class ImportGraph(BaseModel):
     """The collected import structure of a project.
 
