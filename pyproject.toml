@@ -9,6 +9,7 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "VulnAdvisor" }]
 keywords = ["security", "vulnerability", "reachability", "python", "sca"]
 dependencies = [
+    "pydantic==2.13.4",
     "typer==0.26.7",
 ]
 
@@ -52,6 +53,7 @@ convention = "google"
 python_version = "3.12"
 strict = true
 files = ["src"]
+plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

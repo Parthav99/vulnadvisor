@@ -4,6 +4,48 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 1.1 — Manifest parsers  (2026-06-08)
+
+**Status:** complete, Validation Gate passing.
+
+**What changed**
+- Added `pydantic==2.13.4` (pinned) and enabled the `pydantic.mypy` plugin.
+- `model/dependency.py`: frozen `Dependency` model (`name`, `version`, `source`, `is_direct`,
+  plus `raw_name`, `specifier`, `extras`) and a `DependencySource` str-enum. Re-exported from
+  `model/__init__.py`.
+- `deps/parsers.py`: pure, content-in parsers for all four formats —
+  `parse_requirements_txt`, `parse_pyproject_toml` (PEP 621 `[project]` **and** Poetry tables),
+  `parse_poetry_lock`, `parse_pipfile_lock` — plus `parse_manifest_file` (filename dispatch),
+  `collect_dependencies` (merge all present manifests; env fallback when none), and
+  `dependencies_from_environment` (via `importlib.metadata`). `canonicalize_name` does PEP 503.
+- Fixtures for every format under `fixtures/manifests/`; 32 table-driven + edge tests in
+  `tests/test_deps_parsers.py`.
+
+**Why these choices**
+- **Soundness:** structurally malformed TOML/JSON raises a typed `ManifestParseError` (caught,
+  not a crash); but a malformed *entry* degrades to `version=None` and is still recorded — we
+  never silently drop a dependency, since a lost dep becomes a downstream false negative.
+- Parsers take **content strings, not paths**, keeping them pure/testable (the I/O lives only in
+  `parse_manifest_file` / `collect_dependencies` / the env fallback).
+- `version` holds an exact pin only (from `==`/lockfile/bare-Poetry-version); ranges/carets are
+  preserved in `specifier` with `version=None`. This cleanly represents "pinned vs range".
+- `is_direct=True` for declarative manifests (requirements.txt, pyproject), `False` for resolved
+  lockfiles (poetry.lock, Pipfile.lock) and environment records.
+- Avoided adding the `packaging` library for now (wrote a small PEP 503 + PEP 508-lite parser).
+  See open question — we will likely want `packaging` for real version-range math in Task 3.2.
+
+**Validation evidence**
+- ruff check / format clean; `mypy --strict src` clean (15 files); **pytest 32 passed**.
+- Table-driven test per format passes; duplicate Flask entries de-dupe to one; pinned-vs-range
+  both retained; malformed TOML/JSON raise `ManifestParseError`; empty dir falls back to the
+  environment.
+
+**Open questions**
+- Propose adding `packaging` (pinned) when we need correct version-range comparison and
+  PEP 440 specifier handling (Task 3.2 safe-fix resolution). OK to `uv add packaging` then?
+
+---
+
 ## Task 0.2 — CLI skeleton + CI  (2026-06-08)
 
 **Status:** complete, Validation Gate passing.

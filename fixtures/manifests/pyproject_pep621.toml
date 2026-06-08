@@ -1,0 +1,11 @@
+[project]
+name = "demo-pep621"
+version = "0.1.0"
+dependencies = [
+    "httpx>=0.24",
+    "pydantic==2.5.0",
+    "rich",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.0.0", "ruff>=0.1"]
