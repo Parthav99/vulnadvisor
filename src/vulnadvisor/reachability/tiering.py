@@ -18,8 +18,14 @@ Decision order for a dependency:
 from collections.abc import Iterable
 from pathlib import Path
 
-from vulnadvisor.callgraph.call_paths import find_vulnerable_call_paths
+from vulnadvisor.callgraph.call_paths import (
+    CallGraphResult,
+    PackageReflection,
+    find_vulnerable_call_paths,
+)
+from vulnadvisor.callgraph.type_resolver import TypeResolver
 from vulnadvisor.deps.import_mapping import resolve_import_names
+from vulnadvisor.model.callpath import CallPath, CallStep
 from vulnadvisor.model.dependency import Dependency
 from vulnadvisor.model.import_mapping import ImportMapping, MappingConfidence
 from vulnadvisor.model.imports import ImportGraph, ImportSite
@@ -95,32 +101,54 @@ def refine_reachability(
     graph: ImportGraph,
     project_dir: Path,
     vulnerable_names: Iterable[str],
+    *,
+    resolver: TypeResolver | None = None,
 ) -> Reachability:
     """Upgrade/downgrade a package-level tier using function-level call-path analysis.
 
     * A concrete call path to a vulnerable symbol upgrades to ``IMPORTED_AND_CALLED`` (path shown).
-    * An ``IMPORTED`` finding where dynamic dispatch is present but no path was found downgrades to
-      ``DYNAMIC_UNKNOWN`` — a call could be hidden, so we never claim it is not called.
-    * Otherwise the base tier is unchanged.
+    * An ``IMPORTED`` finding where dispatch could hide a call (reflective ``getattr`` on the
+      package, or an opaque ``eval``/``exec``/computed callee) downgrades to ``DYNAMIC_UNKNOWN`` —
+      we never claim the symbol is not called.
+    * When a ``resolver`` is available it resolves reflective accesses by inferred type: one
+      that provably targets a *non-vulnerable* attribute no longer forces the downgrade (M7
+      precision), while one that resolves *to* the vulnerable symbol upgrades to
+      ``IMPORTED_AND_CALLED``. With no resolver, every reflection stays conservative (M6).
     """
     names = frozenset(vulnerable_names)
     if not names or base.tier is ReachabilityTier.NOT_IMPORTED:
         return base
 
     mapping = resolve_import_names(dependency.raw_name or dependency.name)
-    paths, dynamic_dispatch = find_vulnerable_call_paths(
+    result = find_vulnerable_call_paths(
         project_dir, import_names=mapping.import_names, vulnerable_names=names
     )
 
-    if paths:
+    if result.paths:
         return Reachability(
             tier=ReachabilityTier.IMPORTED_AND_CALLED,
-            reason=f"a call path to the vulnerable symbol exists: {paths[0].render()}",
+            reason=f"a call path to the vulnerable symbol exists: {result.paths[0].render()}",
             evidence=base.evidence,
-            call_paths=tuple(paths),
+            call_paths=tuple(result.paths),
         )
 
-    if base.tier is ReachabilityTier.IMPORTED and (dynamic_dispatch or graph.dynamic_sites):
+    reflective_hit, unresolved_reflection = _resolve_reflections(
+        result, project_dir, names, resolver
+    )
+
+    if reflective_hit is not None:
+        path = reflective_hit
+        return Reachability(
+            tier=ReachabilityTier.IMPORTED_AND_CALLED,
+            reason=f"a reflective call resolves to the vulnerable symbol: {path.render()}",
+            evidence=base.evidence,
+            call_paths=(path,),
+        )
+
+    dispatch_hides_call = (
+        unresolved_reflection or result.has_opaque_dynamic or bool(graph.dynamic_sites)
+    )
+    if base.tier is ReachabilityTier.IMPORTED and dispatch_hides_call:
         return Reachability(
             tier=ReachabilityTier.DYNAMIC_UNKNOWN,
             reason=(
@@ -132,3 +160,45 @@ def refine_reachability(
         )
 
     return base
+
+
+def _resolve_reflections(
+    result: CallGraphResult,
+    project_dir: Path,
+    vulnerable_names: frozenset[str],
+    resolver: TypeResolver | None,
+) -> tuple[CallPath | None, bool]:
+    """Classify reflective accesses with the resolver.
+
+    Returns ``(reflective_hit, any_unresolved)``: ``reflective_hit`` is a one-step call path when a
+    reflection provably resolves *to* a vulnerable attribute; ``any_unresolved`` is ``True`` if any
+    reflection could not be ruled out (no resolver, no type info, or it includes a vulnerable name
+    among other possibilities). Soundness: a reflection only stops forcing the conservative tier
+    when the resolver returns a concrete attribute set that excludes every vulnerable name.
+    """
+    if not result.reflections:
+        return None, False
+    if resolver is None or not resolver.available:
+        return None, True  # no type info -> every reflection stays conservative (M6)
+
+    any_unresolved = False
+    for reflection in result.reflections:
+        attrs = resolver.resolve_attrs(project_dir, reflection)
+        if attrs is None:
+            any_unresolved = True
+            continue
+        hit = attrs & vulnerable_names
+        if hit:
+            return _reflective_path(reflection, sorted(hit)[0]), any_unresolved
+        # Resolved to a concrete, non-vulnerable attribute set -> this reflection is safe.
+    return None, any_unresolved
+
+
+def _reflective_path(reflection: PackageReflection, attr: str) -> CallPath:
+    """Build a one-step call path for a reflective call resolved to a vulnerable attribute."""
+    step = CallStep(
+        qualname=f"getattr({reflection.alias}, ...) -> {reflection.alias}.{attr}",
+        file=reflection.file,
+        line=reflection.lineno,
+    )
+    return CallPath(steps=(step,))

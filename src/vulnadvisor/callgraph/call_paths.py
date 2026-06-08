@@ -1,3 +1,4 @@
+# File: src/vulnadvisor/callgraph/call_paths.py
 """Demand-driven call-path search: is a vulnerable symbol actually *called* from the code?
 
 Seeded by a dependency's import names and its advisory's vulnerable symbol names, we build a
@@ -5,9 +6,11 @@ lazy per-module call graph and search from module entry points to a call site of
 symbol. We never build a whole-program graph; analysis is per file and stops at the first path.
 
 A call is treated as hitting the vulnerable symbol when it is ``pkg.symbol(...)`` on the imported
-package (or an alias) or ``symbol(...)`` for a name imported ``from pkg``. Dynamic dispatch
-(``getattr``/``eval``/``exec``/computed callees) is recorded so the caller can downgrade to
-DYNAMIC_UNKNOWN rather than claim the symbol is not called.
+package (or an alias) or ``symbol(...)`` for a name imported ``from pkg``. Reflective access to
+the package — ``getattr(pkg, name)`` — is recorded as a :class:`PackageReflection` so a
+type-informed resolver (M7) can later decide *which* attribute it resolves to; until then it is
+treated conservatively. Genuinely opaque dynamic calls (``eval``/``exec``/``__import__`` or a
+computed callee) are flagged separately because no resolver can pin them down.
 """
 
 import ast
@@ -19,10 +22,40 @@ from pathlib import Path
 from vulnadvisor.callgraph.import_graph import _iter_python_files
 from vulnadvisor.model.callpath import CallPath, CallStep
 
-__all__ = ["find_vulnerable_call_paths"]
+__all__ = ["CallGraphResult", "PackageReflection", "find_vulnerable_call_paths"]
 
 _MODULE_KEY = "<module>"
-_DYNAMIC_CALL_NAMES = frozenset({"getattr", "eval", "exec", "__import__"})
+_OPAQUE_CALL_NAMES = frozenset({"eval", "exec", "__import__"})
+
+
+@dataclass(frozen=True)
+class PackageReflection:
+    """A reflective attribute access on the vulnerable package: ``getattr(<alias>, <name_arg>)``.
+
+    ``name_arg`` is the source text of the attribute-name argument (e.g. ``'"safe_load"'`` or
+    ``'func_name'``). A resolver may map it to the concrete attribute(s) it can take; on its own,
+    static analysis must assume it could reach the vulnerable symbol.
+    """
+
+    file: str
+    lineno: int
+    col: int
+    alias: str
+    name_arg: str
+
+
+@dataclass(frozen=True)
+class CallGraphResult:
+    """The outcome of the per-project call-path search for one (package, symbols) pair."""
+
+    paths: tuple[CallPath, ...] = ()
+    reflections: tuple[PackageReflection, ...] = ()
+    has_opaque_dynamic: bool = False
+
+    @property
+    def has_dynamic(self) -> bool:
+        """Whether any dispatch could hide a call: reflective access or an opaque dynamic call."""
+        return bool(self.reflections) or self.has_opaque_dynamic
 
 
 @dataclass
@@ -35,7 +68,8 @@ class _Node:
     raw_calls: set[str] = field(default_factory=set)
     calls: set[str] = field(default_factory=set)
     vuln_calls: list[tuple[str, int]] = field(default_factory=list)
-    dynamic: bool = False
+    reflections: list[PackageReflection] = field(default_factory=list)
+    opaque_dynamic: bool = False
 
 
 def _bindings(
@@ -82,21 +116,46 @@ def _vuln_call_name(
     return None
 
 
+def _package_reflection(
+    call: ast.Call, module_aliases: set[str], rel: str
+) -> PackageReflection | None:
+    """Return a :class:`PackageReflection` for ``getattr(<pkg_alias>, name)``, else ``None``."""
+    if call.keywords or len(call.args) < 2:
+        return None
+    obj = call.args[0]
+    if isinstance(obj, ast.Name) and obj.id in module_aliases:
+        try:
+            name_arg = ast.unparse(call.args[1])
+        except (ValueError, AttributeError):
+            name_arg = "<dynamic>"
+        return PackageReflection(
+            file=rel, lineno=call.lineno, col=call.col_offset, alias=obj.id, name_arg=name_arg
+        )
+    return None
+
+
 def _classify_call(
     call: ast.Call,
     node: _Node,
     module_aliases: set[str],
     imported_vuln_names: set[str],
     vulnerable_names: frozenset[str],
+    rel: str,
 ) -> None:
-    """Update ``node`` with edge/vuln/dynamic information from a single call."""
+    """Update ``node`` with edge / vuln / reflection / opaque-dynamic info from a single call."""
     func = call.func
     if isinstance(func, ast.Name):
         node.raw_calls.add(func.id)
-        if func.id in _DYNAMIC_CALL_NAMES:
-            node.dynamic = True
+        if func.id == "getattr":
+            reflection = _package_reflection(call, module_aliases, rel)
+            if reflection is not None:
+                node.reflections.append(reflection)
+            else:
+                node.opaque_dynamic = True  # getattr on a non-package / unusual receiver
+        elif func.id in _OPAQUE_CALL_NAMES:
+            node.opaque_dynamic = True
     elif not isinstance(func, ast.Attribute):
-        node.dynamic = True  # computed callee, e.g. handlers[key]() or factory()()
+        node.opaque_dynamic = True  # computed callee, e.g. handlers[key]() or factory()()
 
     vuln = _vuln_call_name(call, module_aliases, imported_vuln_names, vulnerable_names)
     if vuln is not None:
@@ -109,11 +168,12 @@ def _collect(
     module_aliases: set[str],
     imported_vuln_names: set[str],
     vulnerable_names: frozenset[str],
+    rel: str,
 ) -> None:
     """Attribute every call within ``scope`` to ``node``."""
     for child in ast.walk(scope):
         if isinstance(child, ast.Call):
-            _classify_call(child, node, module_aliases, imported_vuln_names, vulnerable_names)
+            _classify_call(child, node, module_aliases, imported_vuln_names, vulnerable_names, rel)
 
 
 def _build_nodes(
@@ -129,7 +189,7 @@ def _build_nodes(
     top_level_funcs: set[str] = set()
 
     def collect(scope: ast.AST, target: _Node) -> None:
-        _collect(scope, target, module_aliases, imported_vuln_names, vulnerable_names)
+        _collect(scope, target, module_aliases, imported_vuln_names, vulnerable_names, rel)
 
     for stmt in tree.body:
         if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -201,21 +261,23 @@ def find_vulnerable_call_paths(
     *,
     import_names: Iterable[str],
     vulnerable_names: Iterable[str],
-) -> tuple[list[CallPath], bool]:
-    """Find call paths to the vulnerable symbol; also report if dynamic dispatch is present.
+) -> CallGraphResult:
+    """Search for call paths to the vulnerable symbol, also surfacing reflective/opaque dispatch.
 
-    Returns ``(paths, has_dynamic_dispatch)``. ``paths`` is empty when no concrete call to the
-    vulnerable symbol was found. ``has_dynamic_dispatch`` is ``True`` when reflective/computed
-    calls in first-party code mean a call could be hidden.
+    Returns a :class:`CallGraphResult`: any concrete call ``paths`` found, the
+    :class:`PackageReflection` sites (``getattr`` on the package, resolvable later by type info),
+    and ``has_opaque_dynamic`` for calls no analysis can pin down (``eval``/``exec`` or a computed
+    callee). An empty result means no concrete call and no dispatch that could hide one.
     """
     import_roots = frozenset(name.split(".")[0] for name in import_names)
     vuln_names = frozenset(vulnerable_names)
     if not import_roots or not vuln_names:
-        return [], False
+        return CallGraphResult()
 
     root = Path(project_dir)
     paths: list[CallPath] = []
-    dynamic = False
+    reflections: list[PackageReflection] = []
+    opaque = False
     for path in _iter_python_files(root):
         rel = path.relative_to(root).as_posix() if root.is_dir() else path.name
         try:
@@ -226,9 +288,13 @@ def find_vulnerable_call_paths(
         if not module_aliases and not imported_vuln_names:
             continue
         nodes = _build_nodes(rel, tree, module_aliases, imported_vuln_names, vuln_names)
-        if any(node.dynamic for node in nodes.values()):
-            dynamic = True
+        for node in nodes.values():
+            reflections.extend(node.reflections)
+            if node.opaque_dynamic:
+                opaque = True
         found = _find_path(nodes)
         if found is not None:
             paths.append(found)
-    return paths, dynamic
+    return CallGraphResult(
+        paths=tuple(paths), reflections=tuple(reflections), has_opaque_dynamic=opaque
+    )

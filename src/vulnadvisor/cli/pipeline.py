@@ -10,6 +10,7 @@ from pathlib import Path
 
 from vulnadvisor.advisories.matcher import AdvisoryMatcher
 from vulnadvisor.callgraph.import_graph import build_import_graph
+from vulnadvisor.callgraph.type_resolver import TypeResolver
 from vulnadvisor.deps.parsers import collect_dependencies
 from vulnadvisor.engine.scoring import order_findings, score_match
 from vulnadvisor.model.advisory import Advisory, MatchedAdvisory
@@ -39,6 +40,7 @@ def scan_project(
     *,
     symbol_names_for: SymbolNamesFor | None = None,
     analysis_cache: AnalysisCache | None = None,
+    resolver: TypeResolver | None = None,
 ) -> ScanReport:
     """Collect dependencies under ``path``, match advisories, assign reachability, and score.
 
@@ -46,6 +48,7 @@ def scan_project(
     ``symbol_names_for`` supplies vulnerable symbol names for an advisory, function-level call-path
     analysis refines the tier (IMPORTED-AND-CALLED with the path, or DYNAMIC-UNKNOWN), per finding.
     An optional ``analysis_cache`` skips re-parsing files whose content is unchanged across runs.
+    An optional type ``resolver`` (e.g. Pyright) narrows reflective dispatch to cut false positives.
     """
     dependencies = collect_dependencies(path)
     result = matcher.match(dependencies)
@@ -58,7 +61,7 @@ def scan_project(
         if base is None:
             base = compute_reachability(matched.dependency, graph)
             base_by_dep[matched.dependency.name] = base
-        reachability = _refine(matched, base, graph, path, symbol_names_for)
+        reachability = _refine(matched, base, graph, path, symbol_names_for, resolver)
         findings.append(score_match(matched, reachability))
 
     return ScanReport(order_findings(findings), result.degraded_sources)
@@ -70,6 +73,7 @@ def _refine(
     graph: ImportGraph,
     path: Path,
     symbol_names_for: SymbolNamesFor | None,
+    resolver: TypeResolver | None,
 ) -> Reachability:
     """Apply function-level refinement when vulnerable symbol names are available."""
     if symbol_names_for is None:
@@ -77,4 +81,4 @@ def _refine(
     names = symbol_names_for(matched.advisory)
     if not names:
         return base
-    return refine_reachability(matched.dependency, base, graph, path, names)
+    return refine_reachability(matched.dependency, base, graph, path, names, resolver=resolver)

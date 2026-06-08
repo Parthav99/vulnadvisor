@@ -13,6 +13,7 @@ from rich.console import Console
 from vulnadvisor.advisories.clients import EpssClient, KevClient, OSVClient
 from vulnadvisor.advisories.matcher import AdvisoryMatcher
 from vulnadvisor.advisories.transport import UrllibTransport
+from vulnadvisor.callgraph.type_resolver import PyrightResolver, TypeResolver
 from vulnadvisor.cli.pipeline import scan_project
 from vulnadvisor.cli.render import render_report
 from vulnadvisor.model.advisory import Advisory
@@ -64,6 +65,11 @@ def build_osv_client() -> OSVClient:
 def build_symbol_extractor() -> SymbolExtractor:
     """Build the production symbol extractor (live transport); test-substitutable."""
     return SymbolExtractor(UrllibTransport())
+
+
+def build_type_resolver() -> TypeResolver:
+    """Build the optional Pyright resolver; it self-reports unavailable if pyright is absent."""
+    return PyrightResolver()
 
 
 def build_symbol_names_for() -> Callable[[Advisory], frozenset[str]] | None:
@@ -155,6 +161,13 @@ def scan(
             help="Disable the incremental per-file analysis cache (always re-parse every file).",
         ),
     ] = False,
+    no_types: Annotated[
+        bool,
+        typer.Option(
+            "--no-types",
+            help="Disable Pyright type-informed resolution of reflective dispatch.",
+        ),
+    ] = False,
 ) -> None:
     """Scan PATH for vulnerable dependencies and emit ranked, prioritized results.
 
@@ -174,12 +187,14 @@ def scan(
             raise typer.BadParameter(str(exc), param_hint="--fail-on") from exc
 
     analysis_cache = None if no_cache else AnalysisCache(default_analysis_cache_path())
+    resolver = None if no_types else build_type_resolver()
     try:
         report = scan_project(
             path,
             build_matcher(),
             symbol_names_for=build_symbol_names_for(),
             analysis_cache=analysis_cache,
+            resolver=resolver,
         )
     finally:
         if analysis_cache is not None:

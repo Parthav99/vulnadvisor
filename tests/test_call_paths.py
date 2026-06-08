@@ -31,40 +31,41 @@ def _pyyaml() -> Dependency:
 
 
 def test_finds_call_path() -> None:
-    paths, dynamic = find_vulnerable_call_paths(
+    result = find_vulnerable_call_paths(
         PROJECTS / "reach_called", import_names=YAML_IMPORTS, vulnerable_names=YAML_VULN
     )
-    assert paths
-    rendered = paths[0].render()
+    assert result.paths
+    rendered = result.paths[0].render()
     assert "yaml.load" in rendered
     # The path runs through the first-party functions, ending at the call site with a location.
-    qualnames = [step.qualname for step in paths[0].steps]
+    qualnames = [step.qualname for step in result.paths[0].steps]
     assert "main" in qualnames
     assert "parse" in qualnames
     assert "app.py:" in rendered
 
 
 def test_no_call_path_when_only_imported() -> None:
-    paths, dynamic = find_vulnerable_call_paths(
+    result = find_vulnerable_call_paths(
         PROJECTS / "reach_imported_only", import_names=YAML_IMPORTS, vulnerable_names=YAML_VULN
     )
-    assert paths == []
-    assert dynamic is False
+    assert result.paths == ()
+    assert result.has_dynamic is False
 
 
 def test_dynamic_dispatch_flagged_without_path() -> None:
-    paths, dynamic = find_vulnerable_call_paths(
+    result = find_vulnerable_call_paths(
         PROJECTS / "reach_dynamic_dispatch", import_names=YAML_IMPORTS, vulnerable_names=YAML_VULN
     )
-    assert paths == []
-    assert dynamic is True  # getattr(yaml, ...) is reflective dispatch
+    assert result.paths == ()
+    assert result.has_dynamic is True  # getattr(yaml, ...) is reflective dispatch
+    assert result.reflections  # recorded as a package reflection for the resolver
 
 
 def test_no_symbols_means_no_paths() -> None:
-    paths, dynamic = find_vulnerable_call_paths(
+    result = find_vulnerable_call_paths(
         PROJECTS / "reach_called", import_names=YAML_IMPORTS, vulnerable_names=frozenset()
     )
-    assert paths == []
+    assert result.paths == ()
 
 
 # --- refinement into reachability tiers (security-critical gate) ------------------------------

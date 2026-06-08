@@ -4,6 +4,63 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 7.1 — Pyright type-informed resolution  (2026-06-09)
+
+**Status:** complete, Validation Gate passing. (M7 — precision, no new false negatives.)
+
+**Decision (user):** Pyright is an *optional external tool* behind an injectable resolver. CI is
+hermetic — the precision logic is proven with a deterministic fake runner; the live fallback
+(Pyright absent) is verified on this machine. No new dependency added.
+
+**What changed**
+- `callgraph/call_paths.py`: `find_vulnerable_call_paths` now returns a structured
+  `CallGraphResult` (`.paths`, `.reflections`, `.has_opaque_dynamic`, `.has_dynamic`). Reflective
+  access `getattr(<pkg_alias>, name)` is recorded as a `PackageReflection` (resolvable later by
+  type info) and split from genuinely opaque dynamic calls (`eval`/`exec`/`__import__`/computed
+  callee) that no resolver can pin down.
+- `callgraph/type_resolver.py` (new): `TypeResolver` Protocol, `NullResolver` (sound fallback ==
+  M6), `PyrightResolver`. Pure, fully-tested parsers `literals_from_type_string` (only narrows on a
+  clean string `Literal[...]`) and `parse_pyright_reveals` (matches `reveal_type` info diagnostics
+  strictly by injected line number). `PyrightResolver` copies the project, injects `reveal_type`
+  probes, runs `pyright --outputjson`, and parses inferred types — all behind an injectable
+  `runner` seam; fail-safe (any error -> resolve nothing).
+- `reachability/tiering.py`: `refine_reachability(..., resolver=None)`. A reflection that provably
+  resolves to a *non-vulnerable* attribute no longer forces DYNAMIC_UNKNOWN (precision); one that
+  resolves *to* a vulnerable attribute upgrades to IMPORTED_AND_CALLED; unresolved/opaque dispatch
+  stays conservative.
+- `cli/pipeline.py` + `cli/main.py`: `resolver` threaded through `scan_project`;
+  `build_type_resolver()` returns a `PyrightResolver` (self-reports unavailable if pyright absent);
+  new `--no-types` flag.
+- Fixtures `reach_dynamic_resolved_safe` (getattr -> safe_load) and `reach_dynamic_resolved_vuln`
+  (getattr -> load); `tests/test_type_resolution.py` (15 tests); `test_call_paths.py` updated to the
+  `CallGraphResult` API.
+
+**Why these choices (soundness first)**
+- Precision never costs soundness: a reflection only stops forcing the conservative tier when the
+  resolver returns a *concrete* attribute set that excludes every vulnerable name. No type info ->
+  `None` -> stay DYNAMIC_UNKNOWN. The parser refuses to narrow on anything but a pure string
+  `Literal`, and matches reveals strictly by line, so a parse slip yields "no resolution," never a
+  wrong (unsound) one.
+- Pyright absent -> resolver `available == False` -> behavior identical to M6.
+
+**Validation evidence (measured)**
+- `reach_dynamic_resolved_safe`: M6 `dynamic-unknown` -> M7 `imported` (false positive removed).
+- `reach_dynamic_resolved_vuln`: M6 `dynamic-unknown` -> M7 `imported-and-called` (caught).
+- `reach_dynamic_dispatch` (unannotated param): `dynamic-unknown` with and without the resolver
+  (Pyright can't pin it -> no false negative).
+- `Pyright present on PATH? False` on this box -> the live fallback path is exercised; precision
+  results above use the injected runner.
+- Gate: `ruff check` / `ruff format --check` clean, `mypy --strict src` clean (46 files),
+  `pytest` 235 passed.
+
+**Open questions / known limitation**
+- The live `pyright --outputjson` path (project copy + `reveal_type` injection + subprocess) is
+  unverified on this machine (no node/pyright installed). The *logic and parsers* are fully
+  unit-tested via the injected runner and synthetic Pyright JSON; the subprocess seam is
+  fail-safe (errors -> resolve nothing -> M6). Verify end-to-end once Pyright is installed.
+
+---
+
 ## Task 6.2 — Incremental caching  (2026-06-08)
 
 **Status:** complete, Validation Gate passing. (M6 — fast CI re-runs.)
