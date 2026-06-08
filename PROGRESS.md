@@ -4,6 +4,49 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 2.3 — 3-card terminal output (Rich)  →  release v0.1  (2026-06-08)
+
+**Status:** complete, Validation Gate passing. **Milestone M2 done; tagged v0.1.**
+
+**What changed**
+- `cli/render.py`: the signature three-card output. Per finding — Card A (templated attack
+  summary), Card B (Red/Yellow/Green badge from the EPSS+KEV-driven band + scoring rationale),
+  Card C (verdict + priority + templated fix command + evidence note). ASCII box art for
+  snapshot stability and Windows-safe output. `render_to_string` for tests.
+- `cli/pipeline.py`: `scan_project(path, matcher) -> ScanReport` wiring
+  `collect_dependencies -> AdvisoryMatcher.match -> score_matches`. Matcher injected so the whole
+  pipeline is testable offline.
+- `cli/main.py`: `scan` now runs the real pipeline and renders; `build_matcher()` is a
+  module-level seam tests monkeypatch. `--public/--internal` and `--fail-on` accepted but
+  reserved (reachability M4 / exit-codes 3.1).
+- `store/cache.py`: `default_cache_path()` (honors `VULNADVISOR_CACHE`; per-user dir; stays local).
+- Bumped package version to **0.1.0**.
+- Tests: `tests/conftest.py` (offline `RecordingTransport` + `fake_matcher` factory),
+  `tests/test_render.py` (3-card + badge/fix helpers + **snapshot** `fixtures/snapshots/cards.txt`),
+  `tests/test_pipeline.py`, rewritten `tests/test_cli.py` (end-to-end scan via fake matcher).
+
+**Why these choices**
+- The matcher is injected into the pipeline/CLI so "scan a fixture project -> ranked 3-card
+  output" is proven **without network**; the live command builds the real OSV/EPSS/KEV matcher.
+- Badge derives from the priority band (already an EPSS+KEV+CVSS function) so the visual signal
+  is consistent with the deterministic score.
+- ASCII box (`box.ASCII`) keeps rendered output pure-ASCII: stable snapshots and no Windows
+  codepage mangling.
+
+**Validation evidence**
+- ruff + format clean; `mypy --strict src` clean (28 files); **pytest 105 passed**.
+- Snapshot test renders the ranked cards (CRITICAL Jinja2/RED/"Fix now" above LOW Flask/GREEN/
+  "Monitor"); CLI e2e test asserts the three cards + fix command + verdict.
+- **Live run** `vulnadvisor scan` on `jinja2==2.10` + `flask==0.12` hit real OSV/EPSS/KEV and
+  produced 15 ranked findings (real CVSS parsed from vectors, real EPSS), exit 0; second run
+  served from cache.
+
+**Open questions**
+- All current findings rank LOW for these old CVEs (low EPSS, not KEV) — expected/by-design noise
+  reduction. Still pending: `uv add packaging` for Task 3.2 (safe-fix version math).
+
+---
+
 ## Task 2.2 — Deterministic scoring engine  (2026-06-08)
 
 **Status:** complete, Validation Gate passing.

@@ -4,11 +4,31 @@ Used to avoid re-fetching advisory/risk data from public APIs on every run. Valu
 strings (callers store JSON). ``now`` is injectable so expiry is deterministic in tests.
 """
 
+import os
 import sqlite3
 import time
 from pathlib import Path
 
-__all__ = ["SqliteCache"]
+__all__ = ["SqliteCache", "default_cache_path"]
+
+
+def default_cache_path() -> Path:
+    """Return the local cache database path, creating its parent directory if needed.
+
+    Honors ``VULNADVISOR_CACHE`` (a full file path) when set; otherwise uses a per-user cache
+    directory. The cache stays on the user's machine — VulnAdvisor never phones home.
+    """
+    override = os.environ.get("VULNADVISOR_CACHE")
+    if override:
+        path = Path(override)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+    root = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_CACHE_HOME")
+    base = Path(root) if root else Path.home() / ".cache"
+    directory = base / "vulnadvisor"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / "cache.sqlite"
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (

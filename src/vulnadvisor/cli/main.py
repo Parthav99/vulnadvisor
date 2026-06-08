@@ -6,6 +6,14 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.console import Console
+
+from vulnadvisor.advisories.clients import EpssClient, KevClient, OSVClient
+from vulnadvisor.advisories.matcher import AdvisoryMatcher
+from vulnadvisor.advisories.transport import UrllibTransport
+from vulnadvisor.cli.pipeline import scan_project
+from vulnadvisor.cli.render import render_report
+from vulnadvisor.store.cache import SqliteCache, default_cache_path
 
 app = typer.Typer(
     name="vulnadvisor",
@@ -13,6 +21,20 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+
+
+def build_matcher() -> AdvisoryMatcher:
+    """Build the production advisory matcher (live transport + local SQLite cache).
+
+    Defined as a module-level function so tests can substitute an offline matcher.
+    """
+    cache = SqliteCache(default_cache_path())
+    transport = UrllibTransport()
+    return AdvisoryMatcher(
+        OSVClient(transport, cache),
+        EpssClient(transport, cache),
+        KevClient(transport, cache),
+    )
 
 
 def _resolve_version() -> str:
@@ -72,14 +94,12 @@ def scan(
         ),
     ] = None,
 ) -> None:
-    """Scan PATH for reachable dependency vulnerabilities.
+    """Scan PATH for vulnerable dependencies and print the ranked three-card report.
 
-    This is a scaffolding stub: it echoes the resolved invocation and exits 0. The analysis
-    pipeline (dependency inventory, advisory matching, reachability, scoring) is built in later
-    milestones.
+    Matches declared/locked dependencies against OSV, enriches with EPSS and CISA KEV, and ranks
+    by the deterministic priority score. ``--fail-on`` is accepted but not yet enforced (exit-code
+    gating arrives in Task 3.1); ``--public/--internal`` is reserved for reachability (M4+).
     """
-    project_kind = "public package" if public else "internal application"
-    typer.echo(f"VulnAdvisor scan (stub) - target: {path}")
-    typer.echo(f"  project kind: {project_kind}")
-    typer.echo(f"  fail-on: {fail_on if fail_on is not None else '(unset)'}")
-    typer.echo("Analysis pipeline not yet implemented; this is a scaffolding stub.")
+    _ = (public, fail_on)  # reserved for later milestones; accepted now for a stable CLI surface
+    report = scan_project(path, build_matcher())
+    render_report(report.findings, report.degraded_sources, Console())
