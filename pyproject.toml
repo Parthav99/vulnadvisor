@@ -8,7 +8,12 @@ requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [{ name = "VulnAdvisor" }]
 keywords = ["security", "vulnerability", "reachability", "python", "sca"]
-dependencies = []
+dependencies = [
+    "typer==0.26.7",
+]
+
+[project.scripts]
+vulnadvisor = "vulnadvisor.cli.main:app"
 
 [project.urls]
 Homepage = "https://github.com/your-org/vulnadvisor"
