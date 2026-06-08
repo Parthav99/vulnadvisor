@@ -4,6 +4,41 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 1.2 — Package → import-name mapping  (2026-06-08)
+
+**Status:** complete, Validation Gate passing.
+
+**What changed**
+- `model/import_mapping.py`: frozen `ImportMapping(distribution, import_names, confidence,
+  source)` with `MappingConfidence` (HIGH/MEDIUM/LOW) and `MappingSource`
+  (metadata/curated/guess) enums. Re-exported from `model/__init__.py`.
+- `deps/import_mapping.py`: `resolve_import_names(distribution)` and
+  `resolve_dependency(Dependency)`, plus the curated `CURATED_IMPORT_NAMES` table (17 entries:
+  PyYAML→yaml, beautifulsoup4→bs4, scikit-learn→sklearn, Pillow→PIL, opencv-python→cv2, etc.).
+- `tests/test_import_mapping.py`: 13 tricky real-world mappings (parametrized) + curated-table,
+  metadata-HIGH, curated-MEDIUM, and unknown-LOW degrade tests.
+
+**Why these choices**
+- **Layered for soundness:** installed metadata (`top_level.txt`, else RECORD-derived top-level
+  names) → HIGH; curated table → MEDIUM; best-guess `-`→`_` → LOW. We always return ≥1 import
+  name with a confidence flag, so a wrong guess is *flagged low*, never silently trusted and
+  never a crash — missing an import name would be a downstream false negative.
+- Curated keys are stored PEP 503-canonical and looked up via `canonicalize_name`, so input
+  casing/separators don't matter (a test asserts every key is already canonical).
+- `resolve_dependency` prefers the raw manifest name for metadata lookup (importlib normalizes
+  internally anyway), keeping behavior correct for either spelling.
+
+**Validation evidence**
+- ruff check / format clean; `mypy --strict src` clean (17 files); **pytest 53 passed**.
+- ≥10 tricky mappings covered (13); unknown package → LOW/GUESS best-guess, no crash; installed
+  `pydantic` → HIGH/METADATA.
+
+**Open questions**
+- Curated table is intentionally small; it will grow as we hit more real packages. The RECORD
+  fallback covers most installed cases. Still pending: `uv add packaging` for Task 3.2.
+
+---
+
 ## Task 1.1 — Manifest parsers  (2026-06-08)
 
 **Status:** complete, Validation Gate passing.
