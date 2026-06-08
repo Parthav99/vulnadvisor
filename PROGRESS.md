@@ -4,6 +4,44 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 5.2 — Dataset store + backfill  (2026-06-08)
+
+**Status:** complete, Validation Gate passing. **M5 (the data moat) done.**
+
+**What changed**
+- `store/dataset.py`: `SymbolDataset` — SQLite store of `advisory_id -> SymbolExtraction` (one row
+  per advisory, payload as JSON, PK lookup). `upsert` (idempotent `INSERT OR REPLACE`), `get`,
+  `has`, `count`, `advisory_ids`, `close`. `default_dataset_path()` (honors
+  `VULNADVISOR_DATASET`).
+- `symbols/backfill.py`: `backfill(dataset, packages, *, osv, extractor, refresh)` — queries OSV
+  per package, extracts + stores symbols; skips advisories already present unless `refresh`;
+  degrades per-package on outage. `BackfillReport`, `TOP_PYPI_PACKAGES`, `top_packages`.
+- `cli/main.py`: `backfill` command (`vulnadvisor backfill [PACKAGES...] [--top N] [--refresh]
+  [--db PATH]`); `build_osv_client` / `build_symbol_extractor` seams for tests.
+- `tests/test_dataset.py` (8) + `tests/test_backfill.py` (7) + 2 CLI tests.
+
+**Why these choices**
+- One JSON-payload row keyed by `advisory_id` PK keeps lookups O(1) and the schema stable as the
+  symbol model evolves; round-trips via pydantic `model_dump_json` / `model_validate_json`.
+- Idempotency is structural: `has()`-skip on re-run (no work), and `INSERT OR REPLACE` so even a
+  forced `--refresh` never grows the row count. Backfill targets are injected (Protocols) so the
+  whole flow is offline-testable; the CLI builds the live clients.
+- `--top N` uses a built-in package list so choosing targets needs no network.
+
+**Validation evidence**
+- ruff + format clean; `mypy --strict src` clean (42 files); **pytest 198 passed**.
+- Backfill populates the store; re-runs are idempotent (written=0, skipped=all, count stable);
+  `--refresh` re-extracts without growing rows; outages recorded, not fatal. Lookups by advisory
+  covered (round-trip, persistence, missing→None).
+- **Live run**: `vulnadvisor backfill pyyaml jinja2` wrote **24** real advisories; a second run
+  skipped all 24 (dataset stable at 24).
+
+**Open questions**
+- None blocking. The dataset can now grow over time. Next: M6 — Reachability v2 (Task 6.1,
+  demand-driven call graph using these symbols to emit IMPORTED-AND-CALLED with the call path).
+
+---
+
 ## Task 5.1 — Fix-commit → vulnerable-symbol extraction  (2026-06-08)
 
 **Status:** complete, Validation Gate passing. (M5 — the data moat — begins.)

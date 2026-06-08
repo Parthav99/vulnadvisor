@@ -117,3 +117,37 @@ def test_scan_invalid_fail_on_is_usage_error(
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
     result = runner.invoke(app, ["scan", str(_project(tmp_path)), "--fail-on", "bogus"])
     assert result.exit_code == 2  # Typer usage error
+
+
+def test_backfill_command(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    from vulnadvisor.model import Advisory, ExtractionStatus, SymbolExtraction
+
+    class _OSV:
+        def query(self, dependency):  # type: ignore[no-untyped-def]
+            return [Advisory(id="GHSA-cli-1")] if dependency.name == "pyyaml" else []
+
+    class _Ext:
+        def extract(self, advisory):  # type: ignore[no-untyped-def]
+            return SymbolExtraction(advisory_id=advisory.id, status=ExtractionStatus.NO_FIX_LINK)
+
+    monkeypatch.setattr(cli_main, "build_osv_client", lambda: _OSV())
+    monkeypatch.setattr(cli_main, "build_symbol_extractor", lambda: _Ext())
+
+    db = tmp_path / "symbols.sqlite"
+    result = runner.invoke(app, ["backfill", "PyYAML", "--db", str(db)])
+    assert result.exit_code == 0
+    assert "Dataset now holds 1 advisories" in result.stdout
+
+    from vulnadvisor.store import SymbolDataset
+
+    dataset = SymbolDataset(db)
+    assert dataset.has("GHSA-cli-1")
+    dataset.close()
+
+
+def test_backfill_requires_targets() -> None:
+    result = runner.invoke(app, ["backfill"])
+    assert result.exit_code == 2  # no packages and no --top

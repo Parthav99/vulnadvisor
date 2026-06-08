@@ -18,6 +18,9 @@ from vulnadvisor.output.gating import parse_fail_on, should_fail
 from vulnadvisor.output.json_report import to_json
 from vulnadvisor.output.sarif import to_sarif_json
 from vulnadvisor.store.cache import SqliteCache, default_cache_path
+from vulnadvisor.store.dataset import SymbolDataset, default_dataset_path
+from vulnadvisor.symbols.backfill import TOP_PYPI_PACKAGES, backfill
+from vulnadvisor.symbols.extractor import SymbolExtractor
 
 
 class OutputFormat(str, Enum):
@@ -48,6 +51,16 @@ def build_matcher() -> AdvisoryMatcher:
         EpssClient(transport, cache),
         KevClient(transport, cache),
     )
+
+
+def build_osv_client() -> OSVClient:
+    """Build the production OSV client (live transport + local cache); test-substitutable."""
+    return OSVClient(UrllibTransport(), SqliteCache(default_cache_path()))
+
+
+def build_symbol_extractor() -> SymbolExtractor:
+    """Build the production symbol extractor (live transport); test-substitutable."""
+    return SymbolExtractor(UrllibTransport())
 
 
 def _resolve_version() -> str:
@@ -141,3 +154,54 @@ def scan(
 
     if threshold is not None and should_fail(report.findings, threshold):
         raise typer.Exit(code=1)
+
+
+@app.command(name="backfill")
+def backfill_command(
+    packages: Annotated[
+        list[str] | None,
+        typer.Argument(help="Package names to backfill (in addition to --top)."),
+    ] = None,
+    top: Annotated[
+        int,
+        typer.Option("--top", help="Also backfill the first N built-in top PyPI packages."),
+    ] = 0,
+    refresh: Annotated[
+        bool,
+        typer.Option("--refresh", help="Re-extract advisories already in the dataset."),
+    ] = False,
+    db: Annotated[
+        Path | None,
+        typer.Option("--db", help="Dataset database path (defaults to the per-user location)."),
+    ] = None,
+) -> None:
+    """Build/grow the advisory -> vulnerable-symbol dataset for the given packages.
+
+    Queries OSV for each package's advisories, extracts vulnerable symbols from their fix commits,
+    and stores them. Re-runs are idempotent; ``--refresh`` re-extracts existing advisories.
+    """
+    names = list(packages or [])
+    if top > 0:
+        names.extend(name for name in TOP_PYPI_PACKAGES[:top] if name not in names)
+    if not names:
+        raise typer.BadParameter("provide package names or use --top N")
+
+    dataset = SymbolDataset(db if db is not None else default_dataset_path())
+    try:
+        result = backfill(
+            dataset,
+            names,
+            osv=build_osv_client(),
+            extractor=build_symbol_extractor(),
+            refresh=refresh,
+        )
+    finally:
+        total = dataset.count()
+        dataset.close()
+
+    typer.echo(
+        f"Backfill: {result.packages} package(s), {result.advisories_seen} advisory hit(s), "
+        f"{result.written} written, {result.skipped} skipped. Dataset now holds {total} advisories."
+    )
+    if result.degraded_packages:
+        typer.echo(f"Degraded (OSV unreachable): {', '.join(result.degraded_packages)}")
