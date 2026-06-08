@@ -82,6 +82,7 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
                 "evidence": [
                     {"file": site.file, "line": site.lineno} for site in reachability.evidence
                 ],
+                "call_paths": [path.render() for path in reachability.call_paths],
             }
             if reachability is not None
             else None

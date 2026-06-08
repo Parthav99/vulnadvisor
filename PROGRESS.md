@@ -4,6 +4,52 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 6.1 — Demand-driven call-graph + path search  (2026-06-08)
+
+**Status:** complete, security-critical Validation Gate passing. (M6 — function-level reachability.)
+
+**What changed**
+- `model/callpath.py`: `CallStep` / `CallPath` (with `render()`); `Reachability` gained
+  `call_paths`.
+- `callgraph/call_paths.py`: `find_vulnerable_call_paths(project_dir, import_names,
+  vulnerable_names)` — builds a lazy per-module call graph seeded by the package's import names +
+  the advisory's vulnerable symbol names, BFS from module entry to a vulnerable call site, returns
+  the path(s) + a `has_dynamic_dispatch` flag. Never a whole-program graph; stops at first path.
+- `reachability/tiering.py`: `refine_reachability` — concrete path -> IMPORTED_AND_CALLED (path
+  shown); IMPORTED + dynamic dispatch (getattr/reflection/computed callee) + no path ->
+  DYNAMIC_UNKNOWN; else unchanged.
+- `cli/pipeline.py`: optional `symbol_names_for` callback threads vulnerable symbol names into
+  per-finding refinement. `cli/main.py`: `build_symbol_names_for()` reads the local dataset (if
+  backfilled) so `scan` automatically gets function-level reachability. JSON `reachability` block
+  now carries `call_paths`.
+- Fixtures `reach_called` / `reach_imported_only` / `reach_dynamic_dispatch` +
+  `tests/test_call_paths.py` (13 tests).
+
+**Why these choices (soundness first)**
+- A static call to the vulnerable symbol -> IMPORTED_AND_CALLED, and the call site is never
+  dropped even if not reachable from module top-level (library API entry). Dynamic dispatch with
+  no concrete path -> DYNAMIC_UNKNOWN (a call could be hidden) — never "not called".
+- We match the user's *direct* call to the vulnerable symbol name (``pkg.sym(...)`` or a name
+  imported ``from pkg``). This is the demand-driven seed.
+
+**Validation evidence (release-blocking gate)**
+- reach_called -> IMPORTED_AND_CALLED with path `<module> -> main -> parse -> yaml.load`;
+  reach_imported_only -> IMPORTED (not escalated); reach_dynamic_dispatch -> DYNAMIC_UNKNOWN
+  (not dropped). Zero false negatives asserted (reachable/uncertain never IMPORTED-safe nor
+  NOT_IMPORTED).
+- ruff + format clean; `mypy --strict src` clean (44 files); **pytest 211 passed**.
+- **Live run**: seeding the dataset with the called symbol, `scan` emits IMPORTED-AND-CALLED with
+  the path `<module> -> main -> parse -> yaml.load (app.py:7)`.
+
+**Open questions / known limitation**
+- Matching is on the *exact* vulnerable symbol name the user calls. Real advisories often pin a
+  library-*internal* symbol (e.g. PyYAML `construct_python_object_new`) reached via the public
+  API (`yaml.load`); we don't yet connect public-entry -> internal-symbol (needs the library's
+  own call graph or an entry-point map). So such cases currently stay IMPORTED (sound: no false
+  AND-CALLED). Candidate refinement for M7 (Pyright) / a public-API map. Next: Task 6.2 caching.
+
+---
+
 ## Task 5.2 — Dataset store + backfill  (2026-06-08)
 
 **Status:** complete, Validation Gate passing. **M5 (the data moat) done.**

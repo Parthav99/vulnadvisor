@@ -1,5 +1,6 @@
 """VulnAdvisor command-line entrypoint (Typer app)."""
 
+from collections.abc import Callable
 from enum import Enum
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -14,6 +15,7 @@ from vulnadvisor.advisories.matcher import AdvisoryMatcher
 from vulnadvisor.advisories.transport import UrllibTransport
 from vulnadvisor.cli.pipeline import scan_project
 from vulnadvisor.cli.render import render_report
+from vulnadvisor.model.advisory import Advisory
 from vulnadvisor.output.gating import parse_fail_on, should_fail
 from vulnadvisor.output.json_report import to_json
 from vulnadvisor.output.sarif import to_sarif_json
@@ -61,6 +63,28 @@ def build_osv_client() -> OSVClient:
 def build_symbol_extractor() -> SymbolExtractor:
     """Build the production symbol extractor (live transport); test-substitutable."""
     return SymbolExtractor(UrllibTransport())
+
+
+def build_symbol_names_for() -> Callable[[Advisory], frozenset[str]] | None:
+    """Return an advisory->vulnerable-symbol-names lookup from the local dataset, if it exists.
+
+    Returns ``None`` when no dataset has been built (backfilled), so scans simply skip
+    function-level reachability rather than doing any work.
+    """
+    path = default_dataset_path()
+    if not path.exists():
+        return None
+    dataset = SymbolDataset(path)
+
+    def lookup(advisory: Advisory) -> frozenset[str]:
+        names: set[str] = set()
+        for advisory_id in (advisory.id, *advisory.aliases):
+            extraction = dataset.get(advisory_id)
+            if extraction is not None:
+                names.update(symbol.name for symbol in extraction.symbols)
+        return frozenset(names)
+
+    return lookup
 
 
 def _resolve_version() -> str:
@@ -141,7 +165,7 @@ def scan(
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--fail-on") from exc
 
-    report = scan_project(path, build_matcher())
+    report = scan_project(path, build_matcher(), symbol_names_for=build_symbol_names_for())
 
     if output_format is OutputFormat.JSON:
         print(to_json(report.findings, report.degraded_sources, tool_version=_resolve_version()))

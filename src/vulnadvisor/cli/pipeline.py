@@ -1,21 +1,26 @@
-"""Wire the scan pipeline: dependencies -> advisory match -> deterministic scoring.
+"""Wire the scan pipeline: dependencies -> advisory match -> reachability -> scoring.
 
 The ``AdvisoryMatcher`` is injected so the pipeline can be exercised end-to-end in tests without
-any network access.
+any network access. An optional ``symbol_names_for`` callback supplies an advisory's known
+vulnerable symbol names (from the local dataset), enabling function-level call-path reachability.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from vulnadvisor.advisories.matcher import AdvisoryMatcher
 from vulnadvisor.callgraph.import_graph import build_import_graph
 from vulnadvisor.deps.parsers import collect_dependencies
 from vulnadvisor.engine.scoring import order_findings, score_match
+from vulnadvisor.model.advisory import Advisory, MatchedAdvisory
+from vulnadvisor.model.imports import ImportGraph
 from vulnadvisor.model.reachability import Reachability
 from vulnadvisor.model.score import ScoredFinding
-from vulnadvisor.reachability.tiering import compute_reachability
+from vulnadvisor.reachability.tiering import compute_reachability, refine_reachability
 
 __all__ = ["ScanReport", "scan_project"]
+
+SymbolNamesFor = Callable[[Advisory], frozenset[str]]
 
 
 class ScanReport:
@@ -27,24 +32,46 @@ class ScanReport:
         self.degraded_sources = tuple(degraded_sources)
 
 
-def scan_project(path: Path, matcher: AdvisoryMatcher) -> ScanReport:
+def scan_project(
+    path: Path,
+    matcher: AdvisoryMatcher,
+    *,
+    symbol_names_for: SymbolNamesFor | None = None,
+) -> ScanReport:
     """Collect dependencies under ``path``, match advisories, assign reachability, and score.
 
-    Reachability is computed once per dependency from the project's import graph, then folded
-    into the deterministic score (NOT-IMPORTED deprioritized; DYNAMIC-UNKNOWN never downgraded).
+    Package-level reachability is computed once per dependency from the import graph. When
+    ``symbol_names_for`` supplies vulnerable symbol names for an advisory, function-level call-path
+    analysis refines the tier (IMPORTED-AND-CALLED with the path, or DYNAMIC-UNKNOWN), per finding.
     """
     dependencies = collect_dependencies(path)
     result = matcher.match(dependencies)
     graph = build_import_graph(path)
 
-    reachability_by_dep: dict[str, Reachability] = {}
+    base_by_dep: dict[str, Reachability] = {}
     findings: list[ScoredFinding] = []
     for matched in result.matches:
-        dep_name = matched.dependency.name
-        reachability = reachability_by_dep.get(dep_name)
-        if reachability is None:
-            reachability = compute_reachability(matched.dependency, graph)
-            reachability_by_dep[dep_name] = reachability
+        base = base_by_dep.get(matched.dependency.name)
+        if base is None:
+            base = compute_reachability(matched.dependency, graph)
+            base_by_dep[matched.dependency.name] = base
+        reachability = _refine(matched, base, graph, path, symbol_names_for)
         findings.append(score_match(matched, reachability))
 
     return ScanReport(order_findings(findings), result.degraded_sources)
+
+
+def _refine(
+    matched: MatchedAdvisory,
+    base: Reachability,
+    graph: ImportGraph,
+    path: Path,
+    symbol_names_for: SymbolNamesFor | None,
+) -> Reachability:
+    """Apply function-level refinement when vulnerable symbol names are available."""
+    if symbol_names_for is None:
+        return base
+    names = symbol_names_for(matched.advisory)
+    if not names:
+        return base
+    return refine_reachability(matched.dependency, base, graph, path, names)

@@ -4,6 +4,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
+from vulnadvisor.model.callpath import CallPath
 from vulnadvisor.model.imports import DynamicImportSite, ImportSite
 
 
@@ -33,6 +34,7 @@ class Reachability(BaseModel):
         reason: Plain-text explanation (includes a file:line for imported packages).
         evidence: Import sites proving the package is imported (for IMPORTED tiers).
         dynamic_evidence: Dynamic-import/exec sites that block certainty (for DYNAMIC_UNKNOWN).
+        call_paths: Concrete call paths to the vulnerable symbol (for IMPORTED_AND_CALLED).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -41,6 +43,7 @@ class Reachability(BaseModel):
     reason: str
     evidence: tuple[ImportSite, ...] = ()
     dynamic_evidence: tuple[DynamicImportSite, ...] = ()
+    call_paths: tuple[CallPath, ...] = ()
 
     @property
     def is_confidently_safe(self) -> bool:

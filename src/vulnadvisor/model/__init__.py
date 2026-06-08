@@ -9,6 +9,7 @@ from vulnadvisor.model.advisory import (
     MatchedAdvisory,
     MatchResult,
 )
+from vulnadvisor.model.callpath import CallPath, CallStep
 from vulnadvisor.model.dependency import Dependency, DependencySource
 from vulnadvisor.model.import_mapping import (
     ImportMapping,
@@ -39,6 +40,8 @@ __all__ = [
     "AdvisoryReference",
     "AffectedPackage",
     "AffectedRange",
+    "CallPath",
+    "CallStep",
     "Dependency",
     "DependencySource",
     "DynamicImportKind",

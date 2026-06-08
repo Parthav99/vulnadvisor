@@ -15,13 +15,17 @@ Decision order for a dependency:
    confidently-safe verdict.
 """
 
+from collections.abc import Iterable
+from pathlib import Path
+
+from vulnadvisor.callgraph.call_paths import find_vulnerable_call_paths
 from vulnadvisor.deps.import_mapping import resolve_import_names
 from vulnadvisor.model.dependency import Dependency
 from vulnadvisor.model.import_mapping import ImportMapping, MappingConfidence
 from vulnadvisor.model.imports import ImportGraph, ImportSite
 from vulnadvisor.model.reachability import Reachability, ReachabilityTier
 
-__all__ = ["assign_tier", "compute_reachability"]
+__all__ = ["assign_tier", "compute_reachability", "refine_reachability"]
 
 
 def _matched_sites(mapping: ImportMapping, graph: ImportGraph) -> tuple[ImportSite, ...]:
@@ -83,3 +87,48 @@ def compute_reachability(dependency: Dependency, graph: ImportGraph) -> Reachabi
     """Resolve ``dependency``'s import names and assign its reachability tier."""
     mapping = resolve_import_names(dependency.raw_name or dependency.name)
     return assign_tier(dependency, mapping, graph)
+
+
+def refine_reachability(
+    dependency: Dependency,
+    base: Reachability,
+    graph: ImportGraph,
+    project_dir: Path,
+    vulnerable_names: Iterable[str],
+) -> Reachability:
+    """Upgrade/downgrade a package-level tier using function-level call-path analysis.
+
+    * A concrete call path to a vulnerable symbol upgrades to ``IMPORTED_AND_CALLED`` (path shown).
+    * An ``IMPORTED`` finding where dynamic dispatch is present but no path was found downgrades to
+      ``DYNAMIC_UNKNOWN`` — a call could be hidden, so we never claim it is not called.
+    * Otherwise the base tier is unchanged.
+    """
+    names = frozenset(vulnerable_names)
+    if not names or base.tier is ReachabilityTier.NOT_IMPORTED:
+        return base
+
+    mapping = resolve_import_names(dependency.raw_name or dependency.name)
+    paths, dynamic_dispatch = find_vulnerable_call_paths(
+        project_dir, import_names=mapping.import_names, vulnerable_names=names
+    )
+
+    if paths:
+        return Reachability(
+            tier=ReachabilityTier.IMPORTED_AND_CALLED,
+            reason=f"a call path to the vulnerable symbol exists: {paths[0].render()}",
+            evidence=base.evidence,
+            call_paths=tuple(paths),
+        )
+
+    if base.tier is ReachabilityTier.IMPORTED and (dynamic_dispatch or graph.dynamic_sites):
+        return Reachability(
+            tier=ReachabilityTier.DYNAMIC_UNKNOWN,
+            reason=(
+                "imported, and dynamic dispatch (e.g. getattr / reflection) is present, so a call "
+                "to the vulnerable symbol cannot be ruled out"
+            ),
+            evidence=base.evidence,
+            dynamic_evidence=graph.dynamic_sites,
+        )
+
+    return base
