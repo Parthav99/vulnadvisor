@@ -1,0 +1,14 @@
+diff --git a/lib3/yaml/constructor.py b/lib3/yaml/constructor.py
+index 1c2d3e4..5f6a7b8 100644
+--- a/lib3/yaml/constructor.py
++++ b/lib3/yaml/constructor.py
+@@ -578,7 +578,7 @@ class FullConstructor(SafeConstructor):
+     def find_python_name(self, name, mark, unsafe=False):
+         if not name:
+             raise ConstructorError("while constructing a Python object", mark,
+                     "expected non-empty name appended to the tag", mark)
+-        if '.' in name:
++        if unsafe and '.' in name:
+             lname = name.split('.')
+             lmodule_name = lname.pop(0)
+             lobject_name = '.'.join(lname)

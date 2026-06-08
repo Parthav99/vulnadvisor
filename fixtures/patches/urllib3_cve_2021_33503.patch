@@ -1,0 +1,15 @@
+diff --git a/src/urllib3/util/url.py b/src/urllib3/util/url.py
+index 5555555..6666666 100644
+--- a/src/urllib3/util/url.py
++++ b/src/urllib3/util/url.py
+@@ -430,6 +430,10 @@ def parse_url(url):
+     if not url:
+         # Empty
+         return Url()
++
++    if not _SCHEME_RE.search(url):
++        url = "//" + url
++
+     source_url = url
+     if not SCHEME_RE.search(url):
+         url = "//" + url

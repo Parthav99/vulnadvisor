@@ -2,6 +2,7 @@
 
 from vulnadvisor.model.advisory import (
     Advisory,
+    AdvisoryReference,
     AffectedPackage,
     AffectedRange,
     EpssScore,
@@ -26,9 +27,16 @@ from vulnadvisor.model.imports import (
 from vulnadvisor.model.reachability import Reachability, ReachabilityTier
 from vulnadvisor.model.safe_fix import SafeFix
 from vulnadvisor.model.score import PriorityBand, Score, ScoredFinding
+from vulnadvisor.model.symbols import (
+    ExtractionStatus,
+    SymbolExtraction,
+    SymbolKind,
+    VulnerableSymbol,
+)
 
 __all__ = [
     "Advisory",
+    "AdvisoryReference",
     "AffectedPackage",
     "AffectedRange",
     "Dependency",
@@ -36,6 +44,7 @@ __all__ = [
     "DynamicImportKind",
     "DynamicImportSite",
     "EpssScore",
+    "ExtractionStatus",
     "ImportGraph",
     "ImportKind",
     "ImportMapping",
@@ -52,4 +61,7 @@ __all__ = [
     "SafeFix",
     "Score",
     "ScoredFinding",
+    "SymbolExtraction",
+    "SymbolKind",
+    "VulnerableSymbol",
 ]

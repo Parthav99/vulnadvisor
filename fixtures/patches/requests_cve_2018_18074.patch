@@ -1,0 +1,17 @@
+diff --git a/requests/sessions.py b/requests/sessions.py
+index 1111111..2222222 100644
+--- a/requests/sessions.py
++++ b/requests/sessions.py
+@@ -128,9 +128,13 @@ class SessionRedirectMixin(object):
+     def resolve_redirects(self, resp, req, stream=False, timeout=None,
+                           verify=True, cert=None, proxies=None, **adapter_kwargs):
+         """Receives a Response. Returns a generator of Responses or Requests."""
+         hist = []
+-        url = self.get_redirect_target(resp)
++        url = self.get_redirect_target(resp)
++        previous_fragment = urlparse(req.url).fragment
++        if url and url.startswith('//'):
++            parsed_rurl = urlparse(resp.url)
++            url = ':'.join([to_native_string(parsed_rurl.scheme), url])
+         while url:
+             prepared_request = req.copy()

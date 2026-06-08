@@ -1,0 +1,14 @@
+diff --git a/src/jinja2/sandbox.py b/src/jinja2/sandbox.py
+index aaaaaaa..bbbbbbb 100644
+--- a/src/jinja2/sandbox.py
++++ b/src/jinja2/sandbox.py
+@@ -325,6 +325,9 @@ class SandboxedEnvironment(Environment):
+     def is_safe_attribute(self, obj, attr, value):
+         """The sandboxed environment will call this method to check if the
+         attribute of an object is safe to access."""
++        if attr.startswith("__") and attr.endswith("__"):
++            return False
++
+         if attr.startswith("_"):
+             return False
+         return not modifies_known_mutable(obj, attr)

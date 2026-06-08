@@ -34,6 +34,15 @@ class AffectedPackage(BaseModel):
     versions: tuple[str, ...] = ()
 
 
+class AdvisoryReference(BaseModel):
+    """An external reference attached to an advisory (e.g. a fix-commit URL)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    type: str
+    url: str
+
+
 class Advisory(BaseModel):
     """A single vulnerability advisory matched to a package version (typically from OSV).
 
@@ -60,6 +69,7 @@ class Advisory(BaseModel):
     modified: str | None = None
     source: str = "OSV"
     affected: tuple[AffectedPackage, ...] = ()
+    references: tuple[AdvisoryReference, ...] = ()
 
     @property
     def cve_ids(self) -> tuple[str, ...]:

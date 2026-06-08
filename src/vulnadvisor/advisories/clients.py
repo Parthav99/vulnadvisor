@@ -15,6 +15,7 @@ from vulnadvisor.advisories.transport import Transport
 from vulnadvisor.deps.parsers import canonicalize_name
 from vulnadvisor.model.advisory import (
     Advisory,
+    AdvisoryReference,
     AffectedPackage,
     AffectedRange,
     EpssScore,
@@ -108,7 +109,22 @@ def _parse_osv_vuln(entry: Any) -> Advisory | None:
         modified=safe_str(entry.get("modified")),
         source="OSV",
         affected=_parse_affected(entry.get("affected")),
+        references=_parse_references(entry.get("references")),
     )
+
+
+def _parse_references(value: Any) -> tuple[AdvisoryReference, ...]:
+    """Parse an OSV ``references`` array into typed references (skipping malformed ones)."""
+    if not isinstance(value, list):
+        return ()
+    references: list[AdvisoryReference] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            continue
+        url = safe_str(entry.get("url"))
+        if url is not None:
+            references.append(AdvisoryReference(type=safe_str(entry.get("type")) or "WEB", url=url))
+    return tuple(references)
 
 
 def _parse_affected(value: Any) -> tuple[AffectedPackage, ...]:

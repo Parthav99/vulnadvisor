@@ -4,6 +4,47 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 5.1 — Fix-commit → vulnerable-symbol extraction  (2026-06-08)
+
+**Status:** complete, Validation Gate passing. (M5 — the data moat — begins.)
+
+**What changed**
+- `model/advisory.py`: added `AdvisoryReference` and `Advisory.references`; OSV client now parses
+  the `references` array (defensively).
+- `model/symbols.py`: `VulnerableSymbol` (name, qualname, kind, file), `SymbolExtraction`
+  (symbols + confidence + provenance + `ExtractionStatus`), `SymbolKind`.
+- `symbols/extractor.py`: pure `extract_symbols_from_patch(diff)` mapping each changed hunk to its
+  enclosing function/method/class (heading-seeded scope stack; removed `def`/`class` recorded
+  directly); `fix_commit_urls(advisory)`; `SymbolExtractor(transport).extract(advisory)` which
+  fetches `<commit>.patch` and degrades to NO_FIX_LINK / FETCH_FAILED / NO_SYMBOLS.
+- 5 recorded patch fixtures (`fixtures/patches/`) + `tests/test_symbols.py` (15 tests).
+
+**Why these choices**
+- The vulnerable symbol is the code the fix *changed*, so we attribute changed lines to their
+  enclosing symbol and record removed defs (deleted functions). Brand-new added defs are NOT
+  recorded (they are fix code, not the vuln) to avoid false symbols.
+- The diff parser is pure/string-in (tested against recorded patches, no network); the extractor
+  injects a `Transport` (offline-testable) and never crashes — every failure mode is a typed
+  status. Confidence is a documented heuristic (lower for sprawling multi-file diffs).
+- Fix-commit discovery is reference-based (`/commit/` URLs). GIT-range-derived commits (repo +
+  fixed sha) are a future enhancement (would need repo capture on ranges).
+
+**Validation evidence**
+- ruff + format clean; `mypy --strict src` clean (40 files); **pytest 183 passed**.
+- ≥5 hand-verified advisories: PyYAML→FullConstructor.find_python_name, Jinja2→
+  SandboxedEnvironment.is_safe_attribute, requests→SessionRedirectMixin.resolve_redirects,
+  Flask→dumps, urllib3→parse_url — all matched. No-fix-link / fetch-failure / unusable-patch all
+  handled without crashing.
+- **Live run**: real OSV advisory GHSA-8q59-q68h-6hv4 (PyYAML 5.3.1) → fetched the fix commit
+  and extracted the actual changed functions (construct_python_object_new, set_python_instance_state).
+
+**Open questions**
+- Kind classification falls back to FUNCTION when the enclosing class isn't visible in the hunk
+  (header/context); the qualname/name are still correct, which is what reachability matches on.
+  Refine with class context in Task 6 if needed. Next: Task 5.2 — dataset store + backfill.
+
+---
+
 ## Task 4.2 — Tiering (NOT-IMPORTED / IMPORTED / DYNAMIC-UNKNOWN)  →  release v0.3  (2026-06-08)
 
 **Status:** complete, security-critical Validation Gate passing. **M4 done; tagged v0.3 — the

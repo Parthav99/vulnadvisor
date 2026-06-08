@@ -1,0 +1,12 @@
+diff --git a/src/flask/json/__init__.py b/src/flask/json/__init__.py
+index 3333333..4444444 100644
+--- a/src/flask/json/__init__.py
++++ b/src/flask/json/__init__.py
+@@ -98,6 +98,9 @@ def dumps(obj, app=None, **kwargs):
+     _dump_arg_defaults(kwargs, app=app)
+     encoding = kwargs.pop("encoding", None)
++    if encoding is not None:
++        import warnings
++        warnings.warn("'encoding' is deprecated and will be removed", DeprecationWarning)
+     rv = _json.dumps(obj, **kwargs)
+     return rv
