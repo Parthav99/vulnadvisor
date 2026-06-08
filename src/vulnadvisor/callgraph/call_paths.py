@@ -213,10 +213,25 @@ def _build_nodes(
     return {node.key: node for node in nodes}
 
 
-def _find_path(nodes: dict[str, _Node]) -> CallPath | None:
-    """BFS from the module entry to a node containing a vulnerable call; build that path."""
-    visited: dict[str, str | None] = {_MODULE_KEY: None}
-    queue: deque[str] = deque([_MODULE_KEY])
+def _roots(nodes: dict[str, _Node], entry_points: frozenset[str]) -> list[str]:
+    """Return the BFS roots: the module scope plus any framework entry-point functions/methods.
+
+    A node is a framework root when its key is an entry-point name, or its enclosing class is (so a
+    class-based view's HTTP-verb methods, keyed ``Class.method``, are all rooted).
+    """
+    roots = [_MODULE_KEY]
+    for key in nodes:
+        if key == _MODULE_KEY:
+            continue
+        if key in entry_points or key.split(".")[0] in entry_points:
+            roots.append(key)
+    return roots
+
+
+def _find_path(nodes: dict[str, _Node], entry_points: frozenset[str]) -> CallPath | None:
+    """BFS from the module + framework entry points to a vulnerable call; build that path."""
+    visited: dict[str, str | None] = {root: None for root in _roots(nodes, entry_points)}
+    queue: deque[str] = deque(visited)
     target: str | None = None
     while queue:
         key = queue.popleft()
@@ -261,16 +276,20 @@ def find_vulnerable_call_paths(
     *,
     import_names: Iterable[str],
     vulnerable_names: Iterable[str],
+    entry_points: Iterable[str] = (),
 ) -> CallGraphResult:
     """Search for call paths to the vulnerable symbol, also surfacing reflective/opaque dispatch.
 
     Returns a :class:`CallGraphResult`: any concrete call ``paths`` found, the
     :class:`PackageReflection` sites (``getattr`` on the package, resolvable later by type info),
     and ``has_opaque_dynamic`` for calls no analysis can pin down (``eval``/``exec`` or a computed
-    callee). An empty result means no concrete call and no dispatch that could hide one.
+    callee). ``entry_points`` are framework-registered handler/view names that seed the BFS in
+    addition to the module scope, so a vuln reached only through a handler is rooted at it. An empty
+    result means no concrete call and no dispatch that could hide one.
     """
     import_roots = frozenset(name.split(".")[0] for name in import_names)
     vuln_names = frozenset(vulnerable_names)
+    entries = frozenset(entry_points)
     if not import_roots or not vuln_names:
         return CallGraphResult()
 
@@ -292,7 +311,7 @@ def find_vulnerable_call_paths(
             reflections.extend(node.reflections)
             if node.opaque_dynamic:
                 opaque = True
-        found = _find_path(nodes)
+        found = _find_path(nodes, entries)
         if found is not None:
             paths.append(found)
     return CallGraphResult(

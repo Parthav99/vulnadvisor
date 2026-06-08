@@ -5,10 +5,16 @@ any network access. An optional ``symbol_names_for`` callback supplies an adviso
 vulnerable symbol names (from the local dataset), enabling function-level call-path reachability.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 from vulnadvisor.advisories.matcher import AdvisoryMatcher
+from vulnadvisor.callgraph.frameworks import (
+    DEFAULT_PLUGINS,
+    FrameworkPlugin,
+    collect_entry_points,
+    entry_point_names,
+)
 from vulnadvisor.callgraph.import_graph import build_import_graph
 from vulnadvisor.callgraph.type_resolver import TypeResolver
 from vulnadvisor.deps.parsers import collect_dependencies
@@ -41,6 +47,7 @@ def scan_project(
     symbol_names_for: SymbolNamesFor | None = None,
     analysis_cache: AnalysisCache | None = None,
     resolver: TypeResolver | None = None,
+    frameworks: Sequence[FrameworkPlugin] | None = None,
 ) -> ScanReport:
     """Collect dependencies under ``path``, match advisories, assign reachability, and score.
 
@@ -49,10 +56,16 @@ def scan_project(
     analysis refines the tier (IMPORTED-AND-CALLED with the path, or DYNAMIC-UNKNOWN), per finding.
     An optional ``analysis_cache`` skips re-parsing files whose content is unchanged across runs.
     An optional type ``resolver`` (e.g. Pyright) narrows reflective dispatch to cut false positives.
+    ``frameworks`` selects which framework plugins expose handler/view entry points (defaults to
+    all; pass an empty list to disable framework awareness).
     """
+    plugins = DEFAULT_PLUGINS if frameworks is None else frameworks
     dependencies = collect_dependencies(path)
     result = matcher.match(dependencies)
     graph = build_import_graph(path, cache=analysis_cache)
+    entry_points = (
+        entry_point_names(collect_entry_points(path, plugins)) if plugins else frozenset()
+    )
 
     base_by_dep: dict[str, Reachability] = {}
     findings: list[ScoredFinding] = []
@@ -61,7 +74,7 @@ def scan_project(
         if base is None:
             base = compute_reachability(matched.dependency, graph)
             base_by_dep[matched.dependency.name] = base
-        reachability = _refine(matched, base, graph, path, symbol_names_for, resolver)
+        reachability = _refine(matched, base, graph, path, symbol_names_for, resolver, entry_points)
         findings.append(score_match(matched, reachability))
 
     return ScanReport(order_findings(findings), result.degraded_sources)
@@ -74,6 +87,7 @@ def _refine(
     path: Path,
     symbol_names_for: SymbolNamesFor | None,
     resolver: TypeResolver | None,
+    entry_points: Iterable[str],
 ) -> Reachability:
     """Apply function-level refinement when vulnerable symbol names are available."""
     if symbol_names_for is None:
@@ -81,4 +95,12 @@ def _refine(
     names = symbol_names_for(matched.advisory)
     if not names:
         return base
-    return refine_reachability(matched.dependency, base, graph, path, names, resolver=resolver)
+    return refine_reachability(
+        matched.dependency,
+        base,
+        graph,
+        path,
+        names,
+        resolver=resolver,
+        entry_points=entry_points,
+    )

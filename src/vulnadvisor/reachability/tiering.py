@@ -103,6 +103,7 @@ def refine_reachability(
     vulnerable_names: Iterable[str],
     *,
     resolver: TypeResolver | None = None,
+    entry_points: Iterable[str] = (),
 ) -> Reachability:
     """Upgrade/downgrade a package-level tier using function-level call-path analysis.
 
@@ -114,6 +115,8 @@ def refine_reachability(
       that provably targets a *non-vulnerable* attribute no longer forces the downgrade (M7
       precision), while one that resolves *to* the vulnerable symbol upgrades to
       ``IMPORTED_AND_CALLED``. With no resolver, every reflection stays conservative (M6).
+    * ``entry_points`` are framework-registered handler/view names; a vuln reached only through such
+      a handler is found and rooted at it (M7 framework plugins).
     """
     names = frozenset(vulnerable_names)
     if not names or base.tier is ReachabilityTier.NOT_IMPORTED:
@@ -121,7 +124,10 @@ def refine_reachability(
 
     mapping = resolve_import_names(dependency.raw_name or dependency.name)
     result = find_vulnerable_call_paths(
-        project_dir, import_names=mapping.import_names, vulnerable_names=names
+        project_dir,
+        import_names=mapping.import_names,
+        vulnerable_names=names,
+        entry_points=entry_points,
     )
 
     if result.paths:

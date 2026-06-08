@@ -13,6 +13,7 @@ from rich.console import Console
 from vulnadvisor.advisories.clients import EpssClient, KevClient, OSVClient
 from vulnadvisor.advisories.matcher import AdvisoryMatcher
 from vulnadvisor.advisories.transport import UrllibTransport
+from vulnadvisor.callgraph.frameworks import FrameworkPlugin
 from vulnadvisor.callgraph.type_resolver import PyrightResolver, TypeResolver
 from vulnadvisor.cli.pipeline import scan_project
 from vulnadvisor.cli.render import render_report
@@ -168,6 +169,13 @@ def scan(
             help="Disable Pyright type-informed resolution of reflective dispatch.",
         ),
     ] = False,
+    no_frameworks: Annotated[
+        bool,
+        typer.Option(
+            "--no-frameworks",
+            help="Disable framework plugins (FastAPI/Django route + signal entry points).",
+        ),
+    ] = False,
 ) -> None:
     """Scan PATH for vulnerable dependencies and emit ranked, prioritized results.
 
@@ -188,6 +196,7 @@ def scan(
 
     analysis_cache = None if no_cache else AnalysisCache(default_analysis_cache_path())
     resolver = None if no_types else build_type_resolver()
+    frameworks: list[FrameworkPlugin] | None = [] if no_frameworks else None
     try:
         report = scan_project(
             path,
@@ -195,6 +204,7 @@ def scan(
             symbol_names_for=build_symbol_names_for(),
             analysis_cache=analysis_cache,
             resolver=resolver,
+            frameworks=frameworks,
         )
     finally:
         if analysis_cache is not None:

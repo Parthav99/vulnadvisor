@@ -4,6 +4,56 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 7.2 — Framework plugins (FastAPI + Django)  (2026-06-09)
+
+**Status:** complete, Validation Gate passing. (M7 — framework-routed reachability.)
+
+**Decision (user):** start with **FastAPI + Django** — two genuinely different dispatch models
+(decorator routes vs URLconf views + `@receiver` signals), so the plugin interface is proven
+general rather than two near-identical decorator scanners.
+
+**What changed**
+- `callgraph/frameworks/` (new package): `FrameworkPlugin` Protocol + `EntryPoint` +
+  `collect_entry_points` (runs plugins over every file, defensive — a bad file or a raising plugin
+  is skipped, never crashes the scan). `FastAPIPlugin` (route/websocket decorators:
+  get/post/put/patch/delete/head/options/trace/websocket/route/api_route). `DjangoPlugin` (URLconf
+  `path`/`re_path`/`url` view references incl. `Views.as_view()` -> class name, and `@receiver`
+  signal handlers). `DEFAULT_PLUGINS = (FastAPIPlugin(), DjangoPlugin())`.
+- `callgraph/call_paths.py`: `find_vulnerable_call_paths(..., entry_points=())` seeds the BFS from
+  the module scope **plus** framework entry-point functions (and a class-based view's
+  `Class.method` nodes), so a vuln reached only through a handler is rooted at it.
+- `reachability/tiering.py`: `refine_reachability(..., entry_points=())` threads them in.
+- `cli/pipeline.py`: `scan_project(..., frameworks=None)` computes entry points once via the
+  enabled plugins (default all; `[]` disables). `cli/main.py`: `--no-frameworks` flag.
+- Fixtures `fastapi_app` (route -> helper -> yaml.load) and `django_app` (urls.py -> views.py view
+  -> helper -> yaml.load); `tests/test_frameworks.py` (18 tests).
+
+**Why these choices (soundness first)**
+- Entry points only **add** BFS roots, never remove a path — over-detection costs precision, never
+  soundness. The existing fallback still reports any vuln call, so disabling frameworks never
+  introduces a false negative (verified: `--no-frameworks` still detects, just doesn't root at the
+  handler).
+- Plugins are independent: `collect_entry_points` takes the plugin list, so disabling one removes
+  only its entries (isolation tested both directions).
+
+**Validation evidence (measured)**
+- FastAPI: `read_config -> _load -> yaml.load (app.py:20)` — rooted at the route handler.
+- Django: `parse_config -> _load -> yaml.load (views.py:16)` — view resolved cross-file from
+  urls.py. Both end-to-end -> IMPORTED_AND_CALLED.
+- Isolation: FastAPI-only sees `{read_config}`/`{}`, Django-only sees `{}`/`{parse_config}` on the
+  two fixtures — disabling one leaves the other unchanged.
+- Without frameworks the FastAPI vuln is still detected (fallback) but not rooted at `read_config`,
+  proving the plugin's contribution is correct attribution, not avoiding a false negative.
+- Gate: `ruff check` / `ruff format --check` clean, `mypy --strict src` clean (50 files),
+  `pytest` 248 passed.
+
+**Open questions / future**
+- Django class-based views emit the class name and root all its HTTP-verb methods (sound
+  over-approximation); per-method precision and Celery/DRF are later additions. `collect_entry_points`
+  re-parses files (not via the analysis cache) — fold into the cache if profiling shows it matters.
+
+---
+
 ## Task 7.1 — Pyright type-informed resolution  (2026-06-09)
 
 **Status:** complete, Validation Gate passing. (M7 — precision, no new false negatives.)
