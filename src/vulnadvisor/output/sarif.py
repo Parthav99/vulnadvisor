@@ -67,6 +67,7 @@ def _result(finding: ScoredFinding) -> dict[str, Any]:
     summary = advisory.summary or "No description provided by the advisory."
     uri = _MANIFEST_FILENAMES.get(dependency.source, "environment")
     safe_fix = resolve_safe_fix(dependency, advisory)
+    reachability = finding.reachability
     return {
         "ruleId": advisory.id,
         "level": _LEVELS[score.band],
@@ -78,6 +79,7 @@ def _result(finding: ScoredFinding) -> dict[str, Any]:
             "verdict": score.verdict,
             "in_kev": finding.matched.in_kev,
             "cve_ids": list(advisory.cve_ids),
+            "reachability_tier": reachability.tier.value if reachability is not None else None,
             "fixed_version": safe_fix.fixed_version,
             "fix_command": fix_command(dependency, safe_fix),
         },

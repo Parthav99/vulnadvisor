@@ -71,6 +71,12 @@ def _render_finding(finding: ScoredFinding) -> Panel:
     command = fix_command(dependency, safe_fix)
     fix_line = f"Fix: {command}" if command is not None else "Fix: no fixed version available yet"
 
+    reachability = finding.reachability
+    if reachability is not None:
+        reach_line = f"Reachability: {reachability.tier.value.upper()} - {reachability.reason}"
+    else:
+        reach_line = "Reachability: not analyzed"
+
     card_a = _card("A - Attack summary", _attack_summary(finding))
     card_b = _card("B - Risk", f"Badge: {badge}\n{score.rationale}")
     card_c = _card(
@@ -78,7 +84,7 @@ def _render_finding(finding: ScoredFinding) -> Panel:
         f"Verdict: {score.verdict}  (priority {score.value:.1f}, {score.band.value})\n"
         f"{fix_line}\n"
         f"{safe_fix.note}\n"
-        "Evidence: package-level match (reachability analysis not yet run)",
+        f"{reach_line}",
     )
 
     header = (

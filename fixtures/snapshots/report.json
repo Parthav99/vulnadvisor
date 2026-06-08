@@ -50,6 +50,7 @@
         "rationale": "KEV-listed (known exploited in the wild); EPSS 0.945; CVSS 8.8",
         "cvss_known": true
       },
+      "reachability": null,
       "fix": {
         "command": "pip install --upgrade \"Jinja2>=2.10.1\"",
         "fixed_version": "2.10.1",
@@ -93,6 +94,7 @@
         "rationale": "EPSS 0.020; CVSS 5.3",
         "cvss_known": true
       },
+      "reachability": null,
       "fix": {
         "command": "pip install --upgrade \"Flask>=0.12.3\"",
         "fixed_version": "0.12.3",

@@ -110,6 +110,7 @@ class ImportGraph(BaseModel):
     dynamic_sites: tuple[DynamicImportSite, ...] = ()
     first_party_modules: tuple[str, ...] = ()
     parse_errors: tuple[ImportParseError, ...] = ()
+    analyzed_file_count: int = 0
 
     def import_roots(self) -> dict[str, tuple[ImportSite, ...]]:
         """Map every absolute import root to the sites that import it."""

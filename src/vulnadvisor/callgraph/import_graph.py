@@ -172,6 +172,7 @@ def build_import_graph(
     imports: list[ImportSite] = []
     dynamics: list[DynamicImportSite] = []
     errors: list[ImportParseError] = []
+    analyzed = 0
     for path in _iter_python_files(root):
         rel = path.relative_to(root).as_posix() if root.is_dir() else path.name
         try:
@@ -179,6 +180,7 @@ def build_import_graph(
         except OSError as exc:
             errors.append(ImportParseError(file=rel, message=f"cannot read: {exc}"))
             continue
+        analyzed += 1
         file_imports, file_dynamics, error = _analyze_source(text, rel, str(path))
         imports.extend(file_imports)
         dynamics.extend(file_dynamics)
@@ -192,6 +194,7 @@ def build_import_graph(
         dynamic_sites=tuple(dynamics),
         first_party_modules=tuple(sorted(first_party)),
         parse_errors=tuple(errors),
+        analyzed_file_count=analyzed,
     )
 
 

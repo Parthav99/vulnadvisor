@@ -29,15 +29,20 @@ from collections.abc import Iterable
 
 from vulnadvisor.engine.cvss import cvss_base_score
 from vulnadvisor.model.advisory import Advisory, MatchedAdvisory
+from vulnadvisor.model.reachability import Reachability, ReachabilityTier
 from vulnadvisor.model.score import PriorityBand, Score, ScoredFinding
 
 __all__ = [
     "DEFAULT_SEVERITY",
     "EPSS_WEIGHT",
     "KEV_PRIORITY_FLOOR",
+    "NOT_IMPORTED_PRIORITY_FACTOR",
+    "NOT_IMPORTED_VERDICT",
     "SEVERITY_WEIGHT",
     "advisory_severity",
+    "apply_reachability",
     "compute_score",
+    "order_findings",
     "score_match",
     "score_matches",
 ]
@@ -46,6 +51,19 @@ DEFAULT_SEVERITY = 5.0
 EPSS_WEIGHT = 0.6
 SEVERITY_WEIGHT = 0.4
 KEV_PRIORITY_FLOOR = 90.0
+
+# A NOT-IMPORTED finding is the only confidently-safe tier: deprioritize it hard (but never
+# drop it). The score is scaled down and capped into the INFO band, and relabeled.
+NOT_IMPORTED_PRIORITY_FACTOR = 0.05
+NOT_IMPORTED_PRIORITY_CAP = 5.0
+NOT_IMPORTED_VERDICT = "No path from your code"
+
+_REACHABILITY_LABELS: dict[ReachabilityTier, str] = {
+    ReachabilityTier.IMPORTED_AND_CALLED: "IMPORTED-AND-CALLED",
+    ReachabilityTier.IMPORTED: "IMPORTED",
+    ReachabilityTier.DYNAMIC_UNKNOWN: "DYNAMIC-UNKNOWN (usage could not be ruled out)",
+    ReachabilityTier.NOT_IMPORTED: "NOT-IMPORTED (no path from your code)",
+}
 
 # (inclusive lower bound, band) in descending order.
 _BANDS: tuple[tuple[float, PriorityBand], ...] = (
@@ -136,12 +154,37 @@ def compute_score(
     )
 
 
-def score_match(matched: MatchedAdvisory) -> ScoredFinding:
-    """Score a single matched advisory."""
+def apply_reachability(score: Score, reachability: Reachability) -> Score:
+    """Return ``score`` adjusted for reachability.
+
+    NOT-IMPORTED (confidently safe) is scaled down and capped into the INFO band and relabeled
+    "No path from your code". Every other tier keeps its full priority — we never silently
+    downgrade a finding we could not prove safe — and only annotates the rationale.
+    """
+    label = _REACHABILITY_LABELS[reachability.tier]
+    if reachability.tier is ReachabilityTier.NOT_IMPORTED:
+        value = min(round(score.value * NOT_IMPORTED_PRIORITY_FACTOR, 1), NOT_IMPORTED_PRIORITY_CAP)
+        return score.model_copy(
+            update={
+                "value": value,
+                "band": _band_for(value),
+                "verdict": NOT_IMPORTED_VERDICT,
+                "rationale": f"{score.rationale}; {label}",
+            }
+        )
+    return score.model_copy(update={"rationale": f"{score.rationale}; {label}"})
+
+
+def score_match(
+    matched: MatchedAdvisory, reachability: Reachability | None = None
+) -> ScoredFinding:
+    """Score a single matched advisory, optionally adjusting for its reachability tier."""
     cvss_base, _ = advisory_severity(matched.advisory)
     epss = matched.epss.probability if matched.epss is not None else None
     score = compute_score(cvss_base=cvss_base, epss_probability=epss, in_kev=matched.in_kev)
-    return ScoredFinding(matched=matched, score=score)
+    if reachability is not None:
+        score = apply_reachability(score, reachability)
+    return ScoredFinding(matched=matched, score=score, reachability=reachability)
 
 
 def _sort_key(finding: ScoredFinding) -> tuple[float, str, str, str]:
@@ -152,6 +195,11 @@ def _sort_key(finding: ScoredFinding) -> tuple[float, str, str, str]:
         finding.matched.dependency.name,
         finding.matched.dependency.version or "",
     )
+
+
+def order_findings(findings: Iterable[ScoredFinding]) -> list[ScoredFinding]:
+    """Deterministically order scored findings (highest priority first)."""
+    return sorted(findings, key=_sort_key)
 
 
 def score_matches(matches: Iterable[MatchedAdvisory]) -> list[ScoredFinding]:

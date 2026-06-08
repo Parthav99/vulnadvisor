@@ -23,6 +23,7 @@ from vulnadvisor.model.imports import (
     ImportParseError,
     ImportSite,
 )
+from vulnadvisor.model.reachability import Reachability, ReachabilityTier
 from vulnadvisor.model.safe_fix import SafeFix
 from vulnadvisor.model.score import PriorityBand, Score, ScoredFinding
 
@@ -46,6 +47,8 @@ __all__ = [
     "MatchResult",
     "MatchedAdvisory",
     "PriorityBand",
+    "Reachability",
+    "ReachabilityTier",
     "SafeFix",
     "Score",
     "ScoredFinding",

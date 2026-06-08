@@ -30,6 +30,20 @@ uv run mypy --strict src
 uv run pytest
 ```
 
+## Reachability tiers (the noise-killer)
+
+Every finding carries a **confidence tier** — VulnAdvisor never gives a binary "reachable / not":
+
+- `IMPORTED-AND-CALLED` — a concrete call path to the vulnerable symbol exists (function-level, coming in M6).
+- `IMPORTED` — the package is imported by your code (evidence: the import site, `file:line`).
+- `DYNAMIC-UNKNOWN` — dynamic import/exec, unreadable files, or an uncertain import-name mapping
+  mean usage **cannot be ruled out**. Never treated as safe.
+- `NOT-IMPORTED` — the package is never imported. The **only** confidently-safe tier; these are
+  deprioritized and labeled "No path from your code".
+
+Soundness is the rule: a false "you're safe" can cause a breach, so anything uncertain escalates
+to `DYNAMIC-UNKNOWN` rather than being silently downgraded.
+
 ## Priority scoring (deterministic)
 
 Priority is computed by code and is fully reproducible — no randomness, no clock, no I/O. The

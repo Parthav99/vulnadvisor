@@ -12,7 +12,7 @@
 | | Verdict: Fix now  (priority 91.9, critical)                                                  | |
 | | Fix: pip install --upgrade "Jinja2>=2.10.1"                                                  | |
 | | Minimal safe upgrade: 2.10.1.                                                                | |
-| | Evidence: package-level match (reachability analysis not yet run)                            | |
+| | Reachability: not analyzed                                                                   | |
 | +----------------------------------------------------------------------------------------------+ |
 +--------------------------------------------------------------------------------------------------+
 +- Flask 0.12  |  GHSA-flask-dos0  |  priority 22.4 (low) -----------------------------------------+
@@ -28,6 +28,6 @@
 | | Verdict: Monitor  (priority 22.4, low)                                                       | |
 | | Fix: pip install --upgrade "Flask>=0.12.3"                                                   | |
 | | Minimal safe upgrade: 0.12.3.                                                                | |
-| | Evidence: package-level match (reachability analysis not yet run)                            | |
+| | Reachability: not analyzed                                                                   | |
 | +----------------------------------------------------------------------------------------------+ |
 +--------------------------------------------------------------------------------------------------+

@@ -5,6 +5,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict
 
 from vulnadvisor.model.advisory import MatchedAdvisory
+from vulnadvisor.model.reachability import Reachability
 
 
 class PriorityBand(str, Enum):
@@ -46,9 +47,10 @@ class Score(BaseModel):
 
 
 class ScoredFinding(BaseModel):
-    """A matched advisory paired with its deterministic score."""
+    """A matched advisory paired with its deterministic score and reachability tier."""
 
     model_config = ConfigDict(frozen=True)
 
     matched: MatchedAdvisory
     score: Score
+    reachability: Reachability | None = None

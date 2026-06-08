@@ -4,6 +4,50 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 4.2 — Tiering (NOT-IMPORTED / IMPORTED / DYNAMIC-UNKNOWN)  →  release v0.3  (2026-06-08)
+
+**Status:** complete, security-critical Validation Gate passing. **M4 done; tagged v0.3 — the
+first version that delivers the core promise.**
+
+**What changed**
+- `model/reachability.py`: `ReachabilityTier` (IMPORTED_AND_CALLED / IMPORTED / DYNAMIC_UNKNOWN /
+  NOT_IMPORTED) + `Reachability` (tier, reason, import-site evidence, dynamic evidence).
+- `reachability/tiering.py`: `compute_reachability(dep, graph)` / `assign_tier`. IMPORTED when an
+  import root matches (evidence = sites); DYNAMIC_UNKNOWN when no source analyzed / dynamic sites
+  / parse errors / LOW-confidence import-name mapping; NOT_IMPORTED only when confidently safe.
+- `model/imports.py`: added `analyzed_file_count` (so "no code scanned" can't masquerade as safe).
+- `engine/scoring.py`: `apply_reachability` — NOT_IMPORTED scaled down + capped into INFO and
+  relabeled "No path from your code"; every other tier keeps full priority (never downgraded),
+  rationale annotated. `score_match(matched, reachability=None)`, `order_findings`. `ScoredFinding`
+  gained an optional `reachability`.
+- `cli/pipeline.py`: builds the import graph, computes reachability once per dependency, folds it
+  into the score. Card C / JSON (`reachability` block with file:line evidence) / SARIF
+  (`reachability_tier`) all surface the tier.
+- Fixtures A/B/C (`fixtures/projects/reach_*`) + `tests/test_reachability.py` (18 tests).
+  Bumped version to **0.3.0**; regenerated snapshots.
+
+**Why these choices (soundness first)**
+- A false "not imported" is a breach risk, so NOT_IMPORTED is gated hard: it requires real
+  analyzed code, a static import-name match miss, no dynamic constructs, no parse errors, and a
+  HIGH/MEDIUM-confidence import mapping. Anything else -> DYNAMIC_UNKNOWN (kept at full priority).
+- DYNAMIC_UNKNOWN is **never** silently downgraded — it retains the full deterministic score.
+- Evidence is shown (`file:line`) for IMPORTED, satisfying "show why".
+
+**Validation evidence (release-blocking gate)**
+- Fixture A (imports PyYAML) -> IMPORTED, stays high; Fixture B (declares, never imports) ->
+  NOT_IMPORTED, deprioritized to INFO; Fixture C (dynamic import) -> DYNAMIC_UNKNOWN, not
+  downgraded. **Zero false negatives** asserted across the suite (reachable/uncertain never
+  marked safe), plus no-source/parse-error/low-confidence escalation safeguards.
+- ruff + format clean; `mypy --strict src` clean (38 files); **pytest 170 passed**.
+- **Live run** (real OSV, PyYAML 5.3.1): identical declared dep + 2 real CVEs ->
+  A (imports yaml) IMPORTED with `app.py:1` evidence; B (never imports) all NOT-IMPORTED / INFO /
+  "No path from your code". The noise reduction works end-to-end.
+
+**Open questions**
+- None blocking. v0.3 shipped. Next: M5 — vulnerable-symbol dataset (Task 5.1, the moat).
+
+---
+
 ## Task 4.1 — Import graph of first-party code  (2026-06-08)
 
 **Status:** complete, Validation Gate passing. (M4 reachability begins.)

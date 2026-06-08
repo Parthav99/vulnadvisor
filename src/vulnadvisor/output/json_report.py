@@ -15,6 +15,7 @@ Schema (``schema_version`` 1.0) — top-level object::
           "epss":       {"probability": <float>, "percentile": <float>} | null,
           "in_kev":     <bool>,
           "score":      {"value": <float>, "band", "verdict", "rationale", "cvss_known": <bool>},
+          "reachability": {"tier", "reason", "evidence": [{"file", "line"}]} | null,
           "fix":        {"command": <str>|null, "fixed_version": <str>|null, "has_fix": <bool>,
                           "is_major_jump": <bool>, "available_fixes": [...], "note": <str>}
         }
@@ -43,6 +44,7 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
     advisory = finding.matched.advisory
     epss = finding.matched.epss
     score = finding.score
+    reachability = finding.reachability
     safe_fix = resolve_safe_fix(dependency, advisory)
     return {
         "dependency": {
@@ -73,6 +75,17 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
             "rationale": score.rationale,
             "cvss_known": score.cvss_known,
         },
+        "reachability": (
+            {
+                "tier": reachability.tier.value,
+                "reason": reachability.reason,
+                "evidence": [
+                    {"file": site.file, "line": site.lineno} for site in reachability.evidence
+                ],
+            }
+            if reachability is not None
+            else None
+        ),
         "fix": {
             "command": fix_command(dependency, safe_fix),
             "fixed_version": safe_fix.fixed_version,
