@@ -1,0 +1,13 @@
+{
+    "status": "OK",
+    "status-code": 200,
+    "version": "1.0",
+    "data": [
+        {
+            "cve": "CVE-2019-10906",
+            "epss": "0.94500",
+            "percentile": "0.99100",
+            "date": "2024-05-01"
+        }
+    ]
+}

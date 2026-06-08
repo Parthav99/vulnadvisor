@@ -4,6 +4,49 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 2.1 — Advisory clients (OSV, EPSS, KEV) with cache  (2026-06-08)
+
+**Status:** complete, Validation Gate passing.
+
+**What changed**
+- `model/advisory.py`: `Advisory` (with a `cve_ids` property), `EpssScore`, `MatchedAdvisory`,
+  and `MatchResult` (carries `degraded_sources`). Re-exported from `model/__init__.py`.
+- `store/cache.py`: `SqliteCache` — a TTL'd key/value store (negative TTL = never expires;
+  `now` injectable for deterministic expiry tests). Re-exported from `store/__init__.py`.
+- `advisories/transport.py`: `Transport` Protocol + stdlib `UrllibTransport` + `TransportError`
+  (no new dependency — uses `urllib`).
+- `advisories/parsing.py`: `safe_json` / `safe_str` / `safe_float` defensive helpers.
+- `advisories/clients.py`: `OSVClient` (`/v1/query` by package+version), `EpssClient` (batched,
+  caches misses too), `KevClient` (catalog membership). All cache-before-network.
+- `advisories/matcher.py`: `AdvisoryMatcher.match(deps) -> MatchResult`, enriching each advisory
+  with the best EPSS score across its CVEs and a KEV flag.
+- Fixtures `fixtures/api/{osv_jinja2,epss,kev}.json`; `tests/test_advisories.py` (16 tests).
+
+**Why these choices**
+- **No live network in tests:** clients depend on an injectable `Transport`; tests use a
+  counting `FakeTransport` that serves recorded fixtures and simulates outages.
+- **Soundness / degraded mode:** a source outage surfaces as `TransportError`, which the matcher
+  catches and records in `degraded_sources` — results are then explicitly *incomplete*, never
+  silently treated as "safe". A malformed response body (vs. an outage) degrades to empty via the
+  `safe_*` parsers and is **not** flagged degraded, since the HTTP call itself succeeded.
+- **Cache correctness:** every client checks the cache first and stores raw JSON with a 24h TTL;
+  EPSS caches *misses* as well so absent CVEs are not re-queried. A second `match()` makes zero
+  network calls (asserted).
+- Left `Advisory.cvss_score` as `None` for now; numeric CVSS will be derived from the vector by
+  the scoring engine in Task 2.2 (kept the vector string).
+
+**Validation evidence**
+- ruff + format clean; `mypy --strict src` clean (23 files); **pytest 69 passed**.
+- Match against fixtures yields advisory + EPSS (0.945) + KEV(true); 2nd run = 0 network calls
+  (call count stays 3); malformed/empty payloads (5 variants) never crash; OSV/EPSS/KEV outages
+  each flagged degraded without dropping the rest.
+
+**Open questions**
+- OSV `/v1/query` returns full vuln objects but not a numeric CVSS base score — Task 2.2 will
+  parse the CVSS vector to a number. Still pending: `uv add packaging` for Task 3.2 range math.
+
+---
+
 ## Task 1.2 — Package → import-name mapping  (2026-06-08)
 
 **Status:** complete, Validation Gate passing.
