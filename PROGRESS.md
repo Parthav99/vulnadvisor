@@ -4,6 +4,51 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 3.1 — JSON + SARIF output and exit codes  (2026-06-08)
+
+**Status:** complete, Validation Gate passing. (M3 in progress; v0.2 tag comes after Task 3.2.)
+
+**What changed**
+- Added dev-only dep `jsonschema==4.26.0` and vendored the official SARIF 2.1.0 schema at
+  `fixtures/schemas/sarif-2.1.0.json` (fetched once) for offline schema validation in tests.
+- `output/remediation.py`: moved `fix_command` here (neutral home shared by terminal/JSON/SARIF;
+  avoids a cli<->output import cycle). `cli/render.py` now imports it.
+- `output/json_report.py`: `build_report` / `to_json` — stable, documented `schema_version` 1.0
+  report (tool, degraded_sources, summary.by_band, ordered findings). ASCII-safe.
+- `output/sarif.py`: `build_sarif` / `to_sarif_json` — SARIF 2.1.0; one rule per advisory, one
+  result per finding; band->level (error/warning/note); `security-severity` so GitHub orders by
+  our priority; locations point at the manifest file.
+- `output/gating.py`: `parse_fail_on` (band name or 0-100 score), `should_fail`, exit constants.
+- `cli/main.py`: `scan` gains `--format terminal|json|sarif`; `--fail-on` now validated up-front
+  and wired to exit code 1; JSON/SARIF printed as plain machine output (not Rich).
+- Tests: `tests/test_output.py` (SARIF schema validation, JSON snapshot, fail-on table) +
+  `fixtures/snapshots/report.json`; shared `sample_findings` fixture moved to `conftest.py`;
+  CLI tests for json/sarif/exit-code paths.
+
+**Why these choices**
+- **SARIF validated against the real 2.1.0 schema** (not just shape asserts) using `jsonschema`
+  + the vendored schema — exactly the gate, and it keeps the emitter honest as it evolves.
+- JSON schema kept explicit/hand-built (not pydantic dump) so the public contract is stable and
+  documented independent of internal model changes; snapshot-tested.
+- `--fail-on` accepts a band *or* a numeric score; exits 1 if **any** finding meets/exceeds it.
+  Validated before scanning so bad input fails fast (exit 2 usage error).
+
+**Validation evidence**
+- ruff + format clean; `mypy --strict src` clean (32 files); **pytest 132 passed**.
+- SARIF output validates against SARIF 2.1.0 schema (test asserts zero schema errors).
+- JSON snapshot stable; **live run**: `--format json` -> schema 1.0 / 15 findings; `--format
+  sarif` -> version 2.1.0 / 15 results+rules; `--fail-on low` -> exit 1, `--fail-on critical`
+  -> exit 0.
+
+**Open questions / notes**
+- Degraded sources are reported in JSON/SARIF but do **not** by themselves change the exit code
+  (only findings-vs-threshold does). Flagging in case we want a `--fail-on-degraded` later for
+  stricter CI soundness.
+- Still pending: `uv add packaging` for Task 3.2 (safe-fix version-range math) — proposing now,
+  since 3.2 is next and needs PEP 440 range handling.
+
+---
+
 ## Task 2.3 — 3-card terminal output (Rich)  →  release v0.1  (2026-06-08)
 
 **Status:** complete, Validation Gate passing. **Milestone M2 done; tagged v0.1.**

@@ -67,6 +67,27 @@ Bands → verdicts:
 CVSS base scores are computed from the advisory's CVSS v3.x vector per the official
 [CVSS v3.1 specification](https://www.first.org/cvss/v3.1/specification-document).
 
+## Output formats & CI gating
+
+`vulnadvisor scan PATH --format {terminal,json,sarif}`:
+
+- **terminal** (default) — the three-card view.
+- **json** — a stable machine report (`schema_version` 1.0). Top-level: `tool`,
+  `degraded_sources`, `summary` (`total` + `by_band`), and `findings[]` (each with
+  `dependency`, `advisory` incl. `cve_ids`/`cvss_base`, `epss`, `in_kev`, `score`, `fix`).
+  Findings are ordered by descending priority.
+- **sarif** — valid **SARIF 2.1.0**, so results show up in the GitHub Security tab. Band maps to
+  SARIF `level` (error/warning/note) and `security-severity` is set so GitHub orders by our
+  triage priority.
+
+`--fail-on <band|score>` sets the exit code: the scan exits **1** when any finding meets or
+exceeds the threshold (a band name like `high`, or a number `0`–`100`), else **0**. Invalid
+values are a usage error (exit 2). Example CI gate:
+
+```bash
+vulnadvisor scan . --format sarif --fail-on high > results.sarif
+```
+
 ## License
 
 Apache-2.0 (planned for the open-core engine).

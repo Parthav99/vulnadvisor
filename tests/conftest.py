@@ -12,6 +12,15 @@ from vulnadvisor.advisories import (
     OSVClient,
     TransportError,
 )
+from vulnadvisor.engine.scoring import score_match
+from vulnadvisor.model import (
+    Advisory,
+    Dependency,
+    DependencySource,
+    EpssScore,
+    MatchedAdvisory,
+    ScoredFinding,
+)
 from vulnadvisor.store import SqliteCache
 
 _FIX = Path(__file__).resolve().parent.parent / "fixtures" / "api"
@@ -58,3 +67,43 @@ def fake_matcher() -> Callable[..., AdvisoryMatcher]:
         )
 
     return make
+
+
+@pytest.fixture
+def sample_findings() -> list[ScoredFinding]:
+    """Two deterministic scored findings (CRITICAL jinja2, LOW flask) in priority order."""
+    jinja = MatchedAdvisory(
+        dependency=Dependency(
+            name="jinja2",
+            raw_name="Jinja2",
+            version="2.10",
+            source=DependencySource.REQUIREMENTS_TXT,
+            is_direct=True,
+        ),
+        advisory=Advisory(
+            id="GHSA-462w-v97r-4m45",
+            aliases=("CVE-2019-10906",),
+            summary="Jinja2 sandbox escape via str.format_map.",
+            cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+        ),
+        epss=EpssScore(cve="CVE-2019-10906", probability=0.945, percentile=0.991),
+        in_kev=True,
+    )
+    flask = MatchedAdvisory(
+        dependency=Dependency(
+            name="flask",
+            raw_name="Flask",
+            version="0.12",
+            source=DependencySource.REQUIREMENTS_TXT,
+            is_direct=True,
+        ),
+        advisory=Advisory(
+            id="GHSA-flask-dos0",
+            aliases=("CVE-2018-1000656",),
+            summary="Flask denial of service via crafted JSON.",
+            cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+        ),
+        epss=EpssScore(cve="CVE-2018-1000656", probability=0.02, percentile=0.40),
+        in_kev=False,
+    )
+    return [score_match(jinja), score_match(flask)]

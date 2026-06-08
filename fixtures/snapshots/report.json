@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "tool": {
+    "name": "vulnadvisor",
+    "version": "0.1.0"
+  },
+  "degraded_sources": [
+    "OSV"
+  ],
+  "summary": {
+    "total": 2,
+    "by_band": {
+      "critical": 1,
+      "high": 0,
+      "medium": 0,
+      "low": 1,
+      "info": 0
+    }
+  },
+  "findings": [
+    {
+      "dependency": {
+        "name": "jinja2",
+        "version": "2.10",
+        "source": "requirements.txt",
+        "is_direct": true
+      },
+      "advisory": {
+        "id": "GHSA-462w-v97r-4m45",
+        "aliases": [
+          "CVE-2019-10906"
+        ],
+        "cve_ids": [
+          "CVE-2019-10906"
+        ],
+        "summary": "Jinja2 sandbox escape via str.format_map.",
+        "cvss_base": 8.8,
+        "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:H/A:H",
+        "source": "OSV"
+      },
+      "epss": {
+        "probability": 0.945,
+        "percentile": 0.991
+      },
+      "in_kev": true,
+      "score": {
+        "value": 91.9,
+        "band": "critical",
+        "verdict": "Fix now",
+        "rationale": "KEV-listed (known exploited in the wild); EPSS 0.945; CVSS 8.8",
+        "cvss_known": true
+      },
+      "fix": {
+        "command": "pip install --upgrade Jinja2"
+      }
+    },
+    {
+      "dependency": {
+        "name": "flask",
+        "version": "0.12",
+        "source": "requirements.txt",
+        "is_direct": true
+      },
+      "advisory": {
+        "id": "GHSA-flask-dos0",
+        "aliases": [
+          "CVE-2018-1000656"
+        ],
+        "cve_ids": [
+          "CVE-2018-1000656"
+        ],
+        "summary": "Flask denial of service via crafted JSON.",
+        "cvss_base": 5.3,
+        "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L",
+        "source": "OSV"
+      },
+      "epss": {
+        "probability": 0.02,
+        "percentile": 0.4
+      },
+      "in_kev": false,
+      "score": {
+        "value": 22.4,
+        "band": "low",
+        "verdict": "Monitor",
+        "rationale": "EPSS 0.020; CVSS 5.3",
+        "cvss_known": true
+      },
+      "fix": {
+        "command": "pip install --upgrade Flask"
+      }
+    }
+  ]
+}

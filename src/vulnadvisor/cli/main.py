@@ -1,5 +1,6 @@
 """VulnAdvisor command-line entrypoint (Typer app)."""
 
+from enum import Enum
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
@@ -13,7 +14,19 @@ from vulnadvisor.advisories.matcher import AdvisoryMatcher
 from vulnadvisor.advisories.transport import UrllibTransport
 from vulnadvisor.cli.pipeline import scan_project
 from vulnadvisor.cli.render import render_report
+from vulnadvisor.output.gating import parse_fail_on, should_fail
+from vulnadvisor.output.json_report import to_json
+from vulnadvisor.output.sarif import to_sarif_json
 from vulnadvisor.store.cache import SqliteCache, default_cache_path
+
+
+class OutputFormat(str, Enum):
+    """Supported output formats for ``scan``."""
+
+    TERMINAL = "terminal"
+    JSON = "json"
+    SARIF = "sarif"
+
 
 app = typer.Typer(
     name="vulnadvisor",
@@ -79,6 +92,10 @@ def scan(
             help="Path to the Python project to scan.",
         ),
     ],
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option("--format", help="Output format for results."),
+    ] = OutputFormat.TERMINAL,
     public: Annotated[
         bool,
         typer.Option(
@@ -90,16 +107,37 @@ def scan(
         str | None,
         typer.Option(
             "--fail-on",
-            help="Exit non-zero when findings meet/exceed this tier or score (not yet enforced).",
+            help="Exit non-zero when any finding meets/exceeds this band or score (0-100).",
         ),
     ] = None,
 ) -> None:
-    """Scan PATH for vulnerable dependencies and print the ranked three-card report.
+    """Scan PATH for vulnerable dependencies and emit ranked, prioritized results.
 
     Matches declared/locked dependencies against OSV, enriches with EPSS and CISA KEV, and ranks
-    by the deterministic priority score. ``--fail-on`` is accepted but not yet enforced (exit-code
-    gating arrives in Task 3.1); ``--public/--internal`` is reserved for reachability (M4+).
+    by the deterministic priority score. ``--format`` selects the terminal three-card view, JSON,
+    or SARIF 2.1.0 (for GitHub code scanning). ``--fail-on`` gates the exit code.
+    ``--public/--internal`` is reserved for reachability (M4+).
     """
-    _ = (public, fail_on)  # reserved for later milestones; accepted now for a stable CLI surface
+    _ = public  # reserved for later milestones; accepted now for a stable CLI surface
+
+    # Validate --fail-on before doing any work so bad input fails fast.
+    threshold = None
+    if fail_on is not None:
+        try:
+            threshold = parse_fail_on(fail_on)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--fail-on") from exc
+
     report = scan_project(path, build_matcher())
-    render_report(report.findings, report.degraded_sources, Console())
+
+    if output_format is OutputFormat.JSON:
+        print(to_json(report.findings, report.degraded_sources, tool_version=_resolve_version()))
+    elif output_format is OutputFormat.SARIF:
+        print(
+            to_sarif_json(report.findings, report.degraded_sources, tool_version=_resolve_version())
+        )
+    else:
+        render_report(report.findings, report.degraded_sources, Console())
+
+    if threshold is not None and should_fail(report.findings, threshold):
+        raise typer.Exit(code=1)

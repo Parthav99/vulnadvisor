@@ -21,8 +21,8 @@ from rich.console import Console, Group
 from rich.panel import Panel
 from rich.text import Text
 
-from vulnadvisor.model.dependency import Dependency, DependencySource
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
+from vulnadvisor.output.remediation import fix_command
 
 __all__ = ["badge_for_band", "fix_command", "render_report", "render_to_string"]
 
@@ -37,16 +37,6 @@ def badge_for_band(band: PriorityBand) -> str:
     if band is PriorityBand.MEDIUM:
         return "YELLOW"
     return "GREEN"
-
-
-def fix_command(dependency: Dependency) -> str:
-    """Return a templated upgrade command appropriate to the dependency's manifest type."""
-    name = dependency.raw_name or dependency.name
-    if dependency.source is DependencySource.POETRY_LOCK:
-        return f"poetry update {name}"
-    if dependency.source is DependencySource.PIPFILE_LOCK:
-        return f"pipenv update {name}"
-    return f"pip install --upgrade {name}"
 
 
 def _attack_summary(finding: ScoredFinding) -> str:

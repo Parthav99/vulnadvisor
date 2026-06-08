@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -47,11 +48,72 @@ def test_scan_no_findings_message(
     monkeypatch,  # type: ignore[no-untyped-def]
     fake_matcher: Callable[..., AdvisoryMatcher],
 ) -> None:
-    # A dependency OSV won't match (fixture only returns jinja2 data for any OSV call), so use a
-    # project whose only dep is something the matcher maps to no advisory by emptying OSV.
+    # With OSV down, no advisories are matched and the source is flagged degraded (not "safe").
     (tmp_path / "requirements.txt").write_text("leftpad==1.0.0\n", encoding="utf-8")
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher({"OSV"}))
 
     result = runner.invoke(app, ["scan", str(tmp_path)])
     assert result.exit_code == 0
     assert "Degraded sources: OSV" in result.stdout
+
+
+def _project(tmp_path: Path) -> Path:
+    (tmp_path / "requirements.txt").write_text("jinja2==2.10\n", encoding="utf-8")
+    return tmp_path
+
+
+def test_scan_json_format(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    result = runner.invoke(app, ["scan", str(_project(tmp_path)), "--format", "json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "1.0"
+    assert payload["summary"]["total"] == 1
+    assert payload["findings"][0]["dependency"]["name"] == "jinja2"
+
+
+def test_scan_sarif_format(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    result = runner.invoke(app, ["scan", str(_project(tmp_path)), "--format", "sarif"])
+    assert result.exit_code == 0
+    log = json.loads(result.stdout)
+    assert log["version"] == "2.1.0"
+    assert log["runs"][0]["results"][0]["ruleId"] == "GHSA-462w-v97r-4m45"
+
+
+def test_scan_fail_on_triggers_nonzero_exit(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    result = runner.invoke(app, ["scan", str(_project(tmp_path)), "--fail-on", "high"])
+    assert result.exit_code == 1  # jinja2 finding is CRITICAL >= high
+
+
+def test_scan_fail_on_below_threshold_exits_zero(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    result = runner.invoke(app, ["scan", str(_project(tmp_path)), "--fail-on", "100"])
+    assert result.exit_code == 0
+
+
+def test_scan_invalid_fail_on_is_usage_error(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    result = runner.invoke(app, ["scan", str(_project(tmp_path)), "--fail-on", "bogus"])
+    assert result.exit_code == 2  # Typer usage error
