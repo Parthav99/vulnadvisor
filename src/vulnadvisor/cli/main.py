@@ -166,6 +166,14 @@ def scan(
             help="Exit non-zero when any finding meets/exceeds this band or score (0-100).",
         ),
     ] = None,
+    top: Annotated[
+        int | None,
+        typer.Option(
+            "--top",
+            min=1,
+            help="Limit output to the top N findings by priority score (default: no limit).",
+        ),
+    ] = None,
     no_cache: Annotated[
         bool,
         typer.Option(
@@ -200,7 +208,9 @@ def scan(
     Matches declared/locked dependencies against OSV, enriches with EPSS and CISA KEV, and ranks
     by the deterministic priority score. ``--format`` selects the terminal three-card view, JSON,
     or SARIF 2.1.0 (for GitHub code scanning). ``--fail-on`` gates the exit code.
-    ``--public/--internal`` is reserved for reachability (M4+).
+    ``--top N`` limits the *output* to the N highest-priority findings (ranking is unchanged;
+    the exit-code gate still considers every finding). ``--public/--internal`` is reserved for
+    reachability (M4+).
     """
     _ = public  # reserved for later milestones; accepted now for a stable CLI surface
 
@@ -228,18 +238,20 @@ def scan(
         if analysis_cache is not None:
             analysis_cache.close()
 
+    # Findings are already ranked by priority (order_findings); --top is a pure display limit on
+    # the leading N. It never reorders and never affects --fail-on, which gates over every finding.
+    shown = report.findings if top is None else report.findings[:top]
+
     if output_format is OutputFormat.JSON:
-        print(to_json(report.findings, report.degraded_sources, tool_version=_resolve_version()))
+        print(to_json(shown, report.degraded_sources, tool_version=_resolve_version()))
     elif output_format is OutputFormat.SARIF:
-        print(
-            to_sarif_json(report.findings, report.degraded_sources, tool_version=_resolve_version())
-        )
+        print(to_sarif_json(shown, report.degraded_sources, tool_version=_resolve_version()))
     else:
         explanations = None
         if not no_explain:
             explainer = build_explainer()
-            explanations = [explainer.explain(finding) for finding in report.findings]
-        render_report(report.findings, report.degraded_sources, Console(), explanations)
+            explanations = [explainer.explain(finding) for finding in shown]
+        render_report(shown, report.degraded_sources, Console(), explanations)
 
     if threshold is not None and should_fail(report.findings, threshold):
         raise typer.Exit(code=1)

@@ -123,6 +123,73 @@ def test_scan_invalid_fail_on_is_usage_error(
     assert result.exit_code == 2  # Typer usage error
 
 
+def test_scan_top_limits_json_output(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+    sample_findings,  # type: ignore[no-untyped-def]
+) -> None:
+    from vulnadvisor.cli.pipeline import ScanReport
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "scan_project", lambda *a, **k: ScanReport(sample_findings, ()))
+
+    # Without --top, both ranked findings are emitted.
+    full = runner.invoke(app, ["scan", str(_project(tmp_path)), "--format", "json"])
+    assert json.loads(full.stdout)["summary"]["total"] == 2
+
+    # --top 1 keeps only the highest-priority finding (jinja2), in unchanged order.
+    res = runner.invoke(app, ["scan", str(_project(tmp_path)), "--format", "json", "--top", "1"])
+    payload = json.loads(res.stdout)
+    assert payload["summary"]["total"] == 1
+    assert payload["findings"][0]["dependency"]["name"] == "jinja2"
+
+
+def test_scan_top_terminal_hides_lower_finding(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+    sample_findings,  # type: ignore[no-untyped-def]
+) -> None:
+    from vulnadvisor.cli.pipeline import ScanReport
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "build_explainer", lambda: Explainer(client=None))
+    monkeypatch.setattr(cli_main, "scan_project", lambda *a, **k: ScanReport(sample_findings, ()))
+
+    res = runner.invoke(app, ["scan", str(_project(tmp_path)), "--top", "1"])
+    assert res.exit_code == 0
+    assert "Jinja2" in res.stdout  # the top finding is shown
+    assert "Flask" not in res.stdout  # the lower-priority finding is hidden
+
+
+def test_scan_top_does_not_weaken_fail_on_gate(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+    sample_findings,  # type: ignore[no-untyped-def]
+) -> None:
+    # --top is a display limit only: --fail-on still gates over every finding.
+    from vulnadvisor.cli.pipeline import ScanReport
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "build_explainer", lambda: Explainer(client=None))
+    monkeypatch.setattr(cli_main, "scan_project", lambda *a, **k: ScanReport(sample_findings, ()))
+
+    res = runner.invoke(app, ["scan", str(_project(tmp_path)), "--top", "1", "--fail-on", "high"])
+    assert res.exit_code == 1  # the CRITICAL jinja2 finding still trips the gate
+
+
+def test_scan_top_zero_is_usage_error(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    result = runner.invoke(app, ["scan", str(_project(tmp_path)), "--top", "0"])
+    assert result.exit_code == 2  # Typer rejects --top below the min of 1
+
+
 def test_backfill_command(
     tmp_path: Path,
     monkeypatch,  # type: ignore[no-untyped-def]

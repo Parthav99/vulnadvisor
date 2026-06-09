@@ -4,6 +4,26 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## scan `--top N` flag + release-workflow auth fixes  (2026-06-09)
+
+**Status:** complete, Validation Gate passing.
+
+**`--top N`** (new `scan` option): limits *output* to the N highest-priority findings. Pure display
+limit on the already-ranked list (`order_findings`) — **no scoring/ranking change**. Applied to all
+three formats (terminal/JSON/SARIF) via `shown = report.findings[:top]`; `--fail-on` still gates over
+**every** finding, so a display cap can never weaken the exit-code gate. Validation via Typer
+`min=1` (a `--top 0` is a usage error). Default is no limit. 4 new CLI tests (truncation in
+JSON + terminal, gate-not-weakened, min validation); pytest 325 passed.
+
+**Release workflow (`release.yml`) auth fixes** while shipping 1.0: the publish job's `checkout`
+failed on the **private** repo. Added `token: ${{ secrets.GITHUB_TOKEN }}` (v1.0.1) and, the real
+fix, `contents: read` to the job `permissions` block (v1.0.2) — an explicit `permissions:` block had
+narrowed the token to `id-token: write` and dropped the default read scope. Release tags pushed:
+`v1.0.0` (stale-tag note below), `v1.0.1`, `v1.0.2`, `v1.0.3`. **PyPI publish still pending** —
+diagnosing whether the `pypi` GitHub environment has a required-reviewer gate holding the run.
+
+---
+
 ## Task 10.5 — Publish to PyPI + go live: reversible prep done; irreversible steps handed off  (2026-06-09)
 
 **Status:** reversible prep complete, Validation Gate passing. **The irreversible publish is
