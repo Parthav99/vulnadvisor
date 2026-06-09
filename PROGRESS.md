@@ -4,6 +4,55 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 10.4 — Public-API call-path resolution (IMPORTED-AND-CALLED on real advisories)  (2026-06-09)
+
+**Status:** complete, Validation Gate passing. (M10 — optional/recommended; strengthens the marquee call-path demo.)
+
+**Result:** the call-path demo now fires when user code calls a **public API** that reaches an
+*internal* vulnerable symbol — e.g. `parse_config -> yaml.load`. Closes the Task 6.1 gap (the live
+run found 0 IMPORTED-AND-CALLED because real advisories patch internal functions the user never
+calls directly). Demonstrated on **3 real advisories** with the full path shown, with the soundness
+gate (zero false AND-CALLED) intact.
+
+**What changed**
+- New `callgraph/public_api.py`: a curated, hand-verified map for marquee packages — PyYAML
+  (`load`/`load_all`/`unsafe_load` -> `make_python_instance`/`construct_python_*`, CVE-2020-14343),
+  requests (`get`/`post`/... -> `resolve_redirects`/`rebuild_auth`, CVE-2018-18074), PyJWT
+  (`decode` -> `_verify_signature`, CVE-2022-29217). Two soundness guards: a rule contributes its
+  public APIs **only when the advisory's own vulnerable symbols intersect the rule's internal
+  symbols** (so an unrelated advisory on the same package never flags the API), and `safe_args`
+  clears a provably-safe call (`yaml.load(x, Loader=SafeLoader)`).
+- `callgraph/call_paths.py`: `find_vulnerable_call_paths` gains a `guarded_apis` map (public API ->
+  safe-arg identifiers); `_vuln_call_name` clears a matched public API when the call references a
+  safe-path argument. Threaded through the per-file node builder.
+- `reachability/tiering.py`: `refine_reachability` augments the searched symbol set with
+  `public_apis_reaching(dependency.name, advisory_symbols)` and passes `safe_args_for(...)`.
+
+**Why these choices**
+- Curated public-API map (vs. a shallow intra-library call graph): tractable, fully sound, and the
+  rule only fires on an advisory whose *own* symbols match — it never invents a path. The
+  `safe_args` guard keeps precision at the call-argument level, not just the API name (so safe usage
+  is correctly not reported, which is what the soundness gate checks).
+- Matching covers `pkg.api(...)` and `from pkg import api; api(...)`; the three packages were chosen
+  partly because their dangerous public API is called in exactly those forms (and PyYAML/PyJWT map
+  to `yaml`/`jwt` via the curated import-name table).
+
+**Validation evidence**
+- New `tests/test_public_api_callpaths.py` (10 cases): yaml.load / requests.get / jwt.decode each
+  show the full path ending at the public API; soundness — `yaml.safe_load`, `yaml.load` with a safe
+  `Loader`, and an unrelated advisory (`scan_to_next_token`) are NOT reported; plus unit tests for
+  the curated map's intersection requirement.
+- ruff check clean; ruff format --check clean; `mypy --strict src` clean (55 files); **pytest 321
+  passed**; hermetic benchmark unchanged (54%, 0 FN, 0 new false AND-CALLED).
+
+**Open questions**
+- The live `--live` benchmark still reports 0 IMPORTED-AND-CALLED: its snippet computes *package*-
+  level reachability only (it has no per-advisory vulnerable-symbol dataset in the throwaway venv),
+  so it never exercises `refine_reachability`. The feature is proven via the scan's reachability
+  step (the fixtures); wiring the symbol dataset into the live run would be a separate enhancement.
+
+---
+
 ## Task 10.3 — First-party dynamic-import resolution + bounded loader detection  (2026-06-09)
 
 **Status:** complete, Validation Gate passing. (M10 — make noise reduction real on real code; gates publish 10.5.)

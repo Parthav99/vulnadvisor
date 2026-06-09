@@ -23,6 +23,7 @@ from vulnadvisor.callgraph.call_paths import (
     PackageReflection,
     find_vulnerable_call_paths,
 )
+from vulnadvisor.callgraph.public_api import public_apis_reaching, safe_args_for
 from vulnadvisor.callgraph.type_resolver import TypeResolver
 from vulnadvisor.deps.import_mapping import resolve_import_names
 from vulnadvisor.model.callpath import CallPath, CallStep
@@ -127,12 +128,19 @@ def refine_reachability(
     if not names or base.tier is ReachabilityTier.NOT_IMPORTED:
         return base
 
+    # When the patched symbol is an internal one the user never calls directly, also search for the
+    # public APIs that provably reach it (e.g. yaml.load -> make_python_instance) -- only when the
+    # advisory's own symbols match a curated rule, so an unrelated advisory adds nothing.
+    public_apis = public_apis_reaching(dependency.name, names)
+    guarded = safe_args_for(dependency.name, names)
+
     mapping = resolve_import_names(dependency.raw_name or dependency.name)
     result = find_vulnerable_call_paths(
         project_dir,
         import_names=mapping.import_names,
-        vulnerable_names=names,
+        vulnerable_names=names | public_apis,
         entry_points=entry_points,
+        guarded_apis=guarded,
     )
 
     if result.paths:

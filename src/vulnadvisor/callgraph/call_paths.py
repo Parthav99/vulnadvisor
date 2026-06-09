@@ -15,7 +15,7 @@ computed callee) are flagged separately because no resolver can pin them down.
 
 import ast
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -94,13 +94,35 @@ def _bindings(
     return module_aliases, imported_vuln_names
 
 
+def _arg_ident(node: ast.expr) -> str | None:
+    """Return an argument's trailing identifier (a ``Name`` id or an ``Attribute`` attr)."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _call_is_safe(call: ast.Call, safe_args: frozenset[str]) -> bool:
+    """Whether ``call`` references a safe-path argument (e.g. ``Loader=SafeLoader``)."""
+    if not safe_args:
+        return False
+    values = list(call.args) + [kw.value for kw in call.keywords]
+    return any(_arg_ident(value) in safe_args for value in values)
+
+
 def _vuln_call_name(
     call: ast.Call,
     module_aliases: set[str],
     imported_vuln_names: set[str],
     vulnerable_names: frozenset[str],
+    guarded_apis: Mapping[str, frozenset[str]],
 ) -> str | None:
-    """Return a display name if this call targets the vulnerable symbol, else ``None``."""
+    """Return a display name if this call targets the vulnerable symbol, else ``None``.
+
+    A matched public API listed in ``guarded_apis`` is *not* reported when the call references one
+    of its safe-path arguments (so ``yaml.load(x, Loader=SafeLoader)`` is correctly cleared).
+    """
     func = call.func
     if isinstance(func, ast.Attribute):
         base = func.value
@@ -109,9 +131,13 @@ def _vuln_call_name(
             and base.id in module_aliases
             and func.attr in vulnerable_names
         ):
+            if _call_is_safe(call, guarded_apis.get(func.attr, frozenset())):
+                return None
             return f"{base.id}.{func.attr}"
         return None
     if isinstance(func, ast.Name) and func.id in imported_vuln_names:
+        if _call_is_safe(call, guarded_apis.get(func.id, frozenset())):
+            return None
         return func.id
     return None
 
@@ -140,6 +166,7 @@ def _classify_call(
     module_aliases: set[str],
     imported_vuln_names: set[str],
     vulnerable_names: frozenset[str],
+    guarded_apis: Mapping[str, frozenset[str]],
     rel: str,
 ) -> None:
     """Update ``node`` with edge / vuln / reflection / opaque-dynamic info from a single call."""
@@ -157,7 +184,9 @@ def _classify_call(
     elif not isinstance(func, ast.Attribute):
         node.opaque_dynamic = True  # computed callee, e.g. handlers[key]() or factory()()
 
-    vuln = _vuln_call_name(call, module_aliases, imported_vuln_names, vulnerable_names)
+    vuln = _vuln_call_name(
+        call, module_aliases, imported_vuln_names, vulnerable_names, guarded_apis
+    )
     if vuln is not None:
         node.vuln_calls.append((vuln, call.lineno))
 
@@ -168,12 +197,21 @@ def _collect(
     module_aliases: set[str],
     imported_vuln_names: set[str],
     vulnerable_names: frozenset[str],
+    guarded_apis: Mapping[str, frozenset[str]],
     rel: str,
 ) -> None:
     """Attribute every call within ``scope`` to ``node``."""
     for child in ast.walk(scope):
         if isinstance(child, ast.Call):
-            _classify_call(child, node, module_aliases, imported_vuln_names, vulnerable_names, rel)
+            _classify_call(
+                child,
+                node,
+                module_aliases,
+                imported_vuln_names,
+                vulnerable_names,
+                guarded_apis,
+                rel,
+            )
 
 
 def _build_nodes(
@@ -182,6 +220,7 @@ def _build_nodes(
     module_aliases: set[str],
     imported_vuln_names: set[str],
     vulnerable_names: frozenset[str],
+    guarded_apis: Mapping[str, frozenset[str]],
 ) -> dict[str, _Node]:
     """Build the per-file call-graph nodes (module scope, functions, and methods)."""
     module_node = _Node(key=_MODULE_KEY, file=rel, lineno=1)
@@ -189,7 +228,9 @@ def _build_nodes(
     top_level_funcs: set[str] = set()
 
     def collect(scope: ast.AST, target: _Node) -> None:
-        _collect(scope, target, module_aliases, imported_vuln_names, vulnerable_names, rel)
+        _collect(
+            scope, target, module_aliases, imported_vuln_names, vulnerable_names, guarded_apis, rel
+        )
 
     for stmt in tree.body:
         if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -277,6 +318,7 @@ def find_vulnerable_call_paths(
     import_names: Iterable[str],
     vulnerable_names: Iterable[str],
     entry_points: Iterable[str] = (),
+    guarded_apis: Mapping[str, frozenset[str]] | None = None,
 ) -> CallGraphResult:
     """Search for call paths to the vulnerable symbol, also surfacing reflective/opaque dispatch.
 
@@ -284,12 +326,15 @@ def find_vulnerable_call_paths(
     :class:`PackageReflection` sites (``getattr`` on the package, resolvable later by type info),
     and ``has_opaque_dynamic`` for calls no analysis can pin down (``eval``/``exec`` or a computed
     callee). ``entry_points`` are framework-registered handler/view names that seed the BFS in
-    addition to the module scope, so a vuln reached only through a handler is rooted at it. An empty
-    result means no concrete call and no dispatch that could hide one.
+    addition to the module scope, so a vuln reached only through a handler is rooted at it.
+    ``guarded_apis`` maps a public-API name (already present in ``vulnerable_names``) to the
+    argument identifiers that prove a safe call, so e.g. ``yaml.load(x, Loader=SafeLoader)`` is not
+    reported. An empty result means no concrete call and no dispatch that could hide one.
     """
     import_roots = frozenset(name.split(".")[0] for name in import_names)
     vuln_names = frozenset(vulnerable_names)
     entries = frozenset(entry_points)
+    guarded = guarded_apis or {}
     if not import_roots or not vuln_names:
         return CallGraphResult()
 
@@ -306,7 +351,7 @@ def find_vulnerable_call_paths(
         module_aliases, imported_vuln_names = _bindings(tree, import_roots, vuln_names)
         if not module_aliases and not imported_vuln_names:
             continue
-        nodes = _build_nodes(rel, tree, module_aliases, imported_vuln_names, vuln_names)
+        nodes = _build_nodes(rel, tree, module_aliases, imported_vuln_names, vuln_names, guarded)
         for node in nodes.values():
             reflections.extend(node.reflections)
             if node.opaque_dynamic:
