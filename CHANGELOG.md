@@ -3,6 +3,16 @@
 All notable changes to VulnAdvisor are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to semantic versioning.
 
+## [1.0.3] - 2026-06-09
+
+### Added
+- `scan --top N` — limit output to the N highest-priority findings. A pure display limit on the
+  already-ranked list; ranking is unchanged and `--fail-on` still gates over every finding.
+
+### Fixed
+- Release workflow could not check out the private repository; granted the job `contents: read`
+  (alongside `id-token: write`) and an explicit checkout token.
+
 ## [1.0.0] - 2026-06-09
 
 The first stable release: reachability-first triage for Python with the signature three-card
@@ -29,4 +39,5 @@ experience.
 - Privacy by design: local analysis, no telemetry, network only to public advisory APIs and your
   own LLM key.
 
+[1.0.3]: https://github.com/Parthav99/vulnadvisor_v2/releases/tag/v1.0.3
 [1.0.0]: https://github.com/Parthav99/vulnadvisor_v2/releases/tag/v1.0.0

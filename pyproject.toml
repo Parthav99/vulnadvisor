@@ -1,7 +1,7 @@
 # File: pyproject.toml
 [project]
 name = "vulnadvisor"
-version = "1.0.0"
+version = "1.0.3"
 description = "The best reachability engine for Python: tells you which dependency vulnerabilities are actually reachable from your own code."
 readme = "README.md"
 requires-python = ">=3.12"
