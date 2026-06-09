@@ -4,6 +4,50 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 8.1 — Benchmark harness + report  (2026-06-09)
+
+**Status:** complete, Validation Gate passing. (M8 — the fundraising/launch proof.)
+
+**Decisions (user):** (1) add `pip-audit` as the naive baseline (`uv add --dev pip-audit`, pinned
+`==2.10.0`). (2) Ship a **hermetic harness + synthetic corpus now** (tested, no network) plus a
+**pinned-commit manifest of real public repos** for a live run triggered later.
+
+**What changed**
+- `benchmarks/` (new): `metrics.py` (pure: `AdvisoryOutcome`/`RepoResult`/`BenchmarkReport`,
+  noise-reduction %, false-negative + missed-critical tallies; only NOT_IMPORTED counts as removed
+  noise). `report.py` (deterministic ASCII Markdown). `corpus.py` (12 synthetic repos run through
+  the **real** engine: `build_import_graph` + `collect_entry_points` + `refine_reachability`; roles
+  `called`/`imported`/`unused` give exact ground-truth labels; source imports generated from the
+  resolver so `pyyaml`->`yaml` stays correct; only confident-mapping packages so `unused` ->
+  NOT_IMPORTED). `manifest.py` (12 real public repos pinned to genuine HEAD SHAs as of 2026-06-09 +
+  a defensive `run_live` that clones, runs pip-audit, scans, maps tiers). `__main__.py`
+  (`python -m benchmarks` hermetic; `--live`; `--out`). `REPORT.md` (the generated artifact).
+- `tests/test_benchmarks.py` (12 tests): pure-metric tests + end-to-end hermetic run.
+
+**Why these choices (soundness first)**
+- The headline metric is computed against ground-truth labels we control, so the
+  false-negative/missed-critical numbers are trustworthy — a labeled-reachable advisory placed in
+  NOT_IMPORTED is a hard test failure.
+- Live repos can't be fully labeled, so `reachable_truth=None` there is excluded from the FN tally;
+  the soundness guarantee is proven by the hermetic corpus, the live mode reports noise reduction.
+- The harness runs the actual product (not a mock), so the numbers reflect the real engine.
+
+**Validation evidence (measured, hermetic)**
+- Runs end-to-end over **12 repos** (>= 10) and writes `benchmarks/REPORT.md`.
+- **54% less noise**: 39 naive findings -> 18 after triage; **10** reachable-called; **0 missed
+  reachable criticals**, 0 false negatives -> Soundness gate **PASS**.
+- Reproducible: deterministic corpus + ordering; ASCII-only report (Windows-safe).
+- Gate: `ruff check` / `ruff format --check` clean, `mypy --strict src` clean (50 files),
+  `pytest` 260 passed.
+
+**Open questions / for the live run**
+- Manifest commits are real, but per-repo `requirements` paths are best-effort (many projects use
+  pyproject.toml); confirm paths before the published live run. `run_live` is defensive but
+  unexercised in CI (needs network + pip-audit). `benchmarks/` is not under the `mypy --strict src`
+  gate (only an installed-package `py.typed` marker is missing — no real type errors).
+
+---
+
 ## Task 7.2 — Framework plugins (FastAPI + Django)  (2026-06-09)
 
 **Status:** complete, Validation Gate passing. (M7 — framework-routed reachability.)
