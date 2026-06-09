@@ -34,14 +34,21 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# Bumped whenever the static-analysis schema changes (new fields / classification), so that
+# entries written by an older analyzer are treated as misses and re-analyzed rather than
+# deserialized into stale, possibly-less-conservative results.
+_ANALYSIS_VERSION = "4"
+
+
 def cache_key(rel: str, text: str) -> str:
     """Return the cache key for a file at project-relative ``rel`` with the given ``text``.
 
     The relative path is part of the key because a :class:`FileAnalysis` embeds it (so two
     identical-content files — e.g. empty ``__init__.py`` — must not share an entry). The content
-    hash makes any edit produce a fresh key, invalidating exactly that file.
+    hash makes any edit produce a fresh key, invalidating exactly that file; the analysis-version
+    prefix invalidates every entry when the analyzer itself changes.
     """
-    return f"{rel}\x00{content_hash(text)}"
+    return f"{_ANALYSIS_VERSION}\x00{rel}\x00{content_hash(text)}"
 
 
 def default_analysis_cache_path() -> Path:

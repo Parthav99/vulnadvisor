@@ -74,7 +74,25 @@ class ImportSite(BaseModel):
 
 
 class DynamicImportSite(BaseModel):
-    """A location where dynamic import/execution may hide a real usage."""
+    """A location where dynamic import/execution may hide a real usage.
+
+    ``target_root`` and ``first_party_relative`` record what static analysis can *prove* about the
+    import target — purely a function of the call's syntax, so they are safe to cache. A site that
+    provably targets only the project's own first-party modules (a relative loader, a
+    ``__name__``/``__package__``-prefixed module, or a constant first-party prefix) cannot pull in a
+    third-party distribution, so it must not escalate unused third-party packages to
+    ``DYNAMIC_UNKNOWN``. ``eval``/``exec`` and opaque targets stay unprovable (conservative).
+
+    Attributes:
+        target_root: The provable absolute top-level module the import targets (the constant
+            leading segment, e.g. ``"redash"`` for ``import_module("redash." + x)``), or ``None``
+            when the target cannot be pinned down statically.
+        first_party_relative: ``True`` when the site provably targets the current/first-party
+            package (a leading-dot relative import, or a ``__name__``/``__package__`` prefix).
+        runtime: ``False`` for build-time-only files (``setup.py``, a Sphinx ``conf.py``, anything
+            under ``docs/``) whose ``eval``/``exec`` never runs in the deployed application, so it
+            cannot make a dependency vulnerability reachable. Such sites do not force caution.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -83,6 +101,22 @@ class DynamicImportSite(BaseModel):
     col: int
     kind: DynamicImportKind
     detail: str
+    target_root: str | None = None
+    first_party_relative: bool = False
+    runtime: bool = True
+
+    def is_provably_first_party(self, first_party_modules: frozenset[str]) -> bool:
+        """Whether this site can only reach the project's own first-party modules.
+
+        ``eval``/``exec`` run arbitrary code and are never provable. A relative/own-package target
+        is always first-party; a constant absolute target is first-party only if its root is one of
+        the project's own modules. Anything unproven returns ``False`` (stay conservative).
+        """
+        if self.kind in (DynamicImportKind.EVAL, DynamicImportKind.EXEC):
+            return False
+        if self.first_party_relative:
+            return True
+        return self.target_root is not None and self.target_root in first_party_modules
 
 
 class ImportParseError(BaseModel):
@@ -126,6 +160,22 @@ class ImportGraph(BaseModel):
     first_party_modules: tuple[str, ...] = ()
     parse_errors: tuple[ImportParseError, ...] = ()
     analyzed_file_count: int = 0
+
+    def unproven_dynamic_sites(self) -> tuple[DynamicImportSite, ...]:
+        """Dynamic sites that genuinely force caution: runtime, and not provably first-party-only.
+
+        A site is excluded here when it cannot hide third-party runtime usage — either because it
+        provably targets only the project's own modules, or because it lives in build-time-only code
+        (``setup.py``/``docs``) that never runs in the deployed app. Everything else (``eval``/
+        ``exec`` and opaque/third-party imports in runtime code) remains, exactly as conservative as
+        before for any project that has such a site.
+        """
+        first_party = frozenset(self.first_party_modules)
+        return tuple(
+            site
+            for site in self.dynamic_sites
+            if site.runtime and not site.is_provably_first_party(first_party)
+        )
 
     def import_roots(self) -> dict[str, tuple[ImportSite, ...]]:
         """Map every absolute import root to the sites that import it."""

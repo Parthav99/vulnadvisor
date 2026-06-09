@@ -68,8 +68,13 @@ def assign_tier(dependency: Dependency, mapping: ImportMapping, graph: ImportGra
             reason="no Python source files were found to analyze, so usage cannot be ruled out",
         )
 
+    # Only dynamic sites that are *not* provably first-party-only can hide third-party usage. A
+    # plugin loader that provably targets the project's own modules (relative/__name__-prefixed, or
+    # a constant first-party prefix) cannot import an unused third-party distribution, so it must
+    # not block the NOT_IMPORTED verdict. eval/exec and opaque targets still escalate.
+    unproven_dynamic = graph.unproven_dynamic_sites()
     causes: list[str] = []
-    if graph.dynamic_sites:
+    if unproven_dynamic:
         causes.append("dynamic imports/exec (importlib/__import__/eval/exec)")
     if graph.parse_errors:
         causes.append("source files that could not be parsed")
@@ -80,7 +85,7 @@ def assign_tier(dependency: Dependency, mapping: ImportMapping, graph: ImportGra
         return Reachability(
             tier=ReachabilityTier.DYNAMIC_UNKNOWN,
             reason="not found in static imports, but " + "; ".join(causes) + " could hide usage",
-            dynamic_evidence=graph.dynamic_sites,
+            dynamic_evidence=unproven_dynamic,
         )
 
     return Reachability(
@@ -151,8 +156,9 @@ def refine_reachability(
             call_paths=(path,),
         )
 
+    unproven_dynamic = graph.unproven_dynamic_sites()
     dispatch_hides_call = (
-        unresolved_reflection or result.has_opaque_dynamic or bool(graph.dynamic_sites)
+        unresolved_reflection or result.has_opaque_dynamic or bool(unproven_dynamic)
     )
     if base.tier is ReachabilityTier.IMPORTED and dispatch_hides_call:
         return Reachability(
@@ -162,7 +168,7 @@ def refine_reachability(
                 "to the vulnerable symbol cannot be ruled out"
             ),
             evidence=base.evidence,
-            dynamic_evidence=graph.dynamic_sites,
+            dynamic_evidence=unproven_dynamic,
         )
 
     return base

@@ -97,6 +97,163 @@ def test_low_confidence_mapping_blocks_not_imported(tmp_path: Path) -> None:
     assert reach.tier is ReachabilityTier.DYNAMIC_UNKNOWN
 
 
+# --- first-party dynamic-import resolution (Task 10.3, security-critical) ----------------------
+#
+# A plugin loader that provably targets only the project's own modules cannot import an unused
+# third-party distribution, so it must not block NOT_IMPORTED. Anything not provably first-party
+# (bare variable, exec, or a constant third-party target) must STILL escalate — soundness first.
+
+
+def _app_with_loader(tmp_path: Path, loader_body: str) -> Path:
+    """Write a first-party package ``app`` whose loader.py has ``loader_body``; PyYAML unused."""
+    pkg = tmp_path / "app"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "loader.py").write_text("import importlib\n\n\n" + loader_body, encoding="utf-8")
+    return tmp_path
+
+
+@pytest.mark.parametrize(
+    "loader_body",
+    [
+        # f-string prefixed by the current module name -> within the first-party package
+        'def load(name):\n    return importlib.import_module(f"{__name__}.{name}")\n',
+        # constant first-party prefix via concatenation
+        'def load(name):\n    return importlib.import_module("app." + name)\n',
+        # leading-dot relative target resolved against the package
+        'def load(name):\n    return importlib.import_module("." + name, __package__)\n',
+        # __import__ of a constant first-party dotted module
+        'def load():\n    return __import__("app.plugins")\n',
+    ],
+)
+def test_first_party_only_loader_allows_not_imported(tmp_path: Path, loader_body: str) -> None:
+    graph = build_import_graph(_app_with_loader(tmp_path, loader_body))
+    assert graph.dynamic_sites  # the loader IS detected as a dynamic site
+    assert not graph.unproven_dynamic_sites()  # ...but it is proven first-party-only
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.NOT_IMPORTED
+
+
+@pytest.mark.parametrize(
+    "loader_body",
+    [
+        # opaque bare-variable target: could be any module at runtime
+        "def load(name):\n    return importlib.import_module(name)\n",
+        # bare-variable __import__
+        "def load(name):\n    return __import__(name)\n",
+        # exec runs arbitrary code -> could import anything
+        "def run(code):\n    exec(code)\n",
+        # constant THIRD-PARTY target: provably reaches a non-first-party distribution
+        'def load():\n    return importlib.import_module("requests")\n',
+        # f-string with a non-dotted constant prefix: leading segment is not fully determined
+        'def load(x):\n    return importlib.import_module(f"app{x}")\n',
+    ],
+)
+def test_unproven_loader_still_blocks_not_imported(tmp_path: Path, loader_body: str) -> None:
+    graph = build_import_graph(_app_with_loader(tmp_path, loader_body))
+    assert graph.unproven_dynamic_sites()  # not provably first-party -> stays conservative
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.DYNAMIC_UNKNOWN
+
+
+@pytest.mark.parametrize("rel", ["docs/conf.py", "setup.py", "docs/source/extra.py"])
+def test_non_runtime_eval_does_not_block_not_imported(tmp_path: Path, rel: str) -> None:
+    # A Sphinx conf.py / setup.py eval runs only at build/docs time, never in the deployed app,
+    # so it cannot make a runtime dependency vulnerability reachable.
+    (tmp_path / "app.py").write_text("import os\n", encoding="utf-8")
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("exec(open('x').read())\n", encoding="utf-8")
+    graph = build_import_graph(tmp_path)
+    assert graph.dynamic_sites and not graph.dynamic_sites[0].runtime
+    assert not graph.unproven_dynamic_sites()
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.NOT_IMPORTED
+
+
+def test_runtime_eval_still_blocks_not_imported(tmp_path: Path) -> None:
+    # The same eval in genuine runtime code (not docs/setup) must still escalate.
+    (tmp_path / "app.py").write_text("exec(open('x').read())\n", encoding="utf-8")
+    graph = build_import_graph(tmp_path)
+    assert graph.unproven_dynamic_sites()
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.DYNAMIC_UNKNOWN
+
+
+def test_non_runtime_static_import_still_counts(tmp_path: Path) -> None:
+    # Relaxing dynamic-site caution must NOT hide a real static import in a non-runtime file.
+    (tmp_path / "setup.py").write_text("import yaml\n", encoding="utf-8")
+    graph = build_import_graph(tmp_path)
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.IMPORTED
+
+
+# --- bounded loader / framework-import detection (Task 10.3, false-negative vectors) -----------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # bare import_module (from importlib import import_module) — previously a detection gap
+        "from importlib import import_module\n\n\ndef load(n):\n    return import_module(n)\n",
+        # custom file loader wrapping imp.load_source — searx's pattern
+        "from imp import load_source\n\n\ndef load(f, d):\n    return load_source(f, d)\n",
+        # importlib.util spec-based file loader
+        "import importlib.util as u\n\n\ndef load(p):\n"
+        "    return u.spec_from_file_location('m', p)\n",
+        # pkgutil plugin discovery
+        "import pkgutil\n\n\ndef discover(path):\n    return list(pkgutil.walk_packages(path))\n",
+    ],
+)
+def test_bounded_loaders_are_detected_and_block(tmp_path: Path, body: str) -> None:
+    (tmp_path / "app.py").write_text(body, encoding="utf-8")
+    graph = build_import_graph(tmp_path)
+    assert graph.unproven_dynamic_sites()  # the loader is detected and forces caution
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.DYNAMIC_UNKNOWN
+
+
+def test_installed_apps_literal_counts_as_imported(tmp_path: Path) -> None:
+    # Django imports every INSTALLED_APPS entry by string at startup, so a package listed there is
+    # used even with no first-party `import` — it must not be deprioritized to NOT_IMPORTED.
+    (tmp_path / "settings.py").write_text(
+        'INSTALLED_APPS = [\n    "django.contrib.admin",\n    "yaml",\n]\n', encoding="utf-8"
+    )
+    graph = build_import_graph(tmp_path)
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.IMPORTED
+
+
+def test_split_settings_apps_list_counts_as_imported(tmp_path: Path) -> None:
+    # The common split-settings pattern: a THIRD_PARTY_APPS list later spread into INSTALLED_APPS.
+    (tmp_path / "settings.py").write_text(
+        'THIRD_PARTY_APPS = ("yaml",)\nINSTALLED_APPS = THIRD_PARTY_APPS\n', encoding="utf-8"
+    )
+    graph = build_import_graph(tmp_path)
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.IMPORTED
+
+
+def test_one_opaque_site_escalates_despite_first_party_loaders(tmp_path: Path) -> None:
+    # Soundness: a single unproven site anywhere keeps the whole project conservative.
+    pkg = tmp_path / "app"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "good.py").write_text(
+        "import importlib\n\n\ndef load(n):\n"
+        '    return importlib.import_module(f"{__name__}.{n}")\n',
+        encoding="utf-8",
+    )
+    (pkg / "bad.py").write_text(
+        "import importlib\n\n\ndef load(n):\n    return importlib.import_module(n)\n",
+        encoding="utf-8",
+    )
+    graph = build_import_graph(tmp_path)
+    assert len(graph.unproven_dynamic_sites()) == 1
+    reach = compute_reachability(_pyyaml(), graph)
+    assert reach.tier is ReachabilityTier.DYNAMIC_UNKNOWN
+
+
 # --- engine wiring ----------------------------------------------------------------------------
 
 

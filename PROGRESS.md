@@ -4,6 +4,76 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 10.3 — First-party dynamic-import resolution + bounded loader detection  (2026-06-09)
+
+**Status:** complete, Validation Gate passing. (M10 — make noise reduction real on real code; gates publish 10.5.)
+
+**Headline result:** the live benchmark now shows **real, sound noise reduction on real apps** —
+paperless **37%** (59/159), BookWyrm **10%** (4/41), Mathesar **14%** (2/14) — while the other 10
+apps stay conservative (0%), and **all 13 repos / 1,210 advisories have zero false negatives and
+zero missed reachable criticals**. Hermetic corpus unchanged (54%, 0 FN).
+
+**The investigation (decisions surfaced to the user):**
+1. The first-party-import classifier alone moves **nothing** on real apps: empirically, their
+   blockers are runtime `eval`/`exec`/opaque `import_module`, not resolvable first-party imports
+   (redash `exec`s user code; loaders are env-extensible). Conservatism there is *sound*.
+2. Curating deprioritizing apps surfaced latent **false-negative vectors** the old engine (and even
+   the benchmark FN-guard) missed: Django `INSTALLED_APPS` string-loading, custom file loaders
+   (searx's `load_module` wrapping `imp.load_source`), bare `import_module(x)` (a detection gap),
+   `pkgutil` discovery. The engine was only "safe" before because it deprioritized *nothing*.
+   **User chose: add bounded loader detection, then curate** (no false negatives).
+
+**What changed (engine, all sound — only ever add caution or add imports):**
+- `model/imports.py`: `DynamicImportSite` gains `target_root`, `first_party_relative`, `runtime`
+  (all content-only/cacheable) + `is_provably_first_party()`; `ImportGraph.unproven_dynamic_sites()`
+  returns sites that genuinely force caution (runtime AND not provably first-party-only).
+- `callgraph/import_graph.py`: (a) classify each dynamic-import target — a constant first-party
+  prefix / leading-dot / `__name__`-prefix is provably first-party, so a loader that only reaches
+  the project's own modules no longer escalates third-party deps; (b) **bounded loader detection** —
+  match the bare callee name, so `from importlib import import_module` then `import_module(x)` is
+  caught (was a gap), plus `load_source`/`spec_from_file_location`/`exec_module`/`walk_packages`/
+  `iter_modules`; file loaders are never "provably first-party"; (c) **non-runtime scoping** — a
+  `docs/`/`setup.py`/`conf.py` `eval`/`exec` is build-time, never the deployed app, so it does not
+  force caution (static imports there are still counted); (d) **Django `INSTALLED_APPS`** literals
+  (and split-settings `*_APPS` lists) become synthetic import sites, so framework-loaded apps are
+  IMPORTED, never wrongly NOT-IMPORTED.
+- `reachability/tiering.py`: escalate on `unproven_dynamic_sites()` instead of all dynamic sites.
+- `store/analysis_cache.py`: analysis-version prefix in the cache key (bumped to 4) so a schema
+  change invalidates stale entries instead of deserializing less-conservative results.
+- `benchmarks/manifest.py`: **always rebuild the wheel** (it was silently benchmarking the stale
+  Task-10.2 wheel — the bug that first showed paperless at 0%); **strengthened FN-guard** — a
+  NOT-IMPORTED dep is a suspect false negative if its import name appears as a static/INSTALLED_APPS
+  root, a module-reference string literal anywhere in source, or in packaging metadata (catches
+  dynamic-import / INSTALLED_APPS / entry-point loading); added paperless, BookWyrm, Mathesar.
+- `benchmarks/report.py`: live "soundness" framing rewritten to *bimodal* (conservative on
+  dynamic-dispatch apps, deprioritizes on analyzable ones; 0 FN across both).
+- `docs/launch-post.md`: real-app noise numbers (paperless 37% etc.) alongside the 54% static figure.
+
+**Why these choices**
+- Every engine change is monotonic toward soundness: it either *adds* caution (more dynamic sites
+  detected) or *adds* imports (INSTALLED_APPS), or relaxes caution only where provably safe
+  (first-party-only targets, build-time-only files). It can never newly hide a reachable finding.
+- The cheap dev-env probe gave wrong import-name mappings for uninstalled packages (e.g. mapped
+  `pycryptodome`→`pycryptodome` instead of `Crypto`); the per-repo venv (latest install) is the
+  authoritative mapping, so candidate selection was confirmed via the real pipeline + FN-guard.
+
+**Validation evidence**
+- 11 fixtures for first-party targets (constant/relative/`__name__`-prefix vs opaque/exec/third-party
+  constant); 4 for bounded loaders (bare `import_module`, `load_source`, `spec_from_file_location`,
+  `pkgutil`); INSTALLED_APPS literal + split-settings; non-runtime `eval` vs runtime `eval`.
+- `uv run python -m benchmarks --live` → **13 repos, 1,210 advisories, 65 deprioritized (5%),
+  false-negatives 0, missed-criticals 0, exit 0**; paperless/BookWyrm/Mathesar at 37%/10%/14%.
+- `uv run python -m benchmarks` (hermetic) → **54%**, 0 FN, exit 0 (unchanged).
+- ruff check clean; ruff format --check clean; `mypy --strict src` clean (54 files); **pytest 311
+  passed**.
+
+**Open questions**
+- IMPORTED-AND-CALLED is still 0 across the live corpus (call-path demo gap) — that is Task 10.4
+  (optional, pre-launch nice-to-have). The reachability *tiering* (NOT-IMPORTED noise reduction) is
+  what 10.3 proves on real code.
+
+---
+
 ## Task 10.2 — Live benchmark on real public repos  (2026-06-09)
 
 **Status:** complete, Validation Gate passing. (M10 — replace the synthetic 54% with real, publishable evidence.)

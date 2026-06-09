@@ -73,6 +73,22 @@ def _infer_first_party(root: Path) -> set[str]:
     return modules
 
 
+# Files whose code runs only at build/packaging/docs time, never in the deployed application. An
+# ``eval``/``exec`` here cannot make a runtime dependency vulnerability reachable, so it must not
+# force caution. We still record (and trust) the *static* imports in these files, so nothing that
+# is genuinely imported is ever hidden — only the dynamic-dispatch caution is relaxed.
+_NON_RUNTIME_DIRS = frozenset({"docs", "doc"})
+_NON_RUNTIME_BASENAMES = frozenset({"setup.py", "conf.py"})
+
+
+def _is_runtime_file(rel: str) -> bool:
+    """Whether ``rel`` is part of the deployed app's runtime surface (vs. build/docs-only code)."""
+    parts = rel.split("/")
+    if parts[0] in _NON_RUNTIME_DIRS:
+        return False
+    return parts[-1] not in _NON_RUNTIME_BASENAMES
+
+
 def _func_repr(func: ast.expr) -> str:
     """Best-effort source text of a call target (for dynamic-site detail)."""
     try:
@@ -81,25 +97,140 @@ def _func_repr(func: ast.expr) -> str:
         return "<dynamic call>"
 
 
-def _dynamic_kind(call: ast.Call) -> DynamicImportKind | None:
-    """Classify a call as a dynamic import/exec construct, or ``None`` if it is neither."""
-    func = call.func
+# Name-based module import: ``import_module(x)`` / ``__import__(x)``. These can be proven to target
+# first-party modules when their argument has a constant first-party prefix (``_dynamic_target``).
+_IMPORT_CALLEES = frozenset({"import_module", "__import__"})
+
+# File-/spec-based and plugin-discovery loaders: ``imp.load_source``, ``importlib.util``
+# spec loaders, and ``pkgutil`` walkers. Their target is a filesystem path or a discovered module,
+# never a statically-provable first-party module name, so they are always conservative (unproven).
+# Detecting these closes the gap where a custom helper (e.g. searx's ``load_module`` wrapping
+# ``load_source``) hid a dynamic import from analysis.
+_LOADER_CALLEES = frozenset(
+    {
+        "load_source",
+        "load_compiled",
+        "spec_from_file_location",
+        "module_from_spec",
+        "exec_module",
+        "walk_packages",
+        "iter_modules",
+    }
+)
+
+
+def _callee_name(func: ast.expr) -> str | None:
+    """Return the bare callee name for a ``Name``/``Attribute`` call target, else ``None``."""
     if isinstance(func, ast.Name):
-        if func.id == "__import__":
-            return DynamicImportKind.DUNDER_IMPORT
-        if func.id == "eval":
-            return DynamicImportKind.EVAL
-        if func.id == "exec":
-            return DynamicImportKind.EXEC
-    elif isinstance(func, ast.Attribute):
-        if func.attr in ("import_module", "__import__"):
-            return DynamicImportKind.IMPORTLIB
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
     return None
+
+
+def _dynamic_kind(call: ast.Call) -> DynamicImportKind | None:
+    """Classify a call as a dynamic import/exec/loader construct, or ``None`` if it is neither.
+
+    Matches on the bare callee name, so both ``importlib.import_module(x)`` and a
+    ``from importlib import import_module`` then ``import_module(x)`` are caught (the latter was a
+    soundness gap). File/spec loaders and ``pkgutil`` walkers are also caught.
+    """
+    name = _callee_name(call.func)
+    if name is None:
+        return None
+    if name == "eval":
+        return DynamicImportKind.EVAL
+    if name == "exec":
+        return DynamicImportKind.EXEC
+    if name == "__import__":
+        return DynamicImportKind.DUNDER_IMPORT
+    if name in _IMPORT_CALLEES or name in _LOADER_CALLEES:
+        return DynamicImportKind.IMPORTLIB
+    return None
+
+
+def _const_prefix_target(prefix: str) -> tuple[str | None, bool]:
+    """Classify a constant leading string of an import target as (target_root, first_party_rel)."""
+    if prefix.startswith("."):
+        return None, True  # relative import -> resolves within the first-party package
+    if "." in prefix:
+        # The first dotted segment is fully constant, so the top-level module is pinned down.
+        return (prefix.split(".")[0] or None), False
+    return None, False  # no separating dot: the leading segment is not fully determined
+
+
+def _dynamic_target(call: ast.Call, kind: DynamicImportKind) -> tuple[str | None, bool]:
+    """Return ``(target_root, first_party_relative)`` provable from a dynamic call's argument.
+
+    Sound by construction: only fully-constant leading segments (a constant string, an f-string or
+    ``+`` concatenation with a constant dotted prefix) pin down the top-level module; a leading dot
+    or a ``__name__``/``__package__`` prefix proves the target is within the first-party package.
+    ``eval``/``exec`` and any opaque/computed argument yield ``(None, False)`` — stay conservative.
+    """
+    if kind in (DynamicImportKind.EVAL, DynamicImportKind.EXEC) or not call.args:
+        return None, False
+    # Only name-based imports can be proven first-party from a constant module-name prefix; a
+    # file/spec loader or pkgutil walker takes a path or discovers modules, so it is never provable.
+    if _callee_name(call.func) not in _IMPORT_CALLEES:
+        return None, False
+    name = call.args[0]
+    if isinstance(name, ast.Constant) and isinstance(name.value, str):
+        return _const_prefix_target(name.value)
+    if isinstance(name, ast.JoinedStr) and name.values:
+        first = name.values[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return _const_prefix_target(first.value)
+        if (
+            isinstance(first, ast.FormattedValue)
+            and isinstance(first.value, ast.Name)
+            and first.value.id in ("__name__", "__package__")
+        ):
+            return None, True  # f"{__name__}.{x}" -> within the first-party package
+        return None, False
+    if isinstance(name, ast.BinOp) and isinstance(name.op, ast.Add):
+        left = name.left
+        if isinstance(left, ast.Constant) and isinstance(left.value, str):
+            return _const_prefix_target(left.value)
+    return None, False
 
 
 def _names(node: ast.Import | ast.ImportFrom) -> tuple[ImportedName, ...]:
     """Convert ast aliases to :class:`ImportedName` records."""
     return tuple(ImportedName(name=alias.name, asname=alias.asname) for alias in node.names)
+
+
+def _app_list_roots(value: ast.expr) -> list[str]:
+    """Top-level module roots from a list/tuple of string literals (recursing into ``+`` concat)."""
+    roots: list[str] = []
+    if isinstance(value, ast.List | ast.Tuple):
+        for elt in value.elts:
+            if isinstance(elt, ast.Constant) and isinstance(elt.value, str) and elt.value:
+                roots.append(elt.value.split(".")[0])
+    elif isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        roots.extend(_app_list_roots(value.left))
+        roots.extend(_app_list_roots(value.right))
+    return roots
+
+
+def _framework_app_site(node: ast.Assign | ast.AugAssign, rel: str) -> ImportSite | None:
+    """A synthetic import site for a Django ``*_APPS`` setting (its entries load at startup).
+
+    Django imports every distribution listed in ``INSTALLED_APPS`` (and the common split-settings
+    ``*_APPS`` lists) at startup, by string. Those packages are genuinely used even though no
+    first-party ``import`` statement references them — so we record them as imports to keep them out
+    of the confidently-safe NOT_IMPORTED tier. This only ever *adds* imports (more conservative);
+    it never hides a finding. Non-literal entries (a computed/env ``+=``) are simply not seen.
+    """
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    if not any(isinstance(t, ast.Name) and t.id.endswith("_APPS") for t in targets):
+        return None
+    roots = _app_list_roots(node.value)
+    if not roots:
+        return None
+    names = tuple(ImportedName(name=root) for root in dict.fromkeys(roots))
+    return ImportSite(
+        file=rel, lineno=node.lineno, col=node.col_offset, kind=ImportKind.IMPORT, names=names
+    )
 
 
 def _analyze_source(text: str, rel: str, filename: str) -> FileAnalysis:
@@ -111,6 +242,7 @@ def _analyze_source(text: str, rel: str, filename: str) -> FileAnalysis:
 
     imports: list[ImportSite] = []
     dynamics: list[DynamicImportSite] = []
+    runtime = _is_runtime_file(rel)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             imports.append(
@@ -134,9 +266,14 @@ def _analyze_source(text: str, rel: str, filename: str) -> FileAnalysis:
                     names=_names(node),
                 )
             )
+        elif isinstance(node, ast.Assign | ast.AugAssign):
+            app_site = _framework_app_site(node, rel)
+            if app_site is not None:
+                imports.append(app_site)
         elif isinstance(node, ast.Call):
             kind = _dynamic_kind(node)
             if kind is not None:
+                target_root, first_party_relative = _dynamic_target(node, kind)
                 dynamics.append(
                     DynamicImportSite(
                         file=rel,
@@ -144,6 +281,9 @@ def _analyze_source(text: str, rel: str, filename: str) -> FileAnalysis:
                         col=node.col_offset,
                         kind=kind,
                         detail=_func_repr(node.func),
+                        target_root=target_root,
+                        first_party_relative=first_party_relative,
+                        runtime=runtime,
                     )
                 )
     return FileAnalysis(imports=tuple(imports), dynamic_sites=tuple(dynamics))

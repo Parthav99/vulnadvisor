@@ -80,13 +80,30 @@ MANIFEST: tuple[RepoSpec, ...] = (
     ),
     RepoSpec("frappe", "https://github.com/frappe/frappe", "v13.0.0", "requirements.txt"),
     RepoSpec("awx", "https://github.com/ansible/awx", "19.2.0", "requirements/requirements.txt"),
+    # Statically-analyzable apps: no runtime dynamic loaders, so genuinely-unimported declared deps
+    # (servers, build/test tools, transitive packages) soundly return to NOT-IMPORTED.
+    RepoSpec(
+        "paperless",
+        "https://github.com/the-paperless-project/paperless",
+        "2.7.0",
+        "requirements.txt",
+    ),
+    RepoSpec(
+        "bookwyrm", "https://github.com/bookwyrm-social/bookwyrm", "v0.4.0", "requirements.txt"
+    ),
+    RepoSpec(
+        "mathesar", "https://github.com/mathesar-foundation/mathesar", "0.1.0", "requirements.txt"
+    ),
 )
 
 # Run inside each repo's venv: build the import graph, compute reachability for the flagged
-# packages, and report each one's tier (plus a soundness flag if a NOT-IMPORTED package's import
-# name nonetheless appears in the graph -- that would be a false negative).
-_REACHABILITY_SNIPPET = """
-import json, sys
+# packages, and report each one's tier plus a release-blocking soundness flag. A NOT-IMPORTED
+# package is a suspect false negative if its import name appears (a) as a static/INSTALLED_APPS
+# import root, or (b) as a module-reference string literal anywhere in first-party source or in the
+# packaging metadata (setup.py/cfg, pyproject) -- i.e. it could be loaded by a dynamic import,
+# INSTALLED_APPS, or an entry point that the engine did not statically resolve.
+_REACHABILITY_SNIPPET = r"""
+import ast, json, re, sys
 from pathlib import Path
 from packaging.utils import canonicalize_name
 from vulnadvisor.callgraph.import_graph import build_import_graph
@@ -95,16 +112,47 @@ from vulnadvisor.model.dependency import Dependency, DependencySource
 from vulnadvisor.reachability import compute_reachability
 
 spec = json.loads(Path(sys.argv[1]).read_text())
-graph = build_import_graph(Path(spec["repo"]))
+repo = Path(spec["repo"])
+graph = build_import_graph(repo)
 roots = set(graph.import_roots())
+
+# Independent FN safety net: every module-reference string literal in first-party source (catches
+# dynamic-import targets, INSTALLED_APPS, entry-point modules the engine may not have resolved).
+modref = re.compile(r"[A-Za-z_]\w*(\.\w+)*(:[\w.]+)?$")
+strlit_roots = set()
+for py in repo.rglob("*.py"):
+    if any(p in {".git", ".venv", "venv", "site-packages", "node_modules"} for p in py.parts):
+        continue
+    try:
+        tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
+    except (SyntaxError, ValueError, OSError):
+        continue
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if modref.fullmatch(node.value):
+            strlit_roots.add(node.value.split(":")[0].split(".")[0])
+
+# Packaging metadata (entry points / scripts live here), scanned as raw text.
+meta_text = ""
+for meta in ("setup.py", "setup.cfg", "pyproject.toml"):
+    try:
+        meta_text += "\n" + (repo / meta).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+
 out = {}
 for name, version in spec["packages"]:
     dep = Dependency(name=canonicalize_name(name), raw_name=name, version=version,
                      source=DependencySource.REQUIREMENTS_TXT)
     tier = compute_reachability(dep, graph).tier
     mapping = resolve_import_names(name)
-    imported = any(n.split(".")[0] in roots for n in mapping.import_names)
-    suspect_fn = tier.value == "not-imported" and imported
+    import_roots = [n.split(".")[0] for n in mapping.import_names]
+    referenced = any(
+        r in roots or r in strlit_roots or re.search(r"\b" + re.escape(r) + r"\b", meta_text)
+        for r in import_roots
+    )
+    suspect_fn = tier.value == "not-imported" and referenced
     out[canonicalize_name(name)] = {"tier": tier.value, "suspect_fn": suspect_fn}
 Path(sys.argv[2]).write_text(json.dumps(out))
 """
@@ -154,13 +202,20 @@ def _osv_baseline(requirements: Path) -> list[tuple[str, str, list[str]]]:
 
 
 def _wheel_path() -> Path | None:
-    """Return the built VulnAdvisor wheel, building it if necessary."""
+    """Build a fresh VulnAdvisor wheel from the current source and return it.
+
+    Always rebuilds: the benchmark must exercise the *current* engine, not a stale wheel left in
+    ``dist/`` by an earlier build (a subtle trap that silently benchmarks old analysis logic).
+    """
     root = Path(__file__).resolve().parent.parent
-    wheels = sorted((root / "dist").glob("vulnadvisor-*.whl"))
+    before = {p.name for p in (root / "dist").glob("vulnadvisor-*.whl")}
+    _run(["uv", "build", "--wheel"], cwd=root, timeout=300)
+    wheels = sorted((root / "dist").glob("vulnadvisor-*.whl"), key=lambda p: p.stat().st_mtime)
     if not wheels:
-        _run(["uv", "build", "--wheel"], cwd=root, timeout=300)
-        wheels = sorted((root / "dist").glob("vulnadvisor-*.whl"))
-    return wheels[-1] if wheels else None
+        return None
+    # Prefer a wheel written by this build; fall back to the newest by mtime.
+    fresh = [p for p in wheels if p.name not in before]
+    return fresh[-1] if fresh else wheels[-1]
 
 
 def _reachability_tiers(

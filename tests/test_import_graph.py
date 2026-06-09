@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from vulnadvisor.callgraph import build_import_graph, map_imports_to_distributions
 from vulnadvisor.model import (
     Dependency,
@@ -85,6 +87,32 @@ def test_external_roots_exclude_first_party() -> None:
     external = set(graph.external_import_roots())
     assert "myapp" not in external
     assert "yaml" in external
+
+
+@pytest.mark.parametrize(
+    ("call", "target_root", "first_party_relative"),
+    [
+        ('importlib.import_module("redash.x")', "redash", False),
+        ('importlib.import_module("redash." + name)', "redash", False),
+        ('importlib.import_module(f"redash.{name}")', "redash", False),
+        ('importlib.import_module(f"{__name__}.{name}")', None, True),
+        ('importlib.import_module("." + name, __package__)', None, True),
+        ('__import__("pkg.sub")', "pkg", False),
+        # unprovable: bare variable, exec, non-dotted prefix, computed call
+        ("importlib.import_module(name)", None, False),
+        ('importlib.import_module(f"red{name}")', None, False),
+        ("exec(code)", None, False),
+        ("eval(expr)", None, False),
+    ],
+)
+def test_dynamic_target_extraction(
+    tmp_path: Path, call: str, target_root: str | None, first_party_relative: bool
+) -> None:
+    (tmp_path / "m.py").write_text(f"import importlib\n\n\ndef f(name, code, expr):\n    {call}\n")
+    graph = build_import_graph(tmp_path)
+    site = graph.dynamic_sites[0]
+    assert site.target_root == target_root
+    assert site.first_party_relative is first_party_relative
 
 
 def test_syntax_error_is_recorded_not_raised(tmp_path: Path) -> None:

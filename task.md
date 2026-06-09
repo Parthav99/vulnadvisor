@@ -26,7 +26,7 @@ before moving on), **Done when** (exit condition). The global Definition of Done
 - **M7** Precision: Pyright type inference + framework plugins
 - **M8** Benchmark harness + published report (the fundraising proof)
 - **M9** LLM "attack story" layer → **v1.0**
-- **M10** Launch — package/docs ✅ → live benchmark on real repos → publish to PyPI → post (HN/r/Python) → feedback
+- **M10** Launch — package/docs ✅ · live benchmark ✅ → **dynamic-import fix (real-app noise unlock)** → publish to PyPI → post (HN/r/Python)
 - **M11** Platform (FastAPI + Postgres + Next.js, free-hostable) — **gated: only after M10 launch + real CLI traction**
 
 ---
@@ -282,9 +282,9 @@ README (quickstart, CI snippet, output formats, privacy statement); CONTRIBUTING
 **Done when:** it's installable, documented, and ready to post to HN / r/Python.
 
 > **M10.1 status:** ✅ done — packaging, Apache-2.0, README/CONTRIBUTING/CHANGELOG, launch post draft,
-> `release.yml` (PyPI Trusted Publishing on `v*` tags). NOT yet published to PyPI (that's 10.3).
+> `release.yml` (PyPI Trusted Publishing on `v*` tags). NOT yet published to PyPI (that's 10.5).
 
-### Task 10.2 — Live benchmark on real public repos
+### Task 10.2 — Live benchmark on real public repos  ✅ done (2026-06-09)
 **Goal:** replace the synthetic 54% with real numbers we can publish. The hermetic corpus proves
 *correctness*; a launch/fundraising claim needs *real repos*.
 **Build:** run the existing `python -m benchmarks --live` over the pinned-commit manifest of real
@@ -298,22 +298,36 @@ figures; keep the hermetic run as the soundness proof.
 - [ ] Any false negative on real repos is investigated before publishing (release-blocking)
 **Done when:** the headline claim is backed by a reproducible run on real public code.
 
-### Task 10.3 — Publish to PyPI + go live
-**Goal:** real traction — the thing M11 is gated on.
-**Build:** reserve the `vulnadvisor` name on PyPI; configure Trusted Publishing for the `pypi`
-environment; confirm the final GitHub repo slug in `pyproject.toml` URLs; push a `v1.0` tag to trigger
-`release.yml`. Add GitHub issue/PR templates + a lightweight feedback path (a `feedback` label /
-Discussions). Post to r/Python and Hacker News linking the live benchmark.
-**Validate:**
-- [ ] `pip install vulnadvisor` / `uvx vulnadvisor` works from PyPI on a fresh machine
-- [ ] The release workflow published the wheel + sdist on the tag
-- [ ] Launch posts are live and point to the repo + live benchmark
-**Done when:** anyone can install it and the launch is public. (Publishing is irreversible — the
-maintainer pushes the tag.)
+> **M10.2 status:** ✅ done (commit `7200b3d`) — live run over 10 real apps, **996 OSV advisories, 0
+> false negatives, 0 missed criticals**. Baseline switched to OSV-direct (pip-audit can't build
+> decade-old wheels). Key finding: **0% deprioritization on real apps** (dynamic plugin loaders poison
+> every verdict) and **0 IMPORTED-AND-CALLED** across all 996 — so 10.3 below is the gate before
+> launch. See `benchmarks/REPORT.live.md`.
 
-### Task 10.4 — (optional, pre-launch) Strengthen the IMPORTED-AND-CALLED demo
+### Task 10.3 — First-party dynamic-import resolution (the real-app noise unlock)
+**Goal:** make noise reduction real on real code. The live run deprioritized **0%** because a single
+dynamic-import site (a plugin loader) forces the engine to treat every package as possibly-used. But
+most loaders only import *first-party* modules (redash's loaders reach `redash.*`), so unused
+third-party deps should still be NOT-IMPORTED.
+**Build:** in `callgraph`/`reachability`, classify each dynamic-import site by whether it can be
+*proven* to target only first-party modules (e.g. `import_module(f"redash.{x}")`, package-relative
+loaders, `__path__`-based plugin discovery inside the project). A provably first-party-only site no
+longer escalates third-party deps to DYNAMIC-UNKNOWN — genuinely-unimported third-party packages
+return to NOT-IMPORTED. Any site whose target can't be proven first-party-only stays conservative, as
+today. Soundness rule unchanged: when in doubt, escalate.
+**Validate (security-critical gate):**
+- [ ] New fixtures: a first-party-only loader → unused third-party dep is NOT-IMPORTED; a loader with
+  a non-first-party / uncertain target → still DYNAMIC-UNKNOWN.
+- [ ] Re-run `python -m benchmarks --live`: real apps now show meaningful deprioritization, with
+  **false negatives still 0 and missed criticals still 0** (release-blocking).
+- [ ] Hermetic benchmark unchanged; ruff / format / `mypy --strict src` / pytest all green.
+**Done when:** the live benchmark shows real noise reduction on real apps with zero false negatives —
+the 'noise-killer' headline holds on real code, not just the synthetic corpus.
+
+### Task 10.4 — (optional, recommended) Strengthen the IMPORTED-AND-CALLED demo
 **Goal:** make the call-path demo fire on real advisories, not only when the user calls the patched
-symbol directly.
+symbol directly. (The live run produced **0** IMPORTED-AND-CALLED across 996 real advisories — closing
+this is what makes the marquee call-path demo actually fire on real code.)
 **Build:** connect public-API entry → library-internal vulnerable symbol (the Task 6.1 limitation:
 e.g. PyYAML `yaml.load` → `construct_python_object_new`). Either a small per-library
 public-API→internal-symbol map for the top advisories, or a shallow intra-library call graph seeded
@@ -321,8 +335,24 @@ from the public entry. Stay sound — never emit AND-CALLED without a real path.
 **Validate:**
 - [ ] On ≥3 real advisories reached via a public API, the scan shows the full call path
 - [ ] Zero new false AND-CALLED (soundness gate)
-**Done when:** the marquee demo works on common real-world cases. *Optional — the tool is honest about
-this gap today; do it only if you want a stronger launch demo.*
+**Done when:** the marquee demo works on common real-world cases. *Recommended before launch for a
+stronger demo, but not release-blocking — the tool is honest about this gap today.*
+
+### Task 10.5 — Publish to PyPI + go live
+**Goal:** real traction — the thing M11 is gated on. **Gated on 10.3** (don't post the 'noise-killer'
+message until real-app noise reduction holds).
+**Build:** reserve the `vulnadvisor` name on PyPI; configure Trusted Publishing for the `pypi`
+environment; confirm the final GitHub repo slug in `pyproject.toml` URLs; push a `v1.0` tag to trigger
+`release.yml`. Add GitHub issue/PR templates + a lightweight feedback path (a `feedback` label /
+Discussions). Post to r/Python and Hacker News linking the live benchmark.
+**Validate:**
+- [ ] The post-10.3 live benchmark shows real noise reduction with 0 false negatives (launch-blocking)
+- [ ] The launch post leads with the *real* live numbers (and only then the hermetic figure)
+- [ ] `pip install vulnadvisor` / `uvx vulnadvisor` works from PyPI on a fresh machine
+- [ ] The release workflow published the wheel + sdist on the tag
+- [ ] Launch posts are live and point to the repo + live benchmark
+**Done when:** anyone can install it and the launch is public. (Publishing is irreversible — the
+maintainer pushes the tag.)
 
 ---
 

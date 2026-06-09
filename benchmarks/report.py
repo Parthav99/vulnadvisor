@@ -4,10 +4,11 @@ Two framings share one table:
 
 * ``kind="noise"`` (the hermetic corpus) leads with the noise-reduction headline -- how much of a
   naive scanner's output VulnAdvisor deprioritizes when the code is statically analyzable.
-* ``kind="soundness"`` (the live, real-world repos) leads with the soundness headline. Real
-  applications load plugins via dynamic import, so the engine deliberately keeps every unproven
-  finding actionable rather than risk a false "safe"; the number that matters there is *zero missed
-  reachable criticals*, not the deprioritization rate.
+* ``kind="soundness"`` (the live, real-world repos) leads with the soundness headline. Behavior is
+  bimodal by design: an app that loads code via runtime dynamic dispatch (eval/exec or an opaque
+  import) keeps every unproven finding actionable, because such code could reach any package; an app
+  whose code is statically analyzable has its genuinely-unimported dependencies deprioritized. The
+  number that matters across both is *zero missed reachable criticals*.
 """
 
 from benchmarks.metrics import BenchmarkReport
@@ -19,12 +20,13 @@ def _headline(report: BenchmarkReport, kind: str) -> str:
     """Return the leading one-line summary for the given framing."""
     if kind == "soundness":
         return (
-            f"**Soundness on real-world code** - across {report.repo_count} real applications, "
-            f"VulnAdvisor triaged {report.baseline_total} real advisories with "
-            f"**{report.missed_criticals} missed reachable criticals** "
-            f"(false negatives: {report.false_negatives}). These apps load plugins via dynamic "
-            f"import, so the engine conservatively keeps unproven findings actionable rather than "
-            f"risk a false 'safe' - the intended behavior."
+            f"**Real-world soundness + noise reduction** - across {report.repo_count} real "
+            f"applications ({report.baseline_total} advisories), VulnAdvisor deprioritized "
+            f"{report.deprioritized} as unreachable ({report.noise_reduction_pct:.0f}%) and kept "
+            f"the rest actionable, with **{report.missed_criticals} missed reachable criticals** "
+            f"(false negatives: {report.false_negatives}). It stays conservative on apps that load "
+            f"code via runtime dynamic dispatch and removes genuinely-unimported deps on apps it "
+            f"can fully analyze."
         )
     return (
         f"**{report.noise_reduction_pct:.0f}% less noise** - "
@@ -67,10 +69,13 @@ def render_markdown(report: BenchmarkReport, *, title: str, mode: str, kind: str
     lines.append("")
     if kind == "soundness":
         lines.append(
-            "On real applications the deprioritization rate is near zero by design: each repo "
-            "loads code through dynamic import (`importlib`/`__import__`/`exec`), which could hide "
-            "usage, so the engine escalates every unproven finding to a cautious tier instead of "
-            "marking it safe. The release-blocking number is the last column - zero on every repo."
+            "Deprioritization is bimodal by design. An app that loads code through runtime dynamic "
+            "dispatch (`eval`/`exec` or an opaque `import_module`/`__import__`) could reach any "
+            "package, so the engine keeps every unproven finding in an actionable tier rather than "
+            "mark it safe (0% rows). An app whose code is statically analyzable has its "
+            "genuinely-unimported dependencies - servers, build/test tools, unused transitive "
+            "packages - moved to NOT-IMPORTED. The release-blocking number is the last column: "
+            "zero missed reachable criticals on every repo."
         )
         lines.append("")
     verdict = "PASS" if report.missed_criticals == 0 and report.false_negatives == 0 else "FAIL"

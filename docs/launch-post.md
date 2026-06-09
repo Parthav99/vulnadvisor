@@ -11,31 +11,35 @@ and has no telemetry.
 
 ## The results
 
-VulnAdvisor makes two promises, and we measure both.
+VulnAdvisor makes two promises, and we measure both on real code.
 
-**It never hides a reachable vulnerability.** We ran it across 10 real-world Python applications
-(redash, Superset, NetBox, Saleor, AWX, Frappe, IntelOwl, CTFd, and more) pinned to older releases
-with known-vulnerable dependencies — **996 real advisories** from the OSV database, the same source
-`pip-audit` and Dependabot draw from. Across all of them: **zero missed reachable criticals.** These
-apps load code through dynamic import (plugin systems, `importlib`, `exec`), so VulnAdvisor
-deliberately keeps every finding it *cannot prove safe* in an actionable tier rather than risk a
-false "you're safe." That is the whole point — soundness first. Full run:
-[`benchmarks/REPORT.live.md`](../benchmarks/REPORT.live.md).
+**It never hides a reachable vulnerability.** We ran it across **13 real-world Python applications**
+(redash, Superset, NetBox, Saleor, AWX, Frappe, IntelOwl, CTFd, paperless, BookWyrm, Mathesar, and
+more) pinned to older releases with known-vulnerable dependencies — **1,210 real advisories** from
+the OSV database, the same source `pip-audit` and Dependabot draw from. Across all of them: **zero
+missed reachable criticals.** When an app loads code through runtime dynamic dispatch (`eval`/`exec`,
+an opaque `import_module`), VulnAdvisor keeps every finding it *cannot prove safe* in an actionable
+tier rather than risk a false "you're safe." Soundness first.
 
-**When your code is statically analyzable, it cuts the noise hard.** On a reproducible corpus
-exercised through the real engine — no dynamic-import escape hatches hiding calls — reachability
-triage removes the findings that provably can't reach your code:
+**It still cuts real noise where the code is analyzable.** On the apps whose code it can fully
+follow, reachability triage removes the dependencies your code never actually loads — servers, build
+and test tooling, unused transitive packages:
 
-> **54% less noise — 39 findings cut to 18 — with zero missed reachable criticals.**
+> **paperless: 37% of advisories deprioritized (59 of 159). BookWyrm: 10%. Mathesar: 14%. Zero false
+> negatives.**
 
-Reproducible with `python -m benchmarks`; full numbers in
-[`benchmarks/REPORT.md`](../benchmarks/REPORT.md).
+The full run is in [`benchmarks/REPORT.live.md`](../benchmarks/REPORT.live.md). A reproducible
+synthetic corpus (no dynamic-dispatch escape hatches) pushes the same engine further — **54% less
+noise, 39 findings cut to 18** ([`benchmarks/REPORT.md`](../benchmarks/REPORT.md), via `python -m
+benchmarks`).
 
-That contrast *is* the design. VulnAdvisor only says "safe" when it can prove it: it deprioritizes
-aggressively on code it can fully see, and stays conservative the instant dynamic dispatch could
-hide a call. Noise reduction is easy if you're willing to hide real bugs — VulnAdvisor's hard rule
-is the opposite, and the benchmark enforces it: any reachable finding that gets deprioritized is a
-build failure.
+That contrast *is* the design. VulnAdvisor only says "safe" when it can prove it — including when a
+plugin loader provably targets only your own first-party modules, but never when an `eval`, an
+`exec`, or a Django `INSTALLED_APPS` entry could pull in a package behind its back. It deprioritizes
+aggressively on code it can fully see and stays conservative the instant dynamic dispatch could hide
+a call. Noise reduction is easy if you're willing to hide real bugs — VulnAdvisor's hard rule is the
+opposite, and the benchmark enforces it: any reachable finding that gets deprioritized is a build
+failure.
 
 ## How it decides "reachable"
 
