@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Feedback & questions
-    url: https://github.com/Parthav99/vulnadvisor_v2/discussions
+    url: https://github.com/Parthav99/vulnadvisor/discussions
     about: "Share how VulnAdvisor did on your repo, ask a question, or give general feedback. For a suspected missed vulnerability, please open a 'Suspected false negative' issue instead."
   - name: Report a security issue in VulnAdvisor itself
-    url: https://github.com/Parthav99/vulnadvisor_v2/security/policy
+    url: https://github.com/Parthav99/vulnadvisor/security/policy
     about: "A vulnerability in the VulnAdvisor tool (not in a package it scans) — please follow the security policy for private disclosure."

@@ -24,7 +24,7 @@ git tag -d v1.0 && git push origin :refs/tags/v1.0
 1. Reserve the name and configure Trusted Publishing **before** pushing the tag, at
    <https://pypi.org/manage/account/publishing/>. Create a *pending* publisher with:
    - PyPI project name: `vulnadvisor`
-   - Owner / repository: `Parthav99` / `vulnadvisor_v2`
+   - Owner / repository: `Parthav99` / `vulnadvisor`
    - Workflow filename: `release.yml`
    - Environment name: `pypi`
 2. In the GitHub repo settings, create an **Environment** named `pypi` (Settings → Environments).
@@ -49,7 +49,7 @@ python -m venv /tmp/relcheck && /tmp/relcheck/bin/pip install dist/*.whl
 
 Confirm the launch post (`docs/launch-post.md`) leads with the real live numbers, then only the
 hermetic figure. Confirm `pyproject.toml` URLs point to the final repo slug
-(`Parthav99/vulnadvisor_v2`).
+(`Parthav99/vulnadvisor`).
 
 ---
 

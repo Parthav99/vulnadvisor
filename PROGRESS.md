@@ -52,7 +52,7 @@ the `v*` trigger) so no published ref is force-moved.
 - `SECURITY.md` — private-disclosure flow for vulns **in the tool itself**, and the design
   guarantees (analyzes via `ast`, never executes the target; local-only; no telemetry).
 - `docs/RELEASE.md` — the maintainer runbook: one-time PyPI Trusted-Publishing setup
-  (`Parthav99/vulnadvisor_v2`, workflow `release.yml`, environment `pypi`), the stale-`v1.0`
+  (`Parthav99/vulnadvisor`, workflow `release.yml`, environment `pypi`), the stale-`v1.0`
   resolution, a reversible pre-flight (gate + clean-venv install + live-benchmark FN check), and the
   exact irreversible tag-push + launch-post steps.
 - `CHANGELOG.md` — the 1.0.0 release link retargeted from `v1.0` to `v1.0.0`.
