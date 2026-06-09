@@ -4,6 +4,56 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 9.1 — Plain-English "attack story" LLM layer  (2026-06-09) -> RELEASE v1.0
+
+**Status:** complete, Validation Gate passing. Version bumped 0.3.0 -> 1.0.0; tag `v1.0`.
+
+**Decision (user):** talk to the Anthropic API **dependency-free** over the existing `Transport`
+(no `anthropic` SDK), behind an injectable interface.
+
+**What changed**
+- `model/explanation.py`: `Explanation` (attack_story + verdict_rationale + `source`: llm/template).
+  Carries no score — structurally cannot affect priority.
+- `llm/client.py`: `LLMClient` Protocol + `AnthropicClient` (a documented POST to `/v1/messages`
+  over `Transport`; key from `ANTHROPIC_API_KEY` only, model from `ANTHROPIC_MODEL` or
+  `claude-haiku-4-5-20251001`). `LLMError` on any transport/parse failure. `build_anthropic_client`
+  returns `None` when no key (-> template-only).
+- `llm/prompt.py`: `build_messages` (hands the model the engine's facts + call path; system prompt
+  forbids changing priority and demands strict JSON) and `templated_explanation` (the deterministic
+  always-available fallback).
+- `llm/explainer.py`: `Explainer` orchestrates cache -> LLM (strict-validated) -> template. Strict
+  parser tolerates code fences / surrounding prose but only accepts a JSON object with non-empty
+  string fields; otherwise falls back. `finding_hash` keys the cache by finding+model.
+- `cli/render.py`: Card A shows the attack story ("(AI)" when from the model); Card C adds a one-line
+  "Why". Priority shown always comes from the deterministic score.
+- `cli/main.py`: `build_explainer()` (LLM when keyed, else template-only, cache-backed); terminal
+  output explains by default; `--no-explain` flag. JSON/SARIF unchanged.
+- `tests/test_llm.py` (20 tests); `test_cli.py` updated (hermetic, expects Card A "Attack story").
+
+**Why these choices (trust + soundness)**
+- The LLM is narrative-only: `Explanation` has no score field and the renderer reads priority solely
+  from the deterministic `Score`, so the model **cannot** change priority (asserted, incl. a hostile
+  response injecting a score).
+- Every failure mode (no key, transport error, non-JSON, schema-invalid, empty) -> deterministic
+  template, so Card A always renders offline. Successful results cached by content hash.
+- No secrets in code; one documented endpoint; no SDK dependency.
+
+**Validation evidence**
+- Mocked-client tests: valid JSON -> LLM source; malformed/partial/garbled/empty + transport error
+  -> template (parametrized); code-fenced and prose-wrapped JSON tolerated.
+- Priority invariant asserted: a hostile response can't change `score.value`/`band`; `Explanation`
+  exposes no score.
+- Caching: identical finding served from cache (one call); changed finding/model re-calls.
+- Dependency-free client: parses the text block and sends `x-api-key`/`anthropic-version`; raises on
+  garbage. `build_anthropic_client` requires the key and honors `ANTHROPIC_MODEL`.
+- Gate: `ruff check` / `ruff format --check` clean, `mypy --strict src` clean (54 files),
+  `pytest` 280 passed.
+
+**Release:** the full 3-card experience (attack story + risk + action with deterministic priority)
+is live and trustworthy. **Tagged v1.0.**
+
+---
+
 ## Task 8.1 — Benchmark harness + report  (2026-06-09)
 
 **Status:** complete, Validation Gate passing. (M8 — the fundraising/launch proof.)

@@ -17,6 +17,8 @@ from vulnadvisor.callgraph.frameworks import FrameworkPlugin
 from vulnadvisor.callgraph.type_resolver import PyrightResolver, TypeResolver
 from vulnadvisor.cli.pipeline import scan_project
 from vulnadvisor.cli.render import render_report
+from vulnadvisor.llm.client import build_anthropic_client
+from vulnadvisor.llm.explainer import Explainer
 from vulnadvisor.model.advisory import Advisory
 from vulnadvisor.output.gating import parse_fail_on, should_fail
 from vulnadvisor.output.json_report import to_json
@@ -71,6 +73,15 @@ def build_symbol_extractor() -> SymbolExtractor:
 def build_type_resolver() -> TypeResolver:
     """Build the optional Pyright resolver; it self-reports unavailable if pyright is absent."""
     return PyrightResolver()
+
+
+def build_explainer() -> Explainer:
+    """Build the explainer: LLM-backed when ANTHROPIC_API_KEY is set, else template-only.
+
+    Explanations are cached in the local SQLite cache and never influence the deterministic score.
+    """
+    client = build_anthropic_client()
+    return Explainer(client=client, cache=SqliteCache(default_cache_path()))
 
 
 def build_symbol_names_for() -> Callable[[Advisory], frozenset[str]] | None:
@@ -176,6 +187,13 @@ def scan(
             help="Disable framework plugins (FastAPI/Django route + signal entry points).",
         ),
     ] = False,
+    no_explain: Annotated[
+        bool,
+        typer.Option(
+            "--no-explain",
+            help="Disable the plain-English Card A attack story (terminal output only).",
+        ),
+    ] = False,
 ) -> None:
     """Scan PATH for vulnerable dependencies and emit ranked, prioritized results.
 
@@ -217,7 +235,11 @@ def scan(
             to_sarif_json(report.findings, report.degraded_sources, tool_version=_resolve_version())
         )
     else:
-        render_report(report.findings, report.degraded_sources, Console())
+        explanations = None
+        if not no_explain:
+            explainer = build_explainer()
+            explanations = [explainer.explain(finding) for finding in report.findings]
+        render_report(report.findings, report.degraded_sources, Console(), explanations)
 
     if threshold is not None and should_fail(report.findings, threshold):
         raise typer.Exit(code=1)

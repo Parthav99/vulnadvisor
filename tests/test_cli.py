@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 from vulnadvisor.advisories import AdvisoryMatcher
 from vulnadvisor.cli import main as cli_main
 from vulnadvisor.cli.main import app
+from vulnadvisor.llm.explainer import Explainer
 
 runner = CliRunner()
 
@@ -29,6 +30,8 @@ def test_scan_renders_ranked_three_cards(
 ) -> None:
     (tmp_path / "requirements.txt").write_text("jinja2==2.10\n", encoding="utf-8")
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    # Keep the test hermetic (no network) regardless of ANTHROPIC_API_KEY: template-only explainer.
+    monkeypatch.setattr(cli_main, "build_explainer", lambda: Explainer(client=None))
 
     result = runner.invoke(app, ["scan", str(tmp_path)])
 
@@ -36,7 +39,8 @@ def test_scan_renders_ranked_three_cards(
     out = result.stdout
     assert "finding(s), highest priority first" in out
     assert "jinja2" in out
-    assert "Attack summary" in out
+    assert "A - Attack story" in out  # plain-English Card A (templated fallback here)
+    assert "Why:" in out  # one-line verdict rationale
     assert "Risk" in out
     assert "Action" in out
     assert 'Fix: pip install --upgrade "jinja2>=2.10.1"' in out

@@ -22,6 +22,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from vulnadvisor.engine.safe_fix import resolve_safe_fix
+from vulnadvisor.model.explanation import Explanation, ExplanationSource
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
 
@@ -58,8 +59,13 @@ def _card(label: str, body: str) -> Panel:
     return Panel(Text(body), title=label, title_align="left", box=box.ASCII, padding=(0, 1))
 
 
-def _render_finding(finding: ScoredFinding) -> Panel:
-    """Render a single scored finding as the outer panel wrapping three cards."""
+def _render_finding(finding: ScoredFinding, explanation: Explanation | None = None) -> Panel:
+    """Render a single scored finding as the outer panel wrapping three cards.
+
+    When an ``explanation`` is supplied, Card A shows the LLM/template attack story and Card C adds
+    a one-line "Why" rationale. The priority shown always comes from the deterministic score - the
+    explanation is narrative only and cannot change it.
+    """
     advisory = finding.matched.advisory
     dependency = finding.matched.dependency
     score = finding.score
@@ -77,14 +83,22 @@ def _render_finding(finding: ScoredFinding) -> Panel:
     else:
         reach_line = "Reachability: not analyzed"
 
-    card_a = _card("A - Attack summary", _attack_summary(finding))
+    if explanation is not None:
+        suffix = " (AI)" if explanation.source is ExplanationSource.LLM else ""
+        card_a = _card(f"A - Attack story{suffix}", explanation.attack_story)
+        why_line = f"\nWhy: {explanation.verdict_rationale}"
+    else:
+        card_a = _card("A - Attack summary", _attack_summary(finding))
+        why_line = ""
+
     card_b = _card("B - Risk", f"Badge: {badge}\n{score.rationale}")
     card_c = _card(
         "C - Action",
         f"Verdict: {score.verdict}  (priority {score.value:.1f}, {score.band.value})\n"
         f"{fix_line}\n"
         f"{safe_fix.note}\n"
-        f"{reach_line}",
+        f"{reach_line}"
+        f"{why_line}",
     )
 
     header = (
@@ -103,8 +117,13 @@ def render_report(
     findings: Sequence[ScoredFinding],
     degraded_sources: Sequence[str],
     console: Console,
+    explanations: Sequence[Explanation | None] | None = None,
 ) -> None:
-    """Print the full ranked three-card report to ``console``."""
+    """Print the full ranked three-card report to ``console``.
+
+    ``explanations``, when given, is aligned by index with ``findings``; each supplies Card A's
+    attack story. When omitted, Card A falls back to the inline templated summary.
+    """
     if degraded_sources:
         console.print(
             Text(
@@ -116,8 +135,9 @@ def render_report(
         console.print(Text("No matching advisories found."))
         return
     console.print(Text(f"{len(findings)} finding(s), highest priority first:"))
-    for finding in findings:
-        console.print(_render_finding(finding))
+    for index, finding in enumerate(findings):
+        explanation = explanations[index] if explanations is not None else None
+        console.print(_render_finding(finding, explanation))
 
 
 def render_to_string(
@@ -125,6 +145,7 @@ def render_to_string(
     degraded_sources: Sequence[str] = (),
     *,
     width: int = 100,
+    explanations: Sequence[Explanation | None] | None = None,
 ) -> str:
     """Render the report to a deterministic plain-text string (for snapshot tests)."""
     buffer = StringIO()
@@ -137,5 +158,5 @@ def render_to_string(
         markup=False,
         legacy_windows=False,
     )
-    render_report(findings, degraded_sources, console)
+    render_report(findings, degraded_sources, console, explanations)
     return buffer.getvalue()
