@@ -11,7 +11,12 @@ concurrency:
 jobs:
   checks:
     name: Lint, type-check, test
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,9 +25,10 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           version: "0.11.19"
+          enable-cache: true
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install ${{ matrix.python }}
 
       - name: Sync dependencies
         run: uv sync --frozen
@@ -38,3 +44,29 @@ jobs:
 
       - name: pytest
         run: uv run pytest
+
+  package:
+    name: Clean install in a fresh environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.11.19"
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: Install the built wheel into a clean venv (pip, no dev deps)
+        run: |
+          python3 -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install --upgrade pip
+          /tmp/fresh/bin/pip install dist/*.whl
+
+      - name: End-to-end smoke test via the installed console script
+        run: |
+          /tmp/fresh/bin/vulnadvisor --version
+          /tmp/fresh/bin/vulnadvisor scan examples/quickstart --format json --no-explain

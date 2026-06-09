@@ -6,8 +6,21 @@ description = "The best reachability engine for Python: tells you which dependen
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "VulnAdvisor" }]
-keywords = ["security", "vulnerability", "reachability", "python", "sca"]
+authors = [{ name = "VulnAdvisor contributors" }]
+keywords = ["security", "vulnerability", "reachability", "python", "sca", "sast", "triage"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
 dependencies = [
     "packaging==26.2",
     "pydantic==2.13.4",
@@ -18,8 +31,10 @@ dependencies = [
 vulnadvisor = "vulnadvisor.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/your-org/vulnadvisor"
-Repository = "https://github.com/your-org/vulnadvisor"
+Homepage = "https://github.com/Parthav99/vulnadvisor_v2"
+Repository = "https://github.com/Parthav99/vulnadvisor_v2"
+Issues = "https://github.com/Parthav99/vulnadvisor_v2/issues"
+Changelog = "https://github.com/Parthav99/vulnadvisor_v2/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [

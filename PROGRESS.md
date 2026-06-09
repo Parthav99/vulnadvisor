@@ -4,6 +4,53 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 10.1 — Package, document, publish  (2026-06-09)
+
+**Status:** complete, Validation Gate passing. (M10 — launch readiness.)
+
+**Decision (user):** license the core **Apache-2.0** (permissive + patent grant).
+
+**Scope note:** made the project *publish-ready* but did **not** upload to PyPI — that needs the
+maintainer's account/token and is irreversible. A `release.yml` workflow publishes on tag via PyPI
+Trusted Publishing once the maintainer configures the publisher.
+
+**What changed**
+- Packaging: `pyproject.toml` gains classifiers, real repo URLs, Issues/Changelog links; console
+  script `vulnadvisor` already wired. Added `src/vulnadvisor/py.typed` (typed library; also makes
+  `mypy` see the package from `benchmarks/`).
+- Legal: `LICENSE` (full Apache-2.0 text), `NOTICE`.
+- Docs: rewrote `README.md` (install via pip/uvx, <5-min quickstart, plain-English layer, tiers,
+  deterministic scoring, output formats, GitHub Actions snippet, **privacy** section);
+  `CONTRIBUTING.md`; `CHANGELOG.md` (1.0.0); `docs/launch-post.md` built on the M8 benchmark.
+- Example: `examples/quickstart/` (PyYAML used -> IMPORTED; unused requests -> deprioritized) for
+  the quickstart and the CI smoke test.
+- CI: extended `ci.yml` to an OS x Python matrix (ubuntu/windows x 3.12/3.13) plus a **package**
+  job that builds the wheel, installs it into a *clean* venv with pip, and runs the installed
+  console script end-to-end. Added `release.yml` (build + Trusted-Publishing to PyPI on `v*` tags).
+
+**Why these choices**
+- Honesty over hype in the docs: a clean `uvx` install can't read the target project's installed
+  metadata, so an unused dep stays the cautious `DYNAMIC-UNKNOWN` (not `NOT-IMPORTED`) — documented
+  with a tip to install in-project. And `IMPORTED-AND-CALLED` needs the backfilled symbol dataset;
+  advisories whose fix touches only library-internal symbols stay `IMPORTED` (the Task 6.1
+  limitation) — stated plainly rather than papered over.
+
+**Validation evidence**
+- **Clean install in a fresh environment works end-to-end** (verified locally, mirrored in CI): an
+  isolated install of the built wheel runs `vulnadvisor --version` and a real `scan
+  examples/quickstart` that hits live OSV and prints ranked JSON/three-card output.
+- Quickstart reproduces a real scan in well under 5 minutes (`uvx vulnadvisor scan
+  examples/quickstart`).
+- Wheel ships `py.typed` + entry point; sdist ships `LICENSE` + `README`.
+- Gate: `ruff check` / `ruff format --check` clean, `mypy --strict src` clean (54 files),
+  `pytest` 280 passed.
+
+**Open questions / before going public**
+- Confirm the GitHub org/repo slug in URLs is final; set up PyPI Trusted Publishing for the `pypi`
+  environment; then push a tag to release. Reserve the `vulnadvisor` name on PyPI.
+
+---
+
 ## Task 9.1 — Plain-English "attack story" LLM layer  (2026-06-09) -> RELEASE v1.0
 
 **Status:** complete, Validation Gate passing. Version bumped 0.3.0 -> 1.0.0; tag `v1.0`.
