@@ -18,9 +18,14 @@ JSON + terminal, gate-not-weakened, min validation); pytest 325 passed.
 **Release workflow (`release.yml`) auth fixes** while shipping 1.0: the publish job's `checkout`
 failed on the **private** repo. Added `token: ${{ secrets.GITHUB_TOKEN }}` (v1.0.1) and, the real
 fix, `contents: read` to the job `permissions` block (v1.0.2) — an explicit `permissions:` block had
-narrowed the token to `id-token: write` and dropped the default read scope. Release tags pushed:
-`v1.0.0` (stale-tag note below), `v1.0.1`, `v1.0.2`, `v1.0.3`. **PyPI publish still pending** —
-diagnosing whether the `pypi` GitHub environment has a required-reviewer gate holding the run.
+narrowed the token to `id-token: write` and dropped the default read scope.
+
+**PUBLISHED to PyPI.** After checkout was fixed, the `v1.0.3` run failed with "file already exists"
+because `pyproject.toml` still said `1.0.0` (an earlier run had already published `1.0.0`). Bumped
+the version to **`1.0.3`** (first release carrying `scan --top` + the workflow fixes), deleted and
+re-pushed the `v1.0.3` tag at the bumped commit, and the run published the wheel + sdist. Verified
+live: `uvx vulnadvisor --version` -> `vulnadvisor 1.0.3` from PyPI, and `scan --help` shows `--top`.
+Tags pushed during the rollout: `v1.0.0` (stale), `v1.0.1`, `v1.0.2`, `v1.0.3` (the published one).
 
 ---
 
