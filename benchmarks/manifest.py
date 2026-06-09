@@ -1,185 +1,255 @@
-"""Pinned public repositories for the live benchmark, plus the live runner.
+"""Live benchmark over pinned real public repos: OSV (naive baseline) vs VulnAdvisor triage.
 
-The manifest pins each repo to a commit so the artifact is reproducible. The live runner clones at
-that commit, runs ``pip-audit`` (the naive baseline) and VulnAdvisor (triage) over the repo's
-requirements, and records the per-advisory tier. It is intentionally not exercised in CI (it needs
-network, ``pip-audit``, and real clones); the hermetic corpus is the tested path. Every step is
-defensive — a clone/audit/scan failure degrades that repo to an empty result rather than crashing
-the run.
+Each repo is pinned to an **older tag** whose committed, pinned requirements contain real, known
+vulnerabilities (current HEADs of maintained projects are patched, so they show nothing to triage).
 
-For live repos we cannot label every advisory's reachability, so ``reachable_truth`` is left
-unknown; the live report shows the noise reduction and reachable-called counts, while the
-soundness guarantee (a reachable finding is never NOT_IMPORTED) is proven by the hermetic corpus.
+The comparison is anchored on the *naive baseline*: every advisory OSV reports for a declared,
+pinned dependency -- exactly what a conventional scanner (pip-audit, Dependabot, GitHub alerts)
+surfaces, since they all draw from the OSV / PyPI advisory database. We query OSV directly from the
+pinned ``name==version`` lines: this is the same database pip-audit uses, but it does not have to
+build a wheel for every (often decade-old, unbuildable) dependency just to read its metadata, so it
+works on precisely the old, vulnerable corpus that defeats pip-audit on a modern interpreter.
+
+For each flagged package we then ask the **real** VulnAdvisor reachability engine which tier it
+falls in. Reachability is computed *locally* from the import graph and the package->import mapping,
+so it needs no advisory network calls of its own. To map a distribution to its import name with
+confidence, the engine reads installed package metadata; so for each repo we create a throwaway
+venv, install the flagged packages (best-effort, no transitive deps) plus VulnAdvisor, and compute
+reachability *inside* that venv. Unmappable or uninstallable packages fall back to the cautious
+DYNAMIC-UNKNOWN tier (never a false "safe").
+
+This module runs on demand (``python -m benchmarks --live``); it is not part of CI (needs network
+and real clones). Every step is defensive -- a failed repo is skipped, never fatal.
 """
 
 import json
-import subprocess  # noqa: S404 - invokes git/pip-audit with fixed argv, never shell=True
+import shutil
+import subprocess  # noqa: S404 - fixed argv, never shell=True; invokes git/uv only
+import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from packaging.utils import canonicalize_name
+
 from benchmarks.metrics import AdvisoryOutcome, RepoResult
-from vulnadvisor.advisories.clients import EpssClient, KevClient, OSVClient
-from vulnadvisor.advisories.matcher import AdvisoryMatcher
-from vulnadvisor.advisories.transport import UrllibTransport
-from vulnadvisor.cli.pipeline import scan_project
+from vulnadvisor.advisories.clients import OSVClient
+from vulnadvisor.advisories.transport import TransportError, UrllibTransport
+from vulnadvisor.deps.parsers import parse_requirements_txt
 from vulnadvisor.model.reachability import ReachabilityTier
-from vulnadvisor.store.cache import SqliteCache, default_cache_path
+from vulnadvisor.store.cache import SqliteCache
 
 __all__ = ["MANIFEST", "RepoSpec", "run_live"]
+
+_TIER_BY_VALUE = {tier.value: tier for tier in ReachabilityTier}
+
+# Persisted OSV response cache so re-runs of the benchmark hit zero network.
+_OSV_CACHE_PATH = Path(__file__).resolve().parent / ".osv-cache.sqlite"
 
 
 @dataclass(frozen=True)
 class RepoSpec:
-    """A pinned public repo to benchmark: clone ``url`` at ``commit`` and audit ``requirements``."""
+    """A pinned public repo: clone ``url`` at ``ref`` (tag) and audit ``requirements``."""
 
     name: str
     url: str
-    commit: str
-    requirements: str = "requirements.txt"
+    ref: str
+    requirements: str
 
 
-# Popular, dependency-heavy public Python projects, pinned for reproducibility (commits are real,
-# HEAD as of 2026-06-09). Advisory data still reflects the day the audit is run. Requirements paths
-# are best-effort and must be confirmed per repo before a published live run -- several of these
-# projects also ship dependencies via pyproject.toml rather than a requirements file.
+# Real public applications pinned to older tags whose committed requirements carry known-vulnerable,
+# pinned dependencies (so there is real noise to triage). Tags are reproducible references.
 MANIFEST: tuple[RepoSpec, ...] = (
+    RepoSpec("redash", "https://github.com/getredash/redash", "v10.0.0", "requirements.txt"),
+    RepoSpec("superset", "https://github.com/apache/superset", "1.3.2", "requirements/base.txt"),
+    RepoSpec("netbox", "https://github.com/netbox-community/netbox", "v3.0.0", "requirements.txt"),
+    RepoSpec("saleor", "https://github.com/saleor/saleor", "2.11.1", "requirements.txt"),
     RepoSpec(
-        "sentry-python",
-        "https://github.com/getsentry/sentry-python",
-        "035826318933d3e99d0ec3c40e34cbf25c298f7e",
-        "requirements-testing.txt",
+        "intelowl",
+        "https://github.com/intelowlproject/IntelOwl",
+        "v4.0.0",
+        "requirements/project-requirements.txt",
     ),
+    RepoSpec("django-nv", "https://github.com/nVisium/django.nV", "master", "requirements.txt"),
+    RepoSpec("ctfd", "https://github.com/CTFd/CTFd", "3.4.0", "requirements.txt"),
     RepoSpec(
-        "httpie",
-        "https://github.com/httpie/httpie",
-        "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345",
-        "requirements-dev.txt",
-    ),
-    RepoSpec(
-        "flask",
-        "https://github.com/pallets/flask",
-        "36e4a824f340fdee7ed50937ba8e7f6bc7d17f81",
-        "requirements/dev.txt",
-    ),
-    RepoSpec(
-        "requests",
-        "https://github.com/psf/requests",
-        "6f205ff422bccd5e4c4fc0b64c5f3e7df5181db6",
-        "requirements-dev.txt",
-    ),
-    RepoSpec(
-        "rich",
-        "https://github.com/Textualize/rich",
-        "46cebbb032f920eb096efbaf23cdc6fe9dd541f7",
+        "healthchecks",
+        "https://github.com/healthchecks/healthchecks",
+        "v1.25.0",
         "requirements.txt",
     ),
-    RepoSpec(
-        "scrapy",
-        "https://github.com/scrapy/scrapy",
-        "4e956bd2de5e319bebad2d603a2f5ee34d9d2ffb",
-        "requirements.txt",
-    ),
-    RepoSpec(
-        "celery",
-        "https://github.com/celery/celery",
-        "1cc9ecf430717b371892573ecad252929213e75e",
-        "requirements/default.txt",
-    ),
-    RepoSpec(
-        "pandas",
-        "https://github.com/pandas-dev/pandas",
-        "e1198e6b3648fbaeee8850922b10161d0541c971",
-        "requirements-dev.txt",
-    ),
-    RepoSpec(
-        "fastapi",
-        "https://github.com/fastapi/fastapi",
-        "5cdf820c8046edaf83c306ebd7435f038fc4a75a",
-        "requirements.txt",
-    ),
-    RepoSpec(
-        "django-cms",
-        "https://github.com/django-cms/django-cms",
-        "8758714b865ffa79c6bcd0e5c503958ea48885aa",
-        "requirements.txt",
-    ),
-    RepoSpec(
-        "airflow",
-        "https://github.com/apache/airflow",
-        "cd5509fc701cd18f32ae5b9625fa34a151c12f9e",
-        "requirements.txt",
-    ),
-    RepoSpec(
-        "poetry",
-        "https://github.com/python-poetry/poetry",
-        "298068d32cc16e7d2a086c3bdf219daa30a85a8b",
-        "requirements.txt",
-    ),
+    RepoSpec("frappe", "https://github.com/frappe/frappe", "v13.0.0", "requirements.txt"),
+    RepoSpec("awx", "https://github.com/ansible/awx", "19.2.0", "requirements/requirements.txt"),
 )
 
+# Run inside each repo's venv: build the import graph, compute reachability for the flagged
+# packages, and report each one's tier (plus a soundness flag if a NOT-IMPORTED package's import
+# name nonetheless appears in the graph -- that would be a false negative).
+_REACHABILITY_SNIPPET = """
+import json, sys
+from pathlib import Path
+from packaging.utils import canonicalize_name
+from vulnadvisor.callgraph.import_graph import build_import_graph
+from vulnadvisor.deps.import_mapping import resolve_import_names
+from vulnadvisor.model.dependency import Dependency, DependencySource
+from vulnadvisor.reachability import compute_reachability
 
-def _run(args: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+spec = json.loads(Path(sys.argv[1]).read_text())
+graph = build_import_graph(Path(spec["repo"]))
+roots = set(graph.import_roots())
+out = {}
+for name, version in spec["packages"]:
+    dep = Dependency(name=canonicalize_name(name), raw_name=name, version=version,
+                     source=DependencySource.REQUIREMENTS_TXT)
+    tier = compute_reachability(dep, graph).tier
+    mapping = resolve_import_names(name)
+    imported = any(n.split(".")[0] in roots for n in mapping.import_names)
+    suspect_fn = tier.value == "not-imported" and imported
+    out[canonicalize_name(name)] = {"tier": tier.value, "suspect_fn": suspect_fn}
+Path(sys.argv[2]).write_text(json.dumps(out))
+"""
+
+
+def _run(
+    args: list[str], cwd: Path | None = None, timeout: int = 900
+) -> subprocess.CompletedProcess[str]:
     """Run a fixed-argv command, capturing output; never uses a shell."""
     return subprocess.run(  # noqa: S603 - fixed argv list, no shell
-        args, cwd=cwd, capture_output=True, text=True, timeout=600, check=False
+        args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
     )
 
 
-def _pip_audit_ids(requirements: Path) -> dict[str, set[str]]:
-    """Return ``{package: {advisory_id, ...}}`` from ``pip-audit`` on a requirements file."""
-    result = _run(
-        ["pip-audit", "--format", "json", "--requirement", str(requirements), "--no-deps"]
-    )
+def _venv_python(venv: Path) -> Path:
+    """Return the interpreter path inside ``venv`` for the current OS."""
+    if sys.platform == "win32":
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
+def _osv_baseline(requirements: Path) -> list[tuple[str, str, list[str]]]:
+    """Return ``[(package, version, [advisory_id, ...]), ...]`` from OSV for pinned deps.
+
+    The naive baseline: every advisory OSV reports for a declared, pinned dependency -- the same
+    set a conventional scanner shows. Only ``==`` pinned dependencies are queried (an unpinned
+    range cannot be matched to a concrete vulnerable version, and including every historical
+    advisory would inflate the baseline unfairly). Network failures skip that package, never crash.
+    """
     try:
-        payload = json.loads(result.stdout)
-    except (ValueError, TypeError):
-        return {}
-    out: dict[str, set[str]] = {}
-    for dep in payload.get("dependencies", []) if isinstance(payload, dict) else []:
-        if not isinstance(dep, dict):
+        deps = parse_requirements_txt(requirements.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return []
+    client = OSVClient(UrllibTransport(timeout=30.0), SqliteCache(_OSV_CACHE_PATH))
+    out: list[tuple[str, str, list[str]]] = []
+    for dep in deps:
+        if dep.version is None:
             continue
-        name = str(dep.get("name", "")).lower()
-        ids = {
-            str(v.get("id")) for v in dep.get("vulns", []) if isinstance(v, dict) and v.get("id")
-        }
-        if name and ids:
-            out.setdefault(name, set()).update(ids)
+        try:
+            advisories = client.query(dep)
+        except TransportError:
+            continue
+        ids = sorted({adv.id for adv in advisories if adv.id})
+        if ids:
+            out.append((dep.raw_name or dep.name, dep.version, ids))
     return out
 
 
-def _live_matcher() -> AdvisoryMatcher:
-    """Build a live advisory matcher (OSV/EPSS/KEV) sharing the local cache."""
-    cache = SqliteCache(default_cache_path())
-    transport = UrllibTransport()
-    return AdvisoryMatcher(
-        OSVClient(transport, cache), EpssClient(transport, cache), KevClient(transport, cache)
-    )
+def _wheel_path() -> Path | None:
+    """Return the built VulnAdvisor wheel, building it if necessary."""
+    root = Path(__file__).resolve().parent.parent
+    wheels = sorted((root / "dist").glob("vulnadvisor-*.whl"))
+    if not wheels:
+        _run(["uv", "build", "--wheel"], cwd=root, timeout=300)
+        wheels = sorted((root / "dist").glob("vulnadvisor-*.whl"))
+    return wheels[-1] if wheels else None
 
 
-def run_live(spec: RepoSpec, workdir: Path) -> RepoResult:
-    """Clone ``spec`` at its commit, run pip-audit + VulnAdvisor, and record per-advisory tiers.
+def _reachability_tiers(
+    repo: Path, flagged: list[tuple[str, str, list[str]]], wheel: Path
+) -> dict[str, dict[str, object]]:
+    """Compute each flagged package's reachability tier in a venv that has them installed."""
+    with tempfile.TemporaryDirectory(prefix="vulnadvisor-bench-venv-") as tmp:
+        venv = Path(tmp) / "venv"
+        if _run(["uv", "venv", str(venv)], timeout=120).returncode != 0:
+            return {}
+        python = _venv_python(venv)
+        # VulnAdvisor (with its runtime deps) so the snippet can import it.
+        if (
+            _run(
+                ["uv", "pip", "install", "--python", str(python), str(wheel)], timeout=300
+            ).returncode
+            != 0
+        ):
+            return {}
+        # Install each flagged package for confident import-name mapping. We install the *latest*
+        # version, not the pinned-vulnerable one: the import name is version-stable, latest has
+        # prebuilt wheels (the decade-old vulnerable versions usually fail to build on modern
+        # Python), and reachability depends only on the import name, never the installed version.
+        for name, _version, _ids in flagged:
+            _run(
+                ["uv", "pip", "install", "--python", str(python), "--no-deps", name],
+                timeout=180,
+            )
+        spec_file = Path(tmp) / "spec.json"
+        out_file = Path(tmp) / "out.json"
+        spec_file.write_text(
+            json.dumps({"repo": str(repo), "packages": [[n, v] for n, v, _ in flagged]}),
+            encoding="utf-8",
+        )
+        snippet = Path(tmp) / "snippet.py"
+        snippet.write_text(_REACHABILITY_SNIPPET, encoding="utf-8")
+        if (
+            _run([str(python), str(snippet), str(spec_file), str(out_file)], timeout=600).returncode
+            != 0
+        ):
+            return {}
+        try:
+            parsed = json.loads(out_file.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
 
-    Defensive: any failed step returns an empty :class:`RepoResult` rather than raising.
+
+def run_live(spec: RepoSpec, workdir: Path, wheel: Path | None = None) -> RepoResult:
+    """Clone ``spec`` at its tag, query OSV, compute reachability tiers, and record outcomes.
+
+    Defensive: any failed step yields an empty :class:`RepoResult` (the repo is skipped).
     """
+    wheel = wheel or _wheel_path()
+    if wheel is None:
+        return RepoResult(repo=spec.name, commit=spec.ref, outcomes=())
+
     checkout = workdir / spec.name
-    if _run(["git", "clone", "--filter=blob:none", spec.url, str(checkout)]).returncode != 0:
-        return RepoResult(repo=spec.name, commit=spec.commit, outcomes=())
-    _run(["git", "checkout", spec.commit], cwd=checkout)
+    clone = _run(
+        ["git", "clone", "--depth", "1", "--branch", spec.ref, spec.url, str(checkout)], timeout=600
+    )
+    if clone.returncode != 0:
+        return RepoResult(repo=spec.name, commit=spec.ref, outcomes=())
 
     requirements = checkout / spec.requirements
     if not requirements.is_file():
-        return RepoResult(repo=spec.name, commit=spec.commit, outcomes=())
-    baseline = _pip_audit_ids(requirements)
+        return RepoResult(repo=spec.name, commit=spec.ref, outcomes=())
 
-    report = scan_project(checkout, _live_matcher())
-    tier_by_package: dict[str, ReachabilityTier] = {}
-    for finding in report.findings:
-        if finding.reachability is not None:
-            tier_by_package[finding.matched.dependency.name.lower()] = finding.reachability.tier
+    flagged = _osv_baseline(requirements)
+    if not flagged:
+        return RepoResult(repo=spec.name, commit=spec.ref, outcomes=())
+
+    tiers = _reachability_tiers(checkout, flagged, wheel)
 
     outcomes: list[AdvisoryOutcome] = []
-    for package, ids in sorted(baseline.items()):
-        tier = tier_by_package.get(package, ReachabilityTier.DYNAMIC_UNKNOWN)
-        for advisory_id in sorted(ids):
-            outcomes.append(AdvisoryOutcome(advisory_id=advisory_id, package=package, tier=tier))
-    return RepoResult(repo=spec.name, commit=spec.commit, outcomes=tuple(outcomes))
+    for name, _version, ids in flagged:
+        info = tiers.get(canonicalize_name(name), {})
+        tier_value = str(info.get("tier", "dynamic-unknown"))
+        # A NOT-IMPORTED whose import name is nonetheless present is a (suspect) false negative:
+        # mark it reachable_truth=True so the metrics' false-negative tally catches it.
+        truth = True if info.get("suspect_fn") else None
+        for advisory_id in ids:
+            outcomes.append(
+                AdvisoryOutcome(
+                    advisory_id=advisory_id,
+                    package=canonicalize_name(name),
+                    tier=_TIER_BY_VALUE.get(tier_value, ReachabilityTier.DYNAMIC_UNKNOWN),
+                    reachable_truth=truth,
+                )
+            )
+    shutil.rmtree(checkout, ignore_errors=True)  # free disk between large repos
+    return RepoResult(repo=spec.name, commit=spec.ref, outcomes=tuple(outcomes))

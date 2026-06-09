@@ -1,19 +1,19 @@
 # VulnAdvisor — Build Plan (task.md)
 
 The sequential plan to build VulnAdvisor from empty repo to a fundable open-source product.
-Read `instructions.md` first — it holds the rules, stack, and the confidence-tier definitions
+Read `Claude.md` first — it holds the rules, stack, and the confidence-tier definitions
 referenced throughout.
 
 ## How to drive this with Claude Code
 Work **one task at a time**:
-1. `Read instructions.md and task.md. Do Task X.Y only.`
+1. `Read Claude.md and task.md. Do Task X.Y only.`
 2. Claude builds it as complete files, then runs the task's **Validation Gate** and pastes the output.
 3. You review. If green → `validated, next`. If not → `fix <X> and re-validate`.
 4. Repeat until the milestone's release tag is reached, then move to the next milestone.
 
 Each task has: **Goal** (why), **Build** (what to make), **Validate** (the gate that must pass
 before moving on), **Done when** (exit condition). The global Definition of Done in
-`instructions.md` also applies to every task (ruff + mypy + pytest clean, PROGRESS.md updated).
+`Claude.md` also applies to every task (ruff + mypy + pytest clean, PROGRESS.md updated).
 
 ## Release map (value ships early, moat builds over time)
 - **M0** Scaffolding
@@ -26,8 +26,8 @@ before moving on), **Done when** (exit condition). The global Definition of Done
 - **M7** Precision: Pyright type inference + framework plugins
 - **M8** Benchmark harness + published report (the fundraising proof)
 - **M9** LLM "attack story" layer → **v1.0**
-- **M10** Launch (PyPI, docs, HN/r/Python, publish benchmark)
-- **M11** Platform (only after real CLI traction)
+- **M10** Launch — package/docs ✅ → live benchmark on real repos → publish to PyPI → post (HN/r/Python) → feedback
+- **M11** Platform (FastAPI + Postgres + Next.js, free-hostable) — **gated: only after M10 launch + real CLI traction**
 
 ---
 
@@ -36,14 +36,14 @@ before moving on), **Done when** (exit condition). The global Definition of Done
 ### Task 0.1 — Repo + toolchain
 **Goal:** a clean, enforced foundation so every later task is auto-checked.
 **Build:** `pyproject.toml` (uv-managed) with Ruff, mypy strict, pytest configured; the full
-empty package tree from `instructions.md` (each module has `__init__.py` + one-line docstring);
+empty package tree from `Claude.md` (each module has `__init__.py` + one-line docstring);
 `README.md` (one-liner + run instructions); `PROGRESS.md` initialized; `.gitignore`.
 **Validate:**
 - [ ] `uv sync` succeeds
 - [ ] `ruff check` and `ruff format --check` clean
 - [ ] `mypy --strict src` clean
 - [ ] `uv run pytest` runs (0 tests OK)
-**Done when:** repo builds clean and the tree matches `instructions.md`.
+**Done when:** repo builds clean and the tree matches `Claude.md`.
 
 ### Task 0.2 — CLI skeleton + CI
 **Goal:** a runnable entrypoint and automated checks from day one.
@@ -153,7 +153,7 @@ constructs (`importlib`, `__import__`, `eval`/`exec`) and record their locations
 
 ### Task 4.2 — Tiering (NOT-IMPORTED / IMPORTED / DYNAMIC-UNKNOWN)
 **Goal:** kill the bulk of the noise, soundly.
-**Build:** `reachability/` assigns each finding a tier per `instructions.md`:
+**Build:** `reachability/` assigns each finding a tier per `Claude.md`:
 `NOT-IMPORTED` (confidently safe) → `IMPORTED` → `DYNAMIC-UNKNOWN` (when dynamic-import sites
 could hide usage). Wire tiers into `engine/` so NOT-IMPORTED is deprioritized and labeled
 "no path from your code." Show the import site (file:line) as evidence.
@@ -271,7 +271,7 @@ cache by finding hash; key from `ANTHROPIC_API_KEY`.
 
 ## M10 — Launch
 
-### Task 10.1 — Package, document, publish
+### Task 10.1 — Package, document, publish  ✅ done (2026-06-09)
 **Goal:** make adoption frictionless (the open-core engine).
 **Build:** PyPI packaging (`pip install vulnadvisor` / `uvx vulnadvisor`); a docs site or rich
 README (quickstart, CI snippet, output formats, privacy statement); CONTRIBUTING + license
@@ -281,22 +281,118 @@ README (quickstart, CI snippet, output formats, privacy statement); CONTRIBUTING
 - [ ] Docs quickstart reproduces a real scan in under 5 minutes
 **Done when:** it's installable, documented, and ready to post to HN / r/Python.
 
----
+> **M10.1 status:** ✅ done — packaging, Apache-2.0, README/CONTRIBUTING/CHANGELOG, launch post draft,
+> `release.yml` (PyPI Trusted Publishing on `v*` tags). NOT yet published to PyPI (that's 10.3).
 
-## M11 — Platform (only after real CLI traction)
-
-### Task 11.1 — Hosted platform (plan first)
-**Goal:** monetize teams once developers already use the CLI.
-**Build:** plan the API surface first and wait for review. Then: FastAPI backend wrapping the
-engine; Postgres for users/orgs/historical scans; a GitHub App for PR comments; Next.js +
-Tailwind + shadcn dashboard (dark `#0d1117`) showing trends + the 3 cards. Add background
-processing only if profiling shows the API blocking (Redis + RQ, not K8s).
+### Task 10.2 — Live benchmark on real public repos
+**Goal:** replace the synthetic 54% with real numbers we can publish. The hermetic corpus proves
+*correctness*; a launch/fundraising claim needs *real repos*.
+**Build:** run the existing `python -m benchmarks --live` over the pinned-commit manifest of real
+public repos (confirm each repo's manifest path first — many use `pyproject.toml`). Record
+VulnAdvisor vs `pip-audit`: total findings, post-triage, % noise reduction, reachable-called, and any
+false negatives. Regenerate `benchmarks/REPORT.md` and update `docs/launch-post.md` with the real
+figures; keep the hermetic run as the soundness proof.
 **Validate:**
-- [ ] API surface reviewed and approved before any platform code is written
-- [ ] Each platform piece has its own task + gate (break this milestone down when we reach it)
-**Done when:** design partners can use a hosted dashboard over the same engine.
+- [ ] `--live` runs end-to-end on ≥10 real repos and writes a real-data REPORT.md
+- [ ] The launch post quotes the *live* numbers, not the synthetic ones
+- [ ] Any false negative on real repos is investigated before publishing (release-blocking)
+**Done when:** the headline claim is backed by a reproducible run on real public code.
+
+### Task 10.3 — Publish to PyPI + go live
+**Goal:** real traction — the thing M11 is gated on.
+**Build:** reserve the `vulnadvisor` name on PyPI; configure Trusted Publishing for the `pypi`
+environment; confirm the final GitHub repo slug in `pyproject.toml` URLs; push a `v1.0` tag to trigger
+`release.yml`. Add GitHub issue/PR templates + a lightweight feedback path (a `feedback` label /
+Discussions). Post to r/Python and Hacker News linking the live benchmark.
+**Validate:**
+- [ ] `pip install vulnadvisor` / `uvx vulnadvisor` works from PyPI on a fresh machine
+- [ ] The release workflow published the wheel + sdist on the tag
+- [ ] Launch posts are live and point to the repo + live benchmark
+**Done when:** anyone can install it and the launch is public. (Publishing is irreversible — the
+maintainer pushes the tag.)
+
+### Task 10.4 — (optional, pre-launch) Strengthen the IMPORTED-AND-CALLED demo
+**Goal:** make the call-path demo fire on real advisories, not only when the user calls the patched
+symbol directly.
+**Build:** connect public-API entry → library-internal vulnerable symbol (the Task 6.1 limitation:
+e.g. PyYAML `yaml.load` → `construct_python_object_new`). Either a small per-library
+public-API→internal-symbol map for the top advisories, or a shallow intra-library call graph seeded
+from the public entry. Stay sound — never emit AND-CALLED without a real path.
+**Validate:**
+- [ ] On ≥3 real advisories reached via a public API, the scan shows the full call path
+- [ ] Zero new false AND-CALLED (soundness gate)
+**Done when:** the marquee demo works on common real-world cases. *Optional — the tool is honest about
+this gap today; do it only if you want a stronger launch demo.*
 
 ---
+
+## M11 — Platform (GATED: only after M10 launch + real CLI traction)
+
+> **Gate:** do not start Task 11.2 until M10 (live benchmark + publish + launch) is done and there is
+> demonstrated CLI adoption. The platform monetizes *teams* after developers already use the CLI.
+> **Core stance:** source never leaves customer infra by default — the CI/CLI/self-hosted runner
+> uploads the `scan --format json` report; the platform stores findings + metadata, **never source**.
+> Cloud-side scanning is explicit opt-in. Full design: `docs/platform-design.md` (APPROVED 2026-06-09).
+>
+> **Free to build and host:** Next.js on **Vercel** (free), Postgres on **Neon/Supabase** (free tier),
+> backend on **Fly.io/Render** free tier, dev via **docker-compose**. No paid infra until load demands it.
+
+### Task 11.1 — API surface design (plan-first)  ✅ approved
+**Done:** `docs/platform-design.md` — the `/v1` REST surface, Postgres data model,
+bring-your-own-analysis default, and the 11.2–11.8 breakdown. Approved 2026-06-09; build gated behind launch.
+
+### Task 11.2 — Backend skeleton + data model
+**Build:** FastAPI app; SQLAlchemy 2.x models + Alembic migration for
+`orgs/users/memberships/repositories/api_keys/installations/scans/findings`; `/healthz`, `/v1/me`;
+Postgres via docker-compose for dev (free Neon/Supabase for deploy).
+**Validate:** migrations apply on a clean DB; health + auth round-trip tested; ruff/mypy/pytest green.
+**Done when:** the backend boots against a clean Postgres and the schema is in place.
+
+### Task 11.3 — Ingest API + diff (the value spine)
+**Build:** `POST /v1/orgs/{org}/repos/{repo}/scans` — body is the core `scan --format json` report;
+validate against `schema_version`, denormalize into `findings`, diff vs the previous scan on that ref.
+**Validate:** a real `vulnadvisor --format json` report persists findings and returns the correct diff
+(fixture-tested); malformed/old-schema reports rejected.
+**Done when:** CI/CLI can publish results without sending source, and scan-to-scan diff works.
+
+### Task 11.4 — Read API + trends
+**Build:** orgs/repos/scans/findings/trend endpoints; pagination; strict org-scoping. Findings are the
+existing JSON-report finding object so dashboard and CLI never diverge.
+**Validate:** tenant isolation tested (no cross-org reads); trend math verified.
+**Done when:** the dashboard has a complete read API over stored scans.
+
+### Task 11.5 — Auth: GitHub OAuth + API keys
+**Build:** GitHub OAuth session login for the dashboard; hashed, revocable, org-scoped API keys for
+CI/CLI uploads (GitHub OAuth only to start, per the approved design).
+**Validate:** key hashing + revocation tested; unauthorized requests rejected.
+**Done when:** dashboard login and CI key issuance/revocation work.
+
+### Task 11.6 — GitHub App + PR comments
+**Build:** HMAC-verified `POST /v1/github/webhook`; installation sync; on PRs, post/update a 3-card
+diff comment (new reachable findings).
+**Validate:** signed webhook fixtures drive a PR comment; bad signatures rejected.
+**Done when:** opening a PR yields a reachability-triage comment.
+
+### Task 11.7 — Next.js dashboard (dark `#0d1117`)
+**Build:** read-only UI over the API — org overview, repo trend chart, scan detail (the 3 cards with
+call-path evidence + tier), PR diff, settings (members, API keys, App install, cloud-scan opt-in).
+Tailwind + shadcn/ui. Deploy free on Vercel.
+**Validate:** renders a seeded org end-to-end; a11y/contrast pass on the dark theme.
+**Done when:** a team can see their trends + 3 cards in a browser.
+
+### Task 11.8 — (conditional) Background processing
+**Build:** Redis + RQ — **only** if 11.3/11.6 profiling shows the API blocking. No queue/Redis/K8s
+until measured.
+**Validate:** the blocking path is measurably non-blocking; failure/retry tested.
+**Done when:** ingest/webhook handling stays responsive under load. *Skip unless profiling proves it.*
+
+---
+
+## Post-launch roadmap (after M10, before/with M11)
+- More framework plugins (Celery, DRF, Flask) — breadth of routed reachability.
+- Grow the symbol dataset (`backfill --top N` on a schedule) — more `IMPORTED-AND-CALLED` hits.
+- Per-method precision for Django class-based views; fold `collect_entry_points` into the analysis cache.
+- Verify the live Pyright path end-to-end on a machine with node + pyright (Task 7.1 open item).
 
 ## Definition of a complete product (v1.0)
 You're "done" with the fundable core when: the CLI installs from PyPI; scans a Python repo;

@@ -1,7 +1,7 @@
 """Run the benchmark and write the Markdown report.
 
 ``python -m benchmarks``         -> hermetic corpus (default, no network) -> benchmarks/REPORT.md
-``python -m benchmarks --live``  -> pinned public repos via pip-audit + VulnAdvisor (needs network)
+``python -m benchmarks --live``  -> pinned public repos via OSV + VulnAdvisor (needs network)
 ``python -m benchmarks --out X`` -> write the report to path X
 """
 
@@ -17,6 +17,26 @@ from benchmarks.report import render_markdown
 _DEFAULT_OUT = Path(__file__).resolve().parent / "REPORT.md"
 
 
+def _run_live_all() -> list:  # type: ignore[type-arg]
+    """Run every manifest repo live, printing per-repo progress (the run is long)."""
+    from benchmarks.manifest import _wheel_path
+
+    wheel = _wheel_path()
+    rows = []
+    with tempfile.TemporaryDirectory(prefix="vulnadvisor-bench-live-") as tmp:
+        for index, spec in enumerate(MANIFEST, start=1):
+            print(f"[{index}/{len(MANIFEST)}] {spec.name} @ {spec.ref} ...", flush=True)
+            row = run_live(spec, Path(tmp), wheel)
+            print(
+                f"    baseline={row.baseline_total} actionable={row.actionable} "
+                f"deprioritized={row.deprioritized} noise={row.noise_reduction_pct:.0f}% "
+                f"fn={row.false_negatives}",
+                flush=True,
+            )
+            rows.append(row)
+    return rows
+
+
 def main() -> int:
     """Parse arguments, run the selected benchmark mode, and write the report."""
     parser = argparse.ArgumentParser(
@@ -29,15 +49,22 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.live:
-        with tempfile.TemporaryDirectory(prefix="vulnadvisor-bench-live-") as tmp:
-            rows = [run_live(spec, Path(tmp)) for spec in MANIFEST]
-        report = build_report(rows)
-        title, mode = "VulnAdvisor Benchmark (live)", "live (pinned public repos)"
+        rows = _run_live_all()
+        report = build_report([r for r in rows if r.baseline_total > 0])
+        title, mode, kind = (
+            "VulnAdvisor Benchmark (live)",
+            "live (pinned public repos)",
+            "soundness",
+        )
     else:
         report = run_corpus()
-        title, mode = "VulnAdvisor Benchmark (hermetic)", "hermetic (synthetic corpus)"
+        title, mode, kind = (
+            "VulnAdvisor Benchmark (hermetic)",
+            "hermetic (synthetic corpus)",
+            "noise",
+        )
 
-    markdown = render_markdown(report, title=title, mode=mode)
+    markdown = render_markdown(report, title=title, mode=mode, kind=kind)
     args.out.write_text(markdown, encoding="utf-8")
     print(markdown)
     print(f"\nWrote {args.out}")

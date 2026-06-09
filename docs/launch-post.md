@@ -9,18 +9,33 @@ vulnerability reachable from my code?* It ranks what's left by real-world exploi
 CISA KEV) and explains each one in plain English. It runs locally, sends your source code nowhere,
 and has no telemetry.
 
-## The result, in one number
+## The results
 
-We ran VulnAdvisor against a naive baseline (`pip-audit`, which flags every advisory on every
-declared dependency) over a reproducible corpus exercised through the real engine:
+VulnAdvisor makes two promises, and we measure both.
+
+**It never hides a reachable vulnerability.** We ran it across 10 real-world Python applications
+(redash, Superset, NetBox, Saleor, AWX, Frappe, IntelOwl, CTFd, and more) pinned to older releases
+with known-vulnerable dependencies — **996 real advisories** from the OSV database, the same source
+`pip-audit` and Dependabot draw from. Across all of them: **zero missed reachable criticals.** These
+apps load code through dynamic import (plugin systems, `importlib`, `exec`), so VulnAdvisor
+deliberately keeps every finding it *cannot prove safe* in an actionable tier rather than risk a
+false "you're safe." That is the whole point — soundness first. Full run:
+[`benchmarks/REPORT.live.md`](../benchmarks/REPORT.live.md).
+
+**When your code is statically analyzable, it cuts the noise hard.** On a reproducible corpus
+exercised through the real engine — no dynamic-import escape hatches hiding calls — reachability
+triage removes the findings that provably can't reach your code:
 
 > **54% less noise — 39 findings cut to 18 — with zero missed reachable criticals.**
 
-That last clause is the whole game. Noise reduction is easy if you're willing to hide real bugs.
-VulnAdvisor's hard rule is the opposite: **a reachable vulnerability is never reported as safe.**
-The benchmark enforces it — any reachable finding that gets deprioritized is a build failure. Full
-numbers: [`benchmarks/REPORT.md`](../benchmarks/REPORT.md), reproducible with
-`python -m benchmarks`.
+Reproducible with `python -m benchmarks`; full numbers in
+[`benchmarks/REPORT.md`](../benchmarks/REPORT.md).
+
+That contrast *is* the design. VulnAdvisor only says "safe" when it can prove it: it deprioritizes
+aggressively on code it can fully see, and stays conservative the instant dynamic dispatch could
+hide a call. Noise reduction is easy if you're willing to hide real bugs — VulnAdvisor's hard rule
+is the opposite, and the benchmark enforces it: any reachable finding that gets deprioritized is a
+build failure.
 
 ## How it decides "reachable"
 

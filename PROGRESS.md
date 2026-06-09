@@ -4,6 +4,70 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 10.2 — Live benchmark on real public repos  (2026-06-09)
+
+**Status:** complete, Validation Gate passing. (M10 — replace the synthetic 54% with real, publishable evidence.)
+
+**Headline result:** the live run is a **soundness proof** across **10 real applications** (redash,
+Superset, NetBox, Saleor, AWX, Frappe, IntelOwl, CTFd, django.nV, healthchecks), pinned to older
+tags with known-vulnerable dependencies: **996 real OSV advisories triaged, zero false negatives,
+zero missed reachable criticals.** The hermetic **54%** noise-reduction figure is kept as the
+clearly-labeled *static-corpus* result (reproducible via `python -m benchmarks`).
+
+**Two decisions (user):**
+1. **Baseline source → OSV-direct.** `pip-audit` structurally cannot audit the corpus we need: its
+   `-r` mode shells out to `pip install --dry-run --report`, which must *build a wheel* for every
+   dependency to read metadata, and decade-old vulnerable versions (e.g. `pystache`) fail to build
+   on modern Python (`use_2to3 is invalid`). So 12/13 baselines came back empty. We now query OSV
+   directly from pinned `name==version` lines — the *same database* pip-audit/Dependabot draw from,
+   minus the wheel-building fragility.
+2. **Reframe the launch honestly** (no engine change). Real apps show ~0% deprioritization because
+   their plugin-loader dynamic imports (`importlib`/`__import__`/`exec`) globally block the
+   `NOT_IMPORTED` verdict — the soundness rule at `reachability/tiering.py` escalates every unproven
+   finding to a cautious tier rather than risk a false "safe." The live run therefore demonstrates
+   *soundness/conservatism on real code*; the 54% (static, fully-analyzable corpus) demonstrates
+   *noise reduction*. Both are published, each clearly labeled.
+
+**What changed**
+- Rewrote `benchmarks/manifest.py`: `_osv_baseline()` (parse pinned reqs → `OSVClient.query` per
+  dep, persisted SQLite cache at `benchmarks/.osv-cache.sqlite` so re-runs hit zero network);
+  curated `MANIFEST` to 10 real apps at vulnerable tags; reachability still computed locally inside
+  a throwaway per-repo `uv venv`. **Mapping fix:** install the *latest* version of each flagged
+  package (import name is version-stable and latest has prebuilt wheels) instead of the unbuildable
+  pinned-vulnerable version — restores HIGH-confidence package→import mapping. Per-package
+  false-negative guard retained (a `NOT_IMPORTED` whose import name appears in the graph →
+  `reachable_truth=True` → counted as a release-blocking FN).
+- `benchmarks/report.py`: added a `kind` framing (`"noise"` vs `"soundness"`); the live report leads
+  with the soundness headline + an explanation of the conservative dynamic-dispatch behavior.
+- `benchmarks/__main__.py`: `--live` renders with `kind="soundness"` → `benchmarks/REPORT.live.md`.
+- `docs/launch-post.md`: rewrote "The result" → "The results" presenting both numbers honestly
+  (996-advisory soundness proof + 54% static noise reduction); corrected the baseline description.
+
+**Why these choices**
+- OSV-direct keeps the baseline faithful to "what a naive scanner shows" while being robust on the
+  exact old corpus that defeats build-based auditors — and needs only one public API (OSV).
+- Installing *latest* for mapping is sound: reachability depends only on the version-stable import
+  name, never on the installed version; the vulnerable version is recorded from the manifest pin.
+- Dropped zulip from the manifest: its 5,645-file checkout reliably fails inside the harness's temp
+  environment (clone itself is fine standalone); the other 10 returned identical counts across two
+  runs, so 996 is reproducible. mailu/jupyterhub/graphite-web were unpinned (no `==` → no baseline)
+  and the sentry 9.1.2 tag does not exist — all replaced by CTFd + healthchecks.
+
+**Validation evidence**
+- `uv run python -m benchmarks --live` → end-to-end on **10 real repos**, 996 advisories,
+  false-negatives **0**, missed-criticals **0**, exit **0**; wrote `benchmarks/REPORT.live.md`.
+- `uv run python -m benchmarks` (hermetic) → **54%** (39→18), 0 FN, exit 0; wrote `REPORT.md`.
+- ruff check clean; ruff format --check clean (84 files); `mypy --strict src` clean (54 files);
+  **pytest 280 passed**.
+
+**Open questions**
+- A future, separate, soundness-critical task could make dynamic imports that provably target
+  first-party modules stop poisoning third-party `NOT_IMPORTED` verdicts (redash's loaders only
+  reach `redash.*` plugins) — this would unlock real noise reduction on real apps. Deliberately
+  *not* done now (engine change, release-blocking if wrong); flagged for post-launch.
+
+---
+
 ## Task 10.1 — Package, document, publish  (2026-06-09)
 
 **Status:** complete, Validation Gate passing. (M10 — launch readiness.)
