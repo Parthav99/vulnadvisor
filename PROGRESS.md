@@ -4,6 +4,49 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 10.5 — Publish to PyPI + go live: reversible prep done; irreversible steps handed off  (2026-06-09)
+
+**Status:** reversible prep complete, Validation Gate passing. **The irreversible publish is
+maintainer-gated and NOT done by me** — per task.md ("the maintainer pushes the tag") and the
+standing rule on outward-facing/irreversible actions. No tag was pushed and nothing was posted.
+
+**Blocker surfaced (important):** a `v1.0` tag already exists locally **and on the remote**, but it
+points to `f555caa` (Task 9.1) — old code that predates `release.yml`. For a `push`-tag event GitHub
+uses the workflow file from the tagged commit, which there has no `release.yml`, so it **never
+triggered a publish**. Confirmed: PyPI has no `vulnadvisor` project (404), and the GitHub releases/runs
+API returns 404 (private repo, unauthenticated). Conclusion: nothing has shipped; the stale `v1.0`
+tag must **not** be reused. The runbook releases as **`v1.0.0`** (matches the pyproject version and
+the `v*` trigger) so no published ref is force-moved.
+
+**What I built (all reversible, committed):**
+- `.github/ISSUE_TEMPLATE/` — `false_negative.yml` (dedicated, highest-priority: a missed reachable
+  vuln is release-blocking), `bug_report.yml`, `feature_request.yml`, `config.yml` (routes general
+  feedback to Discussions; routes tool-vulnerability reports to the security policy).
+- `.github/PULL_REQUEST_TEMPLATE.md` — with a required soundness check for any `callgraph/` /
+  `reachability/` change (no new false negatives) plus the gate checklist.
+- `SECURITY.md` — private-disclosure flow for vulns **in the tool itself**, and the design
+  guarantees (analyzes via `ast`, never executes the target; local-only; no telemetry).
+- `docs/RELEASE.md` — the maintainer runbook: one-time PyPI Trusted-Publishing setup
+  (`Parthav99/vulnadvisor_v2`, workflow `release.yml`, environment `pypi`), the stale-`v1.0`
+  resolution, a reversible pre-flight (gate + clean-venv install + live-benchmark FN check), and the
+  exact irreversible tag-push + launch-post steps.
+- `CHANGELOG.md` — the 1.0.0 release link retargeted from `v1.0` to `v1.0.0`.
+
+**Verified locally (mirrors `release.yml`):** `uv build` produces `vulnadvisor-1.0.0` sdist + wheel;
+installing the wheel in a clean venv and running `vulnadvisor --version` prints `vulnadvisor 1.0.0`.
+`pyproject.toml` URLs and `release.yml` (Trusted Publishing on `v*`, `pypi` environment) are correct
+as-is. The launch post already leads with the real live numbers (paperless 37% / BookWyrm 10% /
+Mathesar 14%, 0 FN) before the hermetic 54%.
+
+**Validation:** ruff clean · format clean · `mypy --strict src` clean (55 files) · pytest 321 passed.
+
+**Handoff — what only the maintainer can do (see `docs/RELEASE.md`):** reserve `vulnadvisor` on PyPI
++ configure Trusted Publishing; create the `pypi` GitHub environment; push the `v1.0.0` tag (triggers
+the publish); verify `uvx vulnadvisor` from PyPI; cut the GitHub Release; enable Discussions + create
+the `feedback`/`false-negative` labels; post to r/Python and HN.
+
+---
+
 ## Task 10.4 — Public-API call-path resolution (IMPORTED-AND-CALLED on real advisories)  (2026-06-09)
 
 **Status:** complete, Validation Gate passing. (M10 — optional/recommended; strengthens the marquee call-path demo.)

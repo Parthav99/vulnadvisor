@@ -1,0 +1,27 @@
+name: "Feature request"
+description: "Propose a capability or improvement."
+title: "[FEATURE] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        VulnAdvisor's scope is **Python reachability done deeply** — one ecosystem, understood
+        better than any generalist tool. Requests that keep that focus are most likely to land.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that VulnAdvisor makes hard or impossible today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

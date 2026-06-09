@@ -1,0 +1,58 @@
+name: "Suspected false negative (missed reachable vuln)"
+description: "VulnAdvisor said a vulnerability was NOT reachable, but you believe it is. This is the highest-priority class of bug."
+title: "[FALSE NEGATIVE] "
+labels: ["false-negative", "soundness"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **A false negative is release-blocking for us.** Soundness over precision is the core
+        promise: a wrong "you're safe" can hide a breach. Thank you for reporting this — please
+        give us enough to reproduce. Do **not** paste secrets; redact tokens and private code.
+  - type: input
+    id: package
+    attributes:
+      label: Vulnerable package and version
+      placeholder: "e.g. pyyaml==5.3.1"
+    validations:
+      required: true
+  - type: input
+    id: advisory
+    attributes:
+      label: Advisory / CVE
+      placeholder: "e.g. CVE-2020-14343 / GHSA-..."
+    validations:
+      required: true
+  - type: dropdown
+    id: reported_tier
+    attributes:
+      label: Tier VulnAdvisor reported
+      options:
+        - NOT-IMPORTED
+        - IMPORTED
+        - DYNAMIC-UNKNOWN
+        - IMPORTED-AND-CALLED
+    validations:
+      required: true
+  - type: textarea
+    id: why_reachable
+    attributes:
+      label: Why you believe it is actually reachable
+      description: The import site or call path you expected VulnAdvisor to find (file:line if you can).
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A tiny snippet or repo that triggers the missed finding, plus the exact command you ran.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: VulnAdvisor version
+      placeholder: "vulnadvisor --version"
+    validations:
+      required: true

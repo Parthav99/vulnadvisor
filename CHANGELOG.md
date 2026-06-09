@@ -29,4 +29,4 @@ experience.
 - Privacy by design: local analysis, no telemetry, network only to public advisory APIs and your
   own LLM key.
 
-[1.0.0]: https://github.com/Parthav99/vulnadvisor_v2/releases/tag/v1.0
+[1.0.0]: https://github.com/Parthav99/vulnadvisor_v2/releases/tag/v1.0.0
