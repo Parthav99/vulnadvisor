@@ -410,11 +410,26 @@ Tailwind + shadcn/ui. Deploy free on Vercel.
 **Validate:** renders a seeded org end-to-end; a11y/contrast pass on the dark theme.
 **Done when:** a team can see their trends + 3 cards in a browser.
 
-### Task 11.8 — (conditional) Background processing
+### Task 11.8 — (conditional) Background processing  ⏭ SKIPPED (2026-06-10)
 **Build:** Redis + RQ — **only** if 11.3/11.6 profiling shows the API blocking. No queue/Redis/K8s
 until measured.
 **Validate:** the blocking path is measurably non-blocking; failure/retry tested.
 **Done when:** ingest/webhook handling stays responsive under load. *Skip unless profiling proves it.*
+
+**Decision:** skipped per the conditional gate. Ingest is a bounded parse + bulk insert; the webhook
+path delegates the actual analysis to the customer's CI and only persists the resulting report. No
+measured blocking, so no queue/Redis is introduced (keeps the free-host footprint minimal). Revisit
+only if real load profiling shows the ingest/webhook path blocking.
+
+---
+
+## ✅ M11 COMPLETE (2026-06-10)
+11.1 (design, approved) · 11.2 (backend skeleton + data model) · 11.3 (ingest + diff) ·
+11.4 (read API + trends) · 11.5 (auth: OAuth + API keys) · 11.6 (GitHub App + PR comments,
+incl. live RS256 installation token) · 11.7 (Next.js dashboard) — all done & validated.
+11.8 skipped (conditional, no measured blocking). The hosted platform tier is feature-complete
+for v1: bring-your-own-analysis by default (source never leaves customer infra), free-hostable
+(Vercel + Neon/Supabase + Fly.io/Render), with PR-comment triage and a read-only dashboard.
 
 ---
 

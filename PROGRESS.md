@@ -4,6 +4,32 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## M11 closed — platform tier feature-complete; 11.8 skipped  (2026-06-10)
+
+**Status:** M11 closed out at the maintainer's direction ("validated — skip 11.8, close out M11").
+
+**11.8 (background processing) — SKIPPED, by its own conditional gate.** The task is explicitly
+*"skip unless profiling proves it."* Ingest is a bounded parse + bulk insert; the webhook path
+delegates the actual reachability analysis to the customer's CI and only persists the uploaded
+report. No measured blocking exists, so no Redis/RQ/queue is introduced — this keeps the free-host
+footprint minimal. Revisit only if real load profiling shows the ingest/webhook path blocking.
+
+**M11 summary (all done & validated):** 11.1 design (approved) · 11.2 backend skeleton + 8-table
+data model + Alembic · 11.3 ingest + scan-to-scan diff · 11.4 read API + trends (tenant-isolated,
+keyset pagination) · 11.5 auth (GitHub OAuth sessions + hashed org-scoped API keys) · 11.6 GitHub
+App (HMAC webhook + installation sync + 3-card PR comment, live RS256 installation token) · 11.7
+Next.js read-only dashboard (dark `#0d1117`). The platform is **bring-your-own-analysis by default**
+(source never leaves customer infra), **free-hostable** (Vercel + Neon/Supabase + Fly.io/Render),
+and never bloats the published CLI wheel (all server deps live in the non-shipping `platform`
+dependency group). Final gate green: ruff/mypy clean, **pytest 374 passed**; dashboard `build`/`lint`
+clean + live SSR render verified.
+
+**Next:** no M11 work remains. Outstanding maintainer-only actions from M10 still stand (launch posts
+to r/Python + HN — drafts in `docs/reddit-post.md`, `docs/hn-post.md`). Otherwise awaiting direction
+(deploy the platform to free infra, or new milestone).
+
+---
+
 ## Task 11.7 — Next.js dashboard (read-only UI)  (2026-06-10)
 
 **Status:** complete, Validation Gate passing.
