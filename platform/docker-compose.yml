@@ -1,0 +1,22 @@
+# Local dev Postgres for the VulnAdvisor platform.
+#   docker compose -f platform/docker-compose.yml up -d
+# Then point DATABASE_URL at it (see platform/.env.example) and run `alembic upgrade head`.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: vulnadvisor
+      POSTGRES_PASSWORD: vulnadvisor
+      POSTGRES_DB: vulnadvisor
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vulnadvisor -d vulnadvisor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
