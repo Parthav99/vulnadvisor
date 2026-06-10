@@ -97,6 +97,20 @@ async def test_webhook_accepts_valid_ping(client: AsyncClient) -> None:
     assert resp.json()["ok"] is True
 
 
+async def test_webhook_alias_path_works(client: AsyncClient) -> None:
+    _overrides()
+    body = json.dumps({"zen": "hi"}).encode()
+    headers = {
+        "X-GitHub-Event": "ping",
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": _sign(body),
+    }
+    # The alias /v1/webhooks/github resolves to the same handler as /v1/github/webhook.
+    resp = await client.post("/v1/webhooks/github", content=body, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
 # --- installation sync --------------------------------------------------------------------------
 
 

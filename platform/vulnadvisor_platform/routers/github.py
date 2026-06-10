@@ -51,10 +51,15 @@ async def install() -> RedirectResponse:
 
 
 @router.post("/v1/github/webhook")
+@router.post("/v1/webhooks/github", include_in_schema=False)
 async def webhook(
     request: Request, settings: SettingsDep, app: GitHubAppDep, session: SessionDep
 ) -> dict[str, Any]:
-    """Verify and dispatch a GitHub webhook delivery."""
+    """Verify and dispatch a GitHub webhook delivery.
+
+    Served at the canonical ``/v1/github/webhook`` and an alias ``/v1/webhooks/github`` (kept out
+    of the OpenAPI schema) so a GitHub App configured with either path works identically.
+    """
     body = await request.body()
     if not verify_signature(
         settings.github_webhook_secret, body, request.headers.get("X-Hub-Signature-256")
