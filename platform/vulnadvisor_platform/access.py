@@ -10,11 +10,19 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from vulnadvisor_platform.models import Membership, Org, Repository, Scan, User
+from vulnadvisor_platform.models import Membership, Org, Repository, Role, Scan, User
+
+_ADMIN_ROLES = frozenset({Role.OWNER.value, Role.ADMIN.value})
 
 
 def _not_found(what: str) -> HTTPException:
     return HTTPException(status.HTTP_404_NOT_FOUND, f"{what} not found")
+
+
+def require_admin(role: str) -> None:
+    """Raise 403 unless ``role`` is owner or admin (for privileged org operations)."""
+    if role not in _ADMIN_ROLES:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "owner or admin role required")
 
 
 async def _role(session: AsyncSession, user_id: uuid.UUID, org_id: uuid.UUID) -> str | None:

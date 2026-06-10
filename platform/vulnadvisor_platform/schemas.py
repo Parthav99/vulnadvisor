@@ -166,3 +166,35 @@ class DiffResponse(BaseModel):
     introduced: list[dict[str, Any]]
     fixed: list[dict[str, Any]]
     unchanged: int
+
+
+# --- API keys (Task 11.5) -----------------------------------------------------------------------
+
+
+class ApiKeyOut(BaseModel):
+    """An API key's non-secret metadata (never the hash or the secret)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    prefix: str
+    created_at: datetime
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+
+
+class ApiKeyCreate(BaseModel):
+    """Request body to mint a new API key."""
+
+    name: str
+
+
+class ApiKeyCreated(BaseModel):
+    """Response when a key is created — the only time the secret is ever returned."""
+
+    id: uuid.UUID
+    name: str
+    prefix: str
+    created_at: datetime
+    secret: str

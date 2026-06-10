@@ -12,12 +12,13 @@ import hashlib
 import secrets
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
 from vulnadvisor_platform.db import SessionDep, utcnow
 from vulnadvisor_platform.models import ApiKey, User
+from vulnadvisor_platform.sessions import user_from_session
 
 _PREFIX_TAG = "va"
 _bearer = HTTPBearer(auto_error=False)
@@ -74,21 +75,30 @@ async def get_current_api_key(credentials: _CredentialsDep, session: SessionDep)
     return key
 
 
-async def get_current_user(credentials: _CredentialsDep, session: SessionDep) -> User:
-    """Resolve the authenticated user (the API key's creator), or raise 401.
+async def get_current_user(
+    request: Request, credentials: _CredentialsDep, session: SessionDep
+) -> User:
+    """Resolve the authenticated user from a dashboard session cookie or a Bearer API key.
 
-    Rejects a missing/non-Bearer header, an unknown or revoked key, and a key whose creating user no
-    longer exists. On success, stamps ``last_used_at`` and returns the :class:`User`.
+    Tries the session cookie first (dashboard); falls back to the API key's creating user (so CLI
+    keys keep working for read endpoints). Raises 401 if neither yields a user.
     """
-    key = await _resolve_api_key(credentials, session)
-    if key.created_by is None:
-        raise _unauthorized()
-    user = await session.get(User, key.created_by)
-    if user is None:
-        raise _unauthorized()
-    key.last_used_at = utcnow()
-    await session.commit()
-    return user
+    user = await user_from_session(request, session)
+    if user is not None:
+        return user
+
+    if credentials is not None:
+        key = await _resolve_api_key(credentials, session)
+        if key.created_by is None:
+            raise _unauthorized()
+        owner = await session.get(User, key.created_by)
+        if owner is None:
+            raise _unauthorized()
+        key.last_used_at = utcnow()
+        await session.commit()
+        return owner
+
+    raise _unauthorized()
 
 
 # Reusable FastAPI dependency annotations.

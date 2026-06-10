@@ -4,6 +4,39 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 11.5 — Auth: GitHub OAuth + API keys  (2026-06-10)
+
+**Status:** complete, Validation Gate passing. **No new dependencies** (httpx + stdlib `hmac`).
+
+**What was built**
+- **GitHub OAuth login** (`routers/auth.py` + `github_oauth.py`): `GET /v1/auth/github/login`
+  (redirects to GitHub with a CSRF `state`, also set as a cookie), `GET /v1/auth/github/callback`
+  (verifies state, exchanges the code, **upserts the user by `github_user_id`**, sets the session
+  cookie, redirects to the dashboard), `POST /v1/auth/logout`. The GitHub client is a FastAPI
+  dependency so tests run with a fake — **no network**.
+- **Signed-cookie sessions** (`sessions.py`): cookie value is `"<user_id>.<hmac-sha256>"` signed with
+  `SECRET_KEY`, verified with `hmac.compare_digest`. No server-side session store.
+- **Dual auth** (`security.py`): `get_current_user` now resolves a **session cookie OR a Bearer API
+  key** (session first, key fallback) — so the dashboard uses cookies while CLI keys keep working for
+  reads; all prior tests stayed green. Ingest still uses the org-scoped `CurrentApiKey`.
+- **API-key management** (`routers/keys.py`): `GET /v1/orgs/{org}/keys` (metadata only — never the
+  hash/secret), `POST` (mint; **secret returned exactly once**; owner/admin only via
+  `access.require_admin`), `DELETE .../{id}` (revoke, idempotent). New schemas `ApiKeyOut`/
+  `ApiKeyCreate`/`ApiKeyCreated`.
+- Config: `secret_key`, `github_client_id`/`_secret`/`_redirect_uri`, `dashboard_url` (env-only; dev
+  defaults; the dev `secret_key` is clearly marked to override in production).
+
+**Validation:** ruff + format clean · `mypy --strict` clean (72 files) · pytest **362 passed** (8 new).
+Auth tests cover the login redirect (+state cookie), the callback creating a user whose **session
+cookie then authenticates `/v1/me`**, bad-CSRF-state 400, and logout -> 401. Key tests cover
+create-returns-secret-once (and that secret authorizing an ingest), list-omits-hash/secret,
+**revoke -> the key is rejected (401)** with `revoked_at` surfaced, non-admin create -> 403, unknown
+key -> 404, and cross-org -> 404.
+
+**Next:** 11.6 — GitHub App: HMAC-verified webhook, installation sync, PR comment with the 3-card diff.
+
+---
+
 ## Task 11.4 — Read API + trends  (2026-06-10)
 
 **Status:** complete, Validation Gate passing.

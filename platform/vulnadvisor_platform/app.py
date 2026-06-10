@@ -10,7 +10,7 @@ from sqlalchemy import select
 from vulnadvisor_platform import __version__
 from vulnadvisor_platform.db import SessionDep
 from vulnadvisor_platform.models import Membership, Org
-from vulnadvisor_platform.routers import ingest, read
+from vulnadvisor_platform.routers import auth, ingest, keys, read
 from vulnadvisor_platform.schemas import HealthResponse, MeResponse, OrgMembershipOut
 from vulnadvisor_platform.security import CurrentUser
 
@@ -19,7 +19,9 @@ app = FastAPI(
     version=__version__,
     summary="Reachability-first vulnerability triage for teams.",
 )
+app.include_router(auth.router)
 app.include_router(ingest.router)
+app.include_router(keys.router)
 app.include_router(read.router)
 
 

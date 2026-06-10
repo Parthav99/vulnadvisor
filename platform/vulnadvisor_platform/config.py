@@ -20,6 +20,17 @@ class Settings(BaseSettings):
     # Echo SQL (dev debugging only).
     db_echo: bool = False
 
+    # Secret used to sign session cookies. MUST be overridden in production (env SECRET_KEY).
+    secret_key: str = "dev-insecure-secret-change-in-production"
+
+    # GitHub OAuth app credentials (dashboard login). Empty in dev/tests.
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    github_redirect_uri: str = "http://localhost:8000/v1/auth/github/callback"
+
+    # Where to send the browser after a successful login.
+    dashboard_url: str = "http://localhost:3000"
+
 
 @lru_cache
 def get_settings() -> Settings:
