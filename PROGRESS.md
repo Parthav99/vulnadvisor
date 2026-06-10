@@ -4,6 +4,43 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 11.6 — GitHub App: webhook + installation sync + PR diff comment  (2026-06-10)
+
+**Status:** complete, Validation Gate passing. **No new dependencies** (stdlib `hmac` + httpx).
+
+**What was built**
+- **`POST /v1/github/webhook`** (`routers/github.py`): HMAC-SHA256 verified against
+  `GITHUB_WEBHOOK_SECRET` (`X-Hub-Signature-256`, constant-time compare, **fail-closed** on missing
+  secret/header) before any work; bad signature -> 401. Dispatches by `X-GitHub-Event`.
+- **Installation sync**: `installation` / `installation_repositories` upsert the Org (by
+  `github_org_id`/slug), the Installation, and Repositories (and remove on `repositories_removed`).
+  Fully defensive payload parsing.
+- **PR comment**: `pull_request` (opened/synchronize/reopened) finds the head scan (by head sha, then
+  head ref) and the base scan (base ref), diffs their findings by `(package, advisory_id)`, and posts
+  a **reachability-triage comment** of the *introduced* findings (with a hidden marker so it updates
+  in place). If no report exists yet, posts a "waiting for a scan report" note so opening a PR always
+  yields a comment. `pr_comment.render_pr_comment` is pure; only `not-imported` is treated as safe.
+- `GET /v1/github/install` redirects to the App install page. `webhooks.verify_signature` and the
+  comment renderer are pure + unit-tested.
+- `github_app.py`: the GitHub client is a mockable dependency; `post_or_update_comment` implements the
+  find-or-create REST upsert **given** an installation token.
+
+**Deferred (flagged):** minting the installation access token needs a short-lived **RS256 JWT signed
+with the App private key** — that requires a crypto dependency (e.g. PyJWT+cryptography) I have not
+added. `_installation_token` raises a clear error until the App is provisioned; the entire
+webhook -> diff -> comment orchestration is exercised via a faked client, so only the final GitHub
+auth handshake is outstanding. Ask me to `uv add` the crypto dep to wire the live path.
+
+**Validation:** ruff + format clean · `mypy --strict` clean (76 files) · pytest **371 passed** (9 new):
+bad-signature 401, valid ping 200, installation sync (org/installation/repo upserted), PR opened ->
+diff comment surfacing the introduced finding (`requests`) with "1 new reachable finding", pending
+comment when no report, unsynced-repo no-op, install redirect, and pure `verify_signature` /
+`render_pr_comment` tests.
+
+**Next:** 11.7 — Next.js dashboard (read-only UI over the API).
+
+---
+
 ## Task 11.5 — Auth: GitHub OAuth + API keys  (2026-06-10)
 
 **Status:** complete, Validation Gate passing. **No new dependencies** (httpx + stdlib `hmac`).
