@@ -16,7 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vulnadvisor_platform.app import app
 from vulnadvisor_platform.config import Settings, get_settings
 from vulnadvisor_platform.github_app import get_github_app
-from vulnadvisor_platform.models import Finding, Installation, Org, Repository, Scan
+from vulnadvisor_platform.models import (
+    Finding,
+    Installation,
+    Membership,
+    Org,
+    Repository,
+    Scan,
+    User,
+)
 
 _SECRET = "whsec_test"
 
@@ -121,6 +129,7 @@ async def test_installation_event_syncs_org_and_repos(
     payload = {
         "action": "created",
         "installation": {"id": 5001, "account": {"login": "acme", "id": 42}},
+        "sender": {"login": "octo-admin", "id": 999, "avatar_url": "http://a/x.png"},
         "repositories": [
             {"id": 777, "name": "web", "full_name": "acme/web", "private": True},
         ],
@@ -141,6 +150,31 @@ async def test_installation_event_syncs_org_and_repos(
             await session.execute(select(Repository).where(Repository.github_repo_id == 777))
         ).scalar_one()
         assert repo.name == "web" and repo.org_id == org.id
+
+
+async def test_installation_links_installer_as_owner(
+    client: AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    """The installing user (webhook ``sender``) becomes an owner member, so GET /v1/orgs sees it."""
+    _overrides()
+    payload = {
+        "action": "created",
+        "installation": {"id": 5050, "account": {"login": "acme", "id": 42}},
+        "sender": {"login": "octo-admin", "id": 999, "avatar_url": "http://a/x.png"},
+        "repositories": [],
+    }
+    resp = await _post(client, payload, "installation")
+    assert resp.status_code == 200
+
+    async with sessionmaker() as session:
+        org = (await session.execute(select(Org).where(Org.slug == "acme"))).scalar_one()
+        user = (await session.execute(select(User).where(User.github_user_id == 999))).scalar_one()
+        membership = (
+            await session.execute(
+                select(Membership).where(Membership.user_id == user.id, Membership.org_id == org.id)
+            )
+        ).scalar_one()
+        assert membership.role == "owner"
 
 
 # --- pull_request comment -----------------------------------------------------------------------

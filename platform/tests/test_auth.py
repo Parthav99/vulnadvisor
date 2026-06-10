@@ -5,9 +5,11 @@ session cookie that then authenticates ``/v1/me``, and logout clears it.
 """
 
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vulnadvisor_platform.app import app
 from vulnadvisor_platform.github_oauth import GitHubUser, get_oauth
+from vulnadvisor_platform.models import Org
 
 _GH_USER = GitHubUser(id=4242, login="octonaut", email="o@example.com", avatar_url="http://a/x.png")
 
@@ -50,6 +52,25 @@ async def test_callback_logs_in_and_session_authenticates(client: AsyncClient) -
     me = await client.get("/v1/me")
     assert me.status_code == 200
     assert me.json()["login"] == "octonaut"
+
+
+async def test_callback_backfills_personal_org_membership(
+    client: AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    """A GitHub App installed on the user's own account before first login is linked at login."""
+    _use_fake_oauth()  # _GH_USER.id == 4242
+    async with sessionmaker() as session:
+        # Personal-account org (github_org_id == the user's github id), no membership yet.
+        session.add(Org(slug="octonaut", name="octonaut", github_org_id=4242))
+        await session.commit()
+
+    login = await client.get("/v1/auth/github/login")
+    state = login.cookies["va_oauth_state"]
+    await client.get(f"/v1/auth/github/callback?code=abc&state={state}")
+
+    orgs = await client.get("/v1/orgs")
+    assert orgs.status_code == 200
+    assert any(o["slug"] == "octonaut" for o in orgs.json())
 
 
 async def test_callback_rejects_bad_state(client: AsyncClient) -> None:

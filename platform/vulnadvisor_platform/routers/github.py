@@ -21,10 +21,13 @@ from vulnadvisor_platform.github_app import GitHubApp, GitHubAppDep
 from vulnadvisor_platform.models import (
     Finding,
     Installation,
+    Membership,
     Org,
     Repository,
+    Role,
     Scan,
     ScanStatus,
+    User,
 )
 from vulnadvisor_platform.pr_comment import MARKER, render_pr_comment
 from vulnadvisor_platform.webhooks import verify_signature
@@ -112,6 +115,12 @@ async def _sync_installation(session: AsyncSession, payload: dict[str, Any]) -> 
         record.org_id = org.id
         record.account_login = account_login
 
+    # Link the installing user (the webhook ``sender``) to the org as owner, so they actually see
+    # it in GET /v1/orgs after installing. Without this the org exists but belongs to no one.
+    installer = await _upsert_installer(session, payload.get("sender"))
+    if installer is not None:
+        await _ensure_membership(session, installer.id, org.id, Role.OWNER.value)
+
     added = payload.get("repositories")
     if not isinstance(added, list):
         added = payload.get("repositories_added")
@@ -174,6 +183,47 @@ async def _upsert_repo(session: AsyncSession, org: Org, repo: dict[str, Any]) ->
     else:
         existing.name = name
         existing.org_id = org.id
+
+
+async def _upsert_installer(session: AsyncSession, sender: Any) -> User | None:
+    """Upsert the installing user from the webhook ``sender`` object; ``None`` if it's malformed.
+
+    The user may not have logged in yet, so a minimal record (github id + login) is created; a later
+    OAuth login fills in email/avatar by matching ``github_user_id``.
+    """
+    if not isinstance(sender, dict):
+        return None
+    gid = sender.get("id")
+    login = sender.get("login")
+    if not isinstance(gid, int) or not isinstance(login, str):
+        return None
+    user = (
+        await session.execute(select(User).where(User.github_user_id == gid))
+    ).scalar_one_or_none()
+    if user is None:
+        avatar = sender.get("avatar_url")
+        user = User(
+            github_user_id=gid,
+            login=login,
+            email=None,
+            avatar_url=avatar if isinstance(avatar, str) else None,
+        )
+        session.add(user)
+        await session.flush()
+    return user
+
+
+async def _ensure_membership(
+    session: AsyncSession, user_id: uuid.UUID, org_id: uuid.UUID, role: str
+) -> None:
+    """Create a membership linking ``user_id`` to ``org_id`` if one doesn't already exist."""
+    existing = (
+        await session.execute(
+            select(Membership).where(Membership.user_id == user_id, Membership.org_id == org_id)
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        session.add(Membership(user_id=user_id, org_id=org_id, role=role))
 
 
 async def _latest_complete(
