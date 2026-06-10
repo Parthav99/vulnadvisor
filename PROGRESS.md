@@ -4,6 +4,47 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 11.7 — Next.js dashboard (read-only UI)  (2026-06-10)
+
+**Status:** complete, Validation Gate passing.
+
+**Environment:** Node was not installed; installed **Node v24.16.0** (winget, user scope) to build and
+validate. Scaffolded with `create-next-app` → **Next 16.2.9 + React 19 + Tailwind v4 + TypeScript**,
+App Router, ESLint. Lives in `dashboard/` (a separate Vercel-deployable; Python tooling never touches
+it; `node_modules`/`.next` gitignored).
+
+**Built** (dark `#0d1117`, GitHub-dark palette; read-only, no business logic in the frontend):
+- `lib/api.ts` — server-side typed fetch client; forwards the session cookie to the API (shared host
+  in dev) and supports a `DASHBOARD_API_TOKEN` (org-scoped key) for login-less local/preview render;
+  `apiGetOrNull` maps 401/404 to null. `lib/types.ts` mirrors the API; `lib/format.ts` has band/tier
+  colors + labels.
+- Pages: **Home** (`/`, orgs or GitHub sign-in), **Org** (`/orgs/{org}`, repos + counts), **Repo**
+  (`/orgs/{org}/repos/{repo}`, 90-day trend chart + branch picker + scans), **Scan**
+  (`/scans/{scan}`, the **three cards** per finding — Attack story / Risk / Action with tier,
+  call-path evidence, fix; tier/band filters), **Diff** (`/scans/{scan}/diff/{to}`, introduced/fixed),
+  **Settings** (`/orgs/{org}/settings`, API keys read-only + App install + cloud-scan status).
+- Components: `nav`, `ui` (Card/Badge/Stat/…), `trend-chart` (dependency-free SVG, a11y `role="img"`
+  + legend), `finding-card` (the 3 cards).
+- Auth model: read pages accept the platform's **session cookie OR Bearer key** (the 11.5 dual auth).
+
+**Bug found + fixed via the live run:** `app/scans/[scan]` and `app/scans/[from]` were sibling
+dynamic segments with different slug names — `next build` passed but **runtime 500'd** ("cannot use
+different slug names for the same dynamic path"). Nested the diff route under `[scan]` as
+`/scans/[scan]/diff/[to]`.
+
+**Validation:** `npm run build` (TypeScript typecheck + production build) clean; `npm run lint`
+(ESLint) clean. **End-to-end render verified live**: seeded a SQLite DB (org/repo/scan/finding), ran
+the API (uvicorn) + `next start`, and confirmed the SSR HTML contains the seeded org ("Acme Inc"),
+the repo trend ("90-day trend"/"Actionable"), and the scan's 3-card finding (`jinja2`,
+`IMPORTED-AND-CALLED`, "Attack story", call path `yaml.load`, "Fix now"). Python gate unaffected
+(ruff/mypy clean, pytest **374 passed**). Full visual a11y/contrast is a documented manual check
+(needs a browser); semantic HTML + high-contrast dark palette + chart `aria-label` are in place.
+
+**Next:** 11.8 — (conditional) background processing — *skip unless profiling proves the ingest/webhook
+path blocks*. Otherwise M11 build is essentially complete.
+
+---
+
 ## Task 11.6 follow-up — live GitHub App installation token (RS256 JWT)  (2026-06-10)
 
 **Status:** complete, Validation Gate passing. Closes the one deferred piece from 11.6.
