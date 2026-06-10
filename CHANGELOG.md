@@ -3,6 +3,15 @@
 All notable changes to VulnAdvisor are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to semantic versioning.
 
+## [1.0.4] - 2026-06-10
+
+### Added
+- `scan --upload` — after scanning, publish the JSON report to a VulnAdvisor platform instance.
+  Source code never leaves your machine; only the report is sent. Flags: `--api-key`
+  (env `VULNADVISOR_API_KEY`), `--api-url` (env `API_URL`), `--repo` (default: the scanned
+  directory's name), and `--dashboard-url` (prints a link to the uploaded scan). Uses only the
+  standard library, so the published wheel gains no new dependency.
+
 ## [1.0.3] - 2026-06-09
 
 ### Added
