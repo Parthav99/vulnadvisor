@@ -114,3 +114,12 @@ export interface ApiKey {
   last_used_at: string | null;
   revoked_at: string | null;
 }
+
+// Returned only once, at creation — the only time the full secret is exposed.
+export interface ApiKeyCreated {
+  id: string;
+  name: string;
+  prefix: string;
+  created_at: string;
+  secret: string;
+}

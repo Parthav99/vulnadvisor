@@ -4,6 +4,35 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## CLI → dashboard upload flow  (2026-06-10)
+
+**Status:** complete, full gate green; live HTTP e2e verified.
+
+End-to-end "scan locally, see it in the dashboard" path (source never leaves the machine — only the
+JSON report is sent):
+
+- **Backend:** new `POST /v1/scans` ([routers/ingest.py]) — org comes from the API key (Bearer),
+  repo from the body; refactored the store logic into a shared `_store_scan` used by both the
+  path-scoped ingest and this key-scoped upload. New `ScanUploadRequest` schema (repo required,
+  commit/ref defaulted). Added `api-keys` path aliases for the key endpoints
+  (`GET/POST/DELETE /v1/orgs/{org}/api-keys`) alongside the existing `/keys` (out of OpenAPI schema).
+- **Dashboard:** new `/orgs/[org]/settings/api-keys` page — a client component generates a key
+  (POST through the same-origin `/api` proxy with `credentials: include`), shows the secret **once**
+  with a copy button, lists keys, and can revoke. Settings page now links to it.
+- **CLI:** `scan --upload` with `--api-key` (env `VULNADVISOR_API_KEY`), `--api-url`
+  (env `API_URL`), `--repo` (default: scanned dir name), and `--dashboard-url`
+  (env `VULNADVISOR_DASHBOARD_URL`, prints a link). New stdlib-only `output/upload.py`
+  (`urllib`, no new wheel dependency; defensive — typed `UploadError`, never leaks tracebacks).
+  Uploads the **full** report (not the `--top` display subset); reads `GITHUB_SHA`/`GITHUB_REF` in CI.
+
+**Validation:** ruff + format clean · `mypy --strict` clean (77 files) · pytest **390 passed**
+(+13: `/v1/scans` upload, api-keys alias, upload unit tests, CLI `--upload` integration). Dashboard
+`build`/`lint` clean (new route compiles). **Live HTTP e2e**: seeded SQLite org+key, booted uvicorn,
+ran the real `upload_report` over the wire → 201 with scan id + diff; DB showed the repo, scan, and
+both findings stored.
+
+---
+
 ## M11 closed — platform tier feature-complete; 11.8 skipped  (2026-06-10)
 
 **Status:** M11 closed out at the maintainer's direction ("validated — skip 11.8, close out M11").

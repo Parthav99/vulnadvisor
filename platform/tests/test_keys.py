@@ -57,6 +57,21 @@ async def test_create_list_revoke_key(client: AsyncClient, seeded_key: str) -> N
     assert revoked["revoked_at"] is not None
 
 
+async def test_api_keys_alias_create_list_revoke(client: AsyncClient, seeded_key: str) -> None:
+    """The /v1/orgs/{org}/api-keys alias (used by the dashboard) works like /keys."""
+    created = await client.post(
+        "/v1/orgs/acme/api-keys", headers=_auth(seeded_key), json={"name": "dash-key"}
+    )
+    assert created.status_code == 201
+    key_id = created.json()["id"]
+
+    listed = (await client.get("/v1/orgs/acme/api-keys", headers=_auth(seeded_key))).json()
+    assert any(k["id"] == key_id for k in listed)
+
+    revoke = await client.delete(f"/v1/orgs/acme/api-keys/{key_id}", headers=_auth(seeded_key))
+    assert revoke.status_code == 204
+
+
 async def test_revoke_unknown_key_is_404(client: AsyncClient, seeded_key: str) -> None:
     missing = "00000000-0000-0000-0000-000000000000"
     resp = await client.delete(f"/v1/orgs/acme/keys/{missing}", headers=_auth(seeded_key))

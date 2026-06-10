@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from vulnadvisor_platform.models import ScanSource
 
@@ -39,6 +39,21 @@ class IngestRequest(BaseModel):
 
     commit_sha: str
     ref: str
+    pr_number: int | None = None
+    source: ScanSource = ScanSource.CI
+    report: dict[str, Any]
+
+
+class ScanUploadRequest(BaseModel):
+    """Body for ``POST /v1/scans`` — a CLI/CI upload where the org is taken from the API key.
+
+    Unlike :class:`IngestRequest`, the repository name is in the body (the report itself carries no
+    repo/org identity), and commit/ref default so a bare ``--upload`` works outside CI.
+    """
+
+    repo: str = Field(min_length=1, max_length=200)
+    commit_sha: str = "0" * 40
+    ref: str = "refs/heads/main"
     pr_number: int | None = None
     source: ScanSource = ScanSource.CI
     report: dict[str, Any]

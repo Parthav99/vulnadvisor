@@ -93,6 +93,69 @@ def test_scan_sarif_format(
     assert log["runs"][0]["results"][0]["ruleId"] == "GHSA-462w-v97r-4m45"
 
 
+def test_scan_upload_posts_full_report_and_confirms(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    from vulnadvisor.output.upload import UploadResult
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    captured: dict[str, object] = {}
+
+    def fake_upload(report, **kwargs):  # type: ignore[no-untyped-def]
+        captured["report"] = report
+        captured.update(kwargs)
+        return UploadResult(scan_id="scan-123", introduced=1, fixed=0, unchanged=0)
+
+    monkeypatch.setattr(cli_main, "upload_report", fake_upload)
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            str(_project(tmp_path)),
+            "--format",
+            "json",
+            "--upload",
+            "--api-url",
+            "https://api.example.com",
+            "--api-key",
+            "va_test.secret",
+            "--dashboard-url",
+            "https://dash.example.com",
+        ],
+    )
+    assert result.exit_code == 0
+    assert captured["api_url"] == "https://api.example.com"
+    assert captured["api_key"] == "va_test.secret"
+    assert captured["repo"] == tmp_path.resolve().name
+    assert captured["report"]["schema_version"] == "1.0"  # type: ignore[index]
+    assert "Uploaded" in result.stdout and "scan-123" in result.stdout
+    assert "dash.example.com/scans/scan-123" in result.stdout
+
+
+def test_scan_upload_failure_exits_nonzero(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    from vulnadvisor.output.upload import UploadError
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+
+    def boom(report, **kwargs):  # type: ignore[no-untyped-def]
+        raise UploadError("server rejected the upload (HTTP 401)")
+
+    monkeypatch.setattr(cli_main, "upload_report", boom)
+    result = runner.invoke(
+        app,
+        ["scan", str(_project(tmp_path)), "--format", "json", "--upload", "--api-key", "k"],
+        env={"API_URL": "https://api.example.com"},
+    )
+    assert result.exit_code == 1
+    assert "Upload failed" in result.output
+
+
 def test_scan_fail_on_triggers_nonzero_exit(
     tmp_path: Path,
     monkeypatch,  # type: ignore[no-untyped-def]

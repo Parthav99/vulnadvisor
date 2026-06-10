@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull, installUrl } from "@/lib/api";
 import { Card, EmptyState, PageHeader } from "@/components/ui";
@@ -27,10 +28,19 @@ export default async function SettingsPage({ params }: { params: Promise<{ org: 
       </section>
 
       <section className="mb-6">
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide muted">API keys</h2>
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide muted">API keys</h2>
+          <Link className="btn" href={`/orgs/${slug}/settings/api-keys`}>
+            Manage keys
+          </Link>
+        </div>
         {keys.length === 0 ? (
           <EmptyState>
-            No API keys yet. Create one with the CLI/API to upload scan reports from CI.
+            No API keys yet.{" "}
+            <Link className="link" href={`/orgs/${slug}/settings/api-keys`}>
+              Generate one
+            </Link>{" "}
+            to upload scan reports from CI.
           </EmptyState>
         ) : (
           <ul className="grid gap-2">
@@ -53,9 +63,6 @@ export default async function SettingsPage({ params }: { params: Promise<{ org: 
             ))}
           </ul>
         )}
-        <p className="muted mt-2 text-xs">
-          Keys are managed via the API/CLI; this dashboard is read-only.
-        </p>
       </section>
 
       <section>

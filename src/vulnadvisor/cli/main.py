@@ -1,5 +1,6 @@
 """VulnAdvisor command-line entrypoint (Typer app)."""
 
+import os
 from collections.abc import Callable
 from enum import Enum
 from importlib.metadata import PackageNotFoundError
@@ -15,14 +16,15 @@ from vulnadvisor.advisories.matcher import AdvisoryMatcher
 from vulnadvisor.advisories.transport import UrllibTransport
 from vulnadvisor.callgraph.frameworks import FrameworkPlugin
 from vulnadvisor.callgraph.type_resolver import PyrightResolver, TypeResolver
-from vulnadvisor.cli.pipeline import scan_project
+from vulnadvisor.cli.pipeline import ScanReport, scan_project
 from vulnadvisor.cli.render import render_report
 from vulnadvisor.llm.client import build_anthropic_client
 from vulnadvisor.llm.explainer import Explainer
 from vulnadvisor.model.advisory import Advisory
 from vulnadvisor.output.gating import parse_fail_on, should_fail
-from vulnadvisor.output.json_report import to_json
+from vulnadvisor.output.json_report import build_report, to_json
 from vulnadvisor.output.sarif import to_sarif_json
+from vulnadvisor.output.upload import UploadError, upload_report
 from vulnadvisor.store.analysis_cache import AnalysisCache, default_analysis_cache_path
 from vulnadvisor.store.cache import SqliteCache, default_cache_path
 from vulnadvisor.store.dataset import SymbolDataset, default_dataset_path
@@ -202,6 +204,44 @@ def scan(
             help="Disable the plain-English Card A attack story (terminal output only).",
         ),
     ] = False,
+    upload: Annotated[
+        bool,
+        typer.Option(
+            "--upload",
+            help="After scanning, upload the JSON report to a VulnAdvisor platform instance.",
+        ),
+    ] = False,
+    api_url: Annotated[
+        str | None,
+        typer.Option(
+            "--api-url",
+            envvar="API_URL",
+            help="Platform base URL for --upload (default: the API_URL env var).",
+        ),
+    ] = None,
+    api_key: Annotated[
+        str | None,
+        typer.Option(
+            "--api-key",
+            envvar="VULNADVISOR_API_KEY",
+            help="Org-scoped API key for --upload (default: the VULNADVISOR_API_KEY env var).",
+        ),
+    ] = None,
+    repo: Annotated[
+        str | None,
+        typer.Option(
+            "--repo",
+            help="Repository name to upload under (default: the scanned directory's name).",
+        ),
+    ] = None,
+    dashboard_url: Annotated[
+        str | None,
+        typer.Option(
+            "--dashboard-url",
+            envvar="VULNADVISOR_DASHBOARD_URL",
+            help="Dashboard base URL, used only to print a link after --upload.",
+        ),
+    ] = None,
 ) -> None:
     """Scan PATH for vulnerable dependencies and emit ranked, prioritized results.
 
@@ -253,8 +293,53 @@ def scan(
             explanations = [explainer.explain(finding) for finding in shown]
         render_report(shown, report.degraded_sources, Console(), explanations)
 
+    if upload:
+        _upload_report(
+            report, path, api_url=api_url, api_key=api_key, repo=repo, dashboard_url=dashboard_url
+        )
+
     if threshold is not None and should_fail(report.findings, threshold):
         raise typer.Exit(code=1)
+
+
+def _upload_report(
+    report: ScanReport,
+    path: Path,
+    *,
+    api_url: str | None,
+    api_key: str | None,
+    repo: str | None,
+    dashboard_url: str | None,
+) -> None:
+    """Build the full JSON report and POST it to the platform; print a confirmation or fail.
+
+    Always uploads every finding (never the ``--top`` display subset). CI commit/ref are read from
+    GITHUB_SHA/GITHUB_REF when present so PR diffs line up; otherwise sensible defaults are used.
+    """
+    document = build_report(
+        report.findings, report.degraded_sources, tool_version=_resolve_version()
+    )
+    repo_name = repo or (path if path.is_dir() else path.parent).resolve().name
+    try:
+        result = upload_report(
+            document,
+            api_url=api_url or "",
+            api_key=api_key or "",
+            repo=repo_name,
+            ref=os.environ.get("GITHUB_REF") or "refs/heads/main",
+            commit_sha=(os.environ.get("GITHUB_SHA") or "0" * 40)[:40],
+        )
+    except UploadError as exc:
+        typer.secho(f"Upload failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    total = len(report.findings)
+    typer.secho(
+        f"✓ Uploaded {total} finding(s) to '{repo_name}' (scan {result.scan_id}).",
+        fg=typer.colors.GREEN,
+    )
+    if dashboard_url:
+        typer.echo(f"  View: {dashboard_url.rstrip('/')}/scans/{result.scan_id}")
 
 
 @app.command(name="backfill")

@@ -20,6 +20,7 @@ router = APIRouter(tags=["api-keys"])
 
 
 @router.get("/v1/orgs/{org_slug}/keys", response_model=list[ApiKeyOut])
+@router.get("/v1/orgs/{org_slug}/api-keys", response_model=list[ApiKeyOut], include_in_schema=False)
 async def list_keys(org_slug: str, user: CurrentUser, session: SessionDep) -> list[ApiKeyOut]:
     """List an org's API keys (metadata only — never the secret or hash)."""
     org, _ = await require_org(session, user, org_slug)
@@ -40,6 +41,12 @@ async def list_keys(org_slug: str, user: CurrentUser, session: SessionDep) -> li
     response_model=ApiKeyCreated,
     status_code=status.HTTP_201_CREATED,
 )
+@router.post(
+    "/v1/orgs/{org_slug}/api-keys",
+    response_model=ApiKeyCreated,
+    status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
+)
 async def create_key(
     org_slug: str, body: ApiKeyCreate, user: CurrentUser, session: SessionDep
 ) -> ApiKeyCreated:
@@ -57,6 +64,11 @@ async def create_key(
 
 
 @router.delete("/v1/orgs/{org_slug}/keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/v1/orgs/{org_slug}/api-keys/{key_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    include_in_schema=False,
+)
 async def revoke_key(
     org_slug: str, key_id: uuid.UUID, user: CurrentUser, session: SessionDep
 ) -> Response:
