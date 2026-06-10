@@ -1,0 +1,59 @@
+# File: fly.toml
+# Fly.io deployment for the VulnAdvisor platform backend (FastAPI).
+# Free-tier sized: a single shared-CPU machine with 256MB RAM.
+#
+# One-time setup (run these yourself; this repo intentionally does NOT auto-deploy):
+#   fly launch --no-deploy --copy-config        # if the app doesn't exist yet
+#   fly postgres create --name vulnadvisor-db --vm-size shared-cpu-1x --volume-size 1
+#   fly postgres attach vulnadvisor-db          # sets the DATABASE_URL secret (see note below)
+#   fly secrets set SECRET_KEY=$(openssl rand -hex 32) \
+#                   GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... \
+#                   GITHUB_WEBHOOK_SECRET=... GITHUB_APP_ID=... GITHUB_APP_SLUG=... \
+#                   GITHUB_APP_PRIVATE_KEY="$(cat app-private-key.pem)" \
+#                   GITHUB_REDIRECT_URI=https://vulnadvisor-api.fly.dev/v1/auth/github/callback \
+#                   DASHBOARD_URL=https://vulnadvisor.vercel.app
+#   fly deploy
+#
+# IMPORTANT — DATABASE_URL driver scheme:
+#   `fly postgres attach` writes DATABASE_URL as `postgres://...`, but this app uses the async
+#   asyncpg driver and expects `postgresql+asyncpg://...`. After attaching, override it:
+#     fly secrets set DATABASE_URL="postgresql+asyncpg://<user>:<pass>@<host>:5432/<db>"
+#   (copy the credentials from the attach output / `fly postgres connect`).
+
+app = "vulnadvisor-api"
+primary_region = "iad"   # change to your nearest region (e.g. "lhr", "sin", "fra")
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  # Send the browser back to the Vercel-hosted dashboard after OAuth login.
+  # (Real secrets — DATABASE_URL, SECRET_KEY, GitHub creds — are set via `fly secrets`, not here.)
+  DASHBOARD_URL = "https://vulnadvisor.vercel.app"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Free-tier friendly: let the machine stop when idle and start on the next request.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "10s"
+
+# Single 256MB shared-CPU machine (Fly free allowance).
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  cpus = 1
