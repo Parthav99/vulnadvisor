@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui";
-import { bandClass, tierClass, tierLabel } from "@/lib/format";
+import { bandClass, displayId, tierClass, tierLabel } from "@/lib/format";
 import type { Finding } from "@/lib/types";
 
 function Card3({ letter, title, children }: { letter: string; title: string; children: React.ReactNode }) {
@@ -17,16 +17,16 @@ function Card3({ letter, title, children }: { letter: string; title: string; chi
 export function FindingCard({ finding }: { finding: Finding }) {
   const { dependency, advisory, score, reachability, fix, epss, in_kev } = finding;
   const tier = reachability?.tier ?? "unknown";
-  const version = dependency.version ? `==${dependency.version}` : "";
+  const version = dependency.version || "(unpinned)";
 
   return (
     <article className="card space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="mono font-semibold">
-          {dependency.name}
-          {version}
+        <span className="mono font-semibold">{displayId(advisory)}</span>
+        <span className="muted">·</span>
+        <span className="mono">
+          {dependency.name} {version}
         </span>
-        <span className="muted mono text-xs">{advisory.id}</span>
         <span className="ml-auto flex items-center gap-2">
           <Badge className={bandClass(score.band)}>
             {score.band} · {Math.round(score.value)}

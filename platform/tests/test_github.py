@@ -303,6 +303,38 @@ def test_render_pr_comment_clean_pr() -> None:
     assert "2 finding(s) fixed" in body
 
 
+def test_render_pr_comment_uses_cve_first_display_id() -> None:
+    from vulnadvisor_platform.pr_comment import render_pr_comment
+
+    finding = {
+        "dependency": {"name": "jinja2", "version": "2.11.2"},
+        "advisory": {"id": "PYSEC-2026-52", "aliases": ["CVE-2020-28493"]},
+        "score": {"value": 80.0, "band": "high"},
+        "reachability": {"tier": "imported"},
+        "fix": {"command": 'pip install --upgrade "jinja2>=2.11.3"'},
+    }
+    body = render_pr_comment(introduced=[finding], fixed_count=0, repo="acme/web", pr_number=1)
+    # CVE-first display id, computed from id + aliases for pre-1.1 payloads.
+    assert "CVE-2020-28493" in body
+    # No "==" in display contexts; the fix command keeps its own pinning syntax.
+    assert "`jinja2 2.11.2`" in body
+    assert "jinja2==2.11.2" not in body
+
+
+def test_render_pr_comment_prefers_report_display_id() -> None:
+    from vulnadvisor_platform.pr_comment import render_pr_comment
+
+    finding = {
+        "dependency": {"name": "jinja2", "version": "2.11.2"},
+        "advisory": {"id": "GHSA-462w-v97r-4m45", "display_id": "CVE-2020-28493"},
+        "score": {"value": 80.0, "band": "high"},
+        "reachability": {"tier": "imported"},
+        "fix": {"command": "pip install --upgrade jinja2"},
+    }
+    body = render_pr_comment(introduced=[finding], fixed_count=0, repo="acme/web", pr_number=1)
+    assert "CVE-2020-28493" in body
+
+
 # --- installation token (RS256 JWT) -------------------------------------------------------------
 
 

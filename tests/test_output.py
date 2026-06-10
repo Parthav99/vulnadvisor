@@ -26,7 +26,7 @@ SARIF_SCHEMA = Path(__file__).resolve().parent.parent / "fixtures" / "schemas" /
 
 def test_json_report_structure(sample_findings: list[ScoredFinding]) -> None:
     report = build_report(sample_findings, ("OSV",), tool_version="0.1.0")
-    assert report["schema_version"] == "1.0"
+    assert report["schema_version"] == "1.1"
     assert report["tool"] == {"name": "vulnadvisor", "version": "0.1.0"}
     assert report["degraded_sources"] == ["OSV"]
     assert report["summary"]["total"] == 2
@@ -35,6 +35,9 @@ def test_json_report_structure(sample_findings: list[ScoredFinding]) -> None:
     first = report["findings"][0]
     assert first["dependency"]["name"] == "jinja2"
     assert first["advisory"]["cve_ids"] == ["CVE-2019-10906"]
+    # 1.1 additive field: the canonical CVE-first display id; the raw id stays untouched.
+    assert first["advisory"]["display_id"] == "CVE-2019-10906"
+    assert first["advisory"]["id"] == "GHSA-462w-v97r-4m45"
     assert first["in_kev"] is True
     assert first["score"]["band"] == "critical"
     assert first["fix"]["command"] == 'pip install --upgrade "Jinja2>=2.10.1"'
@@ -75,7 +78,10 @@ def test_sarif_structure_and_levels(sample_findings: list[ScoredFinding]) -> Non
     run = log["runs"][0]
     assert run["tool"]["driver"]["name"] == "VulnAdvisor"
     rule_ids = {rule["id"] for rule in run["tool"]["driver"]["rules"]}
-    assert "GHSA-462w-v97r-4m45" in rule_ids
+    assert "GHSA-462w-v97r-4m45" in rule_ids  # ruleId stays the stable raw advisory id
+    # Only the human-readable shortDescription goes CVE-first.
+    jinja_rule = next(r for r in run["tool"]["driver"]["rules"] if r["id"] == "GHSA-462w-v97r-4m45")
+    assert jinja_rule["shortDescription"]["text"].startswith("CVE-2019-10906: ")
     results = run["results"]
     assert results[0]["level"] == "error"  # critical -> error
     assert results[1]["level"] == "note"  # low -> note

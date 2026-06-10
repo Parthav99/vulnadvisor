@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { apiGetOrNull } from "@/lib/api";
 import { EmptyState, PageHeader, Stat } from "@/components/ui";
 import { FindingCard } from "@/components/finding-card";
+import { displayId } from "@/lib/format";
 import type { DiffResponse } from "@/lib/types";
 
 // Route: /scans/{from}/diff/{to} — the `scan` slug is the "from" scan (kept consistent with the
@@ -55,10 +56,9 @@ export default async function DiffPage({
                 className="card flex items-center justify-between"
               >
                 <span className="mono">
-                  {finding.dependency.name}
-                  {finding.dependency.version ? `==${finding.dependency.version}` : ""}
+                  {finding.dependency.name} {finding.dependency.version || "(unpinned)"}
                 </span>
-                <span className="muted mono text-xs">{finding.advisory.id}</span>
+                <span className="muted mono text-xs">{displayId(finding.advisory)}</span>
               </li>
             ))}
           </ul>

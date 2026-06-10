@@ -22,6 +22,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from vulnadvisor.engine.safe_fix import resolve_safe_fix
+from vulnadvisor.model.display import display_title
 from vulnadvisor.model.explanation import Explanation, ExplanationSource
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
@@ -69,8 +70,6 @@ def _render_finding(finding: ScoredFinding, explanation: Explanation | None = No
     advisory = finding.matched.advisory
     dependency = finding.matched.dependency
     score = finding.score
-    name = dependency.raw_name or dependency.name
-    version = dependency.version or "(unpinned)"
 
     badge = badge_for_band(score.band)
     safe_fix = resolve_safe_fix(dependency, advisory)
@@ -101,9 +100,7 @@ def _render_finding(finding: ScoredFinding, explanation: Explanation | None = No
         f"{why_line}",
     )
 
-    header = (
-        f"{name} {version}  |  {advisory.id}  |  priority {score.value:.1f} ({score.band.value})"
-    )
+    header = f"{display_title(finding)}  |  priority {score.value:.1f} ({score.band.value})"
     return Panel(
         Group(card_a, card_b, card_c),
         title=header,

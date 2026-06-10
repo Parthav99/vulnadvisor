@@ -5,6 +5,7 @@ JSON the CLI emits — proving the platform and CLI never diverge. Malformed / u
 cross-org keys are rejected.
 """
 
+import copy
 from typing import Any
 
 from _helpers import build_report_doc
@@ -122,6 +123,28 @@ async def test_ingest_cross_org_key_is_403(
         json=_body(build_report_doc([])),
     )
     assert resp.status_code == 403
+
+
+async def test_ingest_accepts_schema_1_0_and_1_1(client: AsyncClient, seeded_key: str) -> None:
+    headers = {_HDR: f"Bearer {seeded_key}"}
+    # The current CLI emits 1.1 (with advisory.display_id) — accepted.
+    current = build_report_doc([("jinja2", "GHSA-1")])
+    assert current["schema_version"] == "1.1"
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans", headers=headers, json=_body(current, sha="c1")
+    )
+    assert resp.status_code == 201
+
+    # A pre-12.1 CLI emits 1.0 (no display_id) — still accepted; old reports keep ingesting.
+    legacy = copy.deepcopy(current)
+    legacy["schema_version"] = "1.0"
+    for finding in legacy["findings"]:
+        finding["advisory"].pop("display_id", None)
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans", headers=headers, json=_body(legacy, sha="c2")
+    )
+    assert resp.status_code == 201
+    assert resp.json()["summary"]["total"] == 1
 
 
 async def test_ingest_rejects_unsupported_schema(client: AsyncClient, seeded_key: str) -> None:

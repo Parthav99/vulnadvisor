@@ -62,6 +62,7 @@ export interface Finding {
   dependency: { name: string; version: string | null; source?: string; is_direct?: boolean };
   advisory: {
     id: string;
+    display_id?: string;
     aliases?: string[];
     cve_ids?: string[];
     summary?: string | null;

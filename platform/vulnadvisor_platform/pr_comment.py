@@ -7,6 +7,8 @@ of posting a new one each push. Soundness: anything not provably ``not-imported`
 
 from typing import Any
 
+from vulnadvisor.model.display import select_display_id
+
 MARKER = "<!-- vulnadvisor:pr -->"
 
 # Tiers that are not the confidently-safe "not-imported" — i.e. worth surfacing on a PR.
@@ -28,6 +30,25 @@ def _priority(finding: dict[str, Any]) -> float:
     if isinstance(score, dict) and isinstance(score.get("value"), (int, float)):
         return float(score["value"])
     return 0.0
+
+
+def _display_id(finding: dict[str, Any]) -> str:
+    """The CVE-first display identifier for a finding payload.
+
+    Prefers the report's own ``advisory.display_id`` (schema 1.1+); for older reports it is
+    computed from the raw id + aliases with the same canonical rule.
+    """
+    advisory = finding.get("advisory")
+    if not isinstance(advisory, dict):
+        return "—"
+    explicit = advisory.get("display_id")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    raw_id = advisory.get("id")
+    if not isinstance(raw_id, str) or not raw_id:
+        return "—"
+    aliases = advisory.get("aliases")
+    return select_display_id(raw_id, aliases if isinstance(aliases, list) else ())
 
 
 def _cell(finding: dict[str, Any], *keys: str) -> str:
@@ -62,13 +83,13 @@ def render_pr_comment(
     for finding in sorted(reachable, key=_priority, reverse=True)[:10]:
         pkg = _cell(finding, "dependency", "name")
         version = _cell(finding, "dependency", "version")
-        advisory = _cell(finding, "advisory", "id")
+        advisory = _display_id(finding)
         tier = _tier(finding)
         priority = _priority(finding)
         band = _cell(finding, "score", "band")
         fix = _cell(finding, "fix", "command")
         lines.append(
-            f"| `{pkg}=={version}` | {advisory} | {tier} | {priority:.0f} ({band}) | {fix} |"
+            f"| `{pkg} {version}` | {advisory} | {tier} | {priority:.0f} ({band}) | {fix} |"
         )
 
     lines.append("")

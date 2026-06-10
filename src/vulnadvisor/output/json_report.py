@@ -1,16 +1,16 @@
 """Build the stable, documented JSON report for machine consumption.
 
-Schema (``schema_version`` 1.0) — top-level object::
+Schema (``schema_version`` 1.1) — top-level object::
 
     {
-      "schema_version": "1.0",
+      "schema_version": "1.1",
       "tool": {"name": "vulnadvisor", "version": "<x.y.z>"},
       "degraded_sources": ["OSV", ...],          # sources that failed; results incomplete
       "summary": {"total": <int>, "by_band": {"critical": n, "high": n, ...}},
       "findings": [
         {
           "dependency": {"name", "version"|null, "source", "is_direct"},
-          "advisory":   {"id", "aliases":[...], "cve_ids":[...], "summary"|null,
+          "advisory":   {"id", "display_id", "aliases":[...], "cve_ids":[...], "summary"|null,
                           "cvss_base": <float>|null, "cvss_vector": <str>|null, "source"},
           "epss":       {"probability": <float>, "percentile": <float>} | null,
           "in_kev":     <bool>,
@@ -23,6 +23,9 @@ Schema (``schema_version`` 1.0) — top-level object::
     }
 
 Findings are ordered by descending priority (the deterministic engine ordering).
+
+Version history: 1.1 adds the additive ``advisory.display_id`` (the canonical CVE-first display
+identifier); everything in 1.0 is unchanged, so 1.0 consumers can read 1.1 reports.
 """
 
 import json
@@ -30,12 +33,13 @@ from collections.abc import Sequence
 from typing import Any
 
 from vulnadvisor.engine.safe_fix import resolve_safe_fix
+from vulnadvisor.model.display import display_id
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
 
 __all__ = ["SCHEMA_VERSION", "build_report", "to_json"]
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
@@ -55,6 +59,7 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
         },
         "advisory": {
             "id": advisory.id,
+            "display_id": display_id(advisory),
             "aliases": list(advisory.aliases),
             "cve_ids": list(advisory.cve_ids),
             "summary": advisory.summary,
@@ -112,7 +117,7 @@ def build_report(
     *,
     tool_version: str,
 ) -> dict[str, Any]:
-    """Build the full JSON report object (schema_version 1.0)."""
+    """Build the full JSON report object (schema_version 1.1)."""
     return {
         "schema_version": SCHEMA_VERSION,
         "tool": {"name": "vulnadvisor", "version": tool_version},

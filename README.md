@@ -124,7 +124,7 @@ Bands → verdicts:
 `vulnadvisor scan PATH --format {terminal,json,sarif}`:
 
 - **terminal** (default) — the three-card view.
-- **json** — a stable machine report (`schema_version` 1.0): `tool`, `degraded_sources`, `summary`,
+- **json** — a stable machine report (`schema_version` 1.1): `tool`, `degraded_sources`, `summary`,
   and `findings[]` ordered by descending priority (each with dependency, advisory, EPSS, KEV,
   score, reachability + call paths, and the minimal safe fix command).
 - **sarif** — valid **SARIF 2.1.0**, so results show up in the GitHub Security tab, ordered by our

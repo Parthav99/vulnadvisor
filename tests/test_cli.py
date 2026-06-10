@@ -75,7 +75,7 @@ def test_scan_json_format(
     result = runner.invoke(app, ["scan", str(_project(tmp_path)), "--format", "json"])
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["schema_version"] == "1.0"
+    assert payload["schema_version"] == "1.1"
     assert payload["summary"]["total"] == 1
     assert payload["findings"][0]["dependency"]["name"] == "jinja2"
 
@@ -129,7 +129,7 @@ def test_scan_upload_posts_full_report_and_confirms(
     assert captured["api_url"] == "https://api.example.com"
     assert captured["api_key"] == "va_test.secret"
     assert captured["repo"] == tmp_path.resolve().name
-    assert captured["report"]["schema_version"] == "1.0"  # type: ignore[index]
+    assert captured["report"]["schema_version"] == "1.1"  # type: ignore[index]
     assert "Uploaded" in result.stdout and "scan-123" in result.stdout
     assert "dash.example.com/scans/scan-123" in result.stdout
 

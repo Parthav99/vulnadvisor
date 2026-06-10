@@ -4,6 +4,41 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 12.1 — Canonical finding identity (CVE-first display)  (2026-06-10)
+
+**Status:** complete, Validation Gate passing. First M12 task.
+
+One display rule on every surface — never again `django==4.2.29PYSEC-2026-52`:
+
+- **New `model/display.py`** (pure, exported from `vulnadvisor.model`): `select_display_id(id,
+  aliases)` picks the **lowest-numbered CVE** (by year, then number — numeric, not lexical) from
+  the advisory's id + aliases, else the first GHSA id, else the first PYSEC id, else the raw id.
+  Defensive: non-string/malformed alias entries are skipped, never raised on. `display_id(advisory)`
+  wraps it; `display_title(finding)` formats the canonical `"CVE-2020-28493 · jinja2 2.11.2"`
+  (middle-dot separator, `(unpinned)` when no version, **no `==` in display contexts** — `==` stays
+  only in fix commands).
+- **Adopted in:** terminal 3-card header (`cli/render.py`); JSON report — additive
+  `advisory.display_id`, `schema_version` bumped to **1.1** (documented as additive; 1.0 consumers
+  can read 1.1); SARIF — human-readable `shortDescription` is now `"<display_id>: <summary>"` while
+  **`ruleId` stays the stable raw advisory id** (asserted); platform PR comment — CVE-first
+  advisory cell (prefers the report's own `display_id`, computes it for pre-1.1 payloads) and the
+  package cell dropped `==`; platform ingest — `SUPPORTED_SCHEMA_VERSIONS = {"1.0", "1.1"}`;
+  dashboard — `lib/format.ts` mirrors the exact selection rule (`displayId`/`displayTitle`,
+  prefers `advisory.display_id` from 1.1 payloads), `finding-card.tsx` header is now
+  `CVE-… · pkg version`, and the diff page's fixed-list rows match.
+- No schema/DB change needed on the platform (payloads stored verbatim); no new dependencies.
+
+**Validation:** ruff + format clean · `mypy --strict src` clean (57 files) · **pytest 414 passed**
+(+24: 22 table-driven display tests incl. multiple-CVE ordering and malformed-alias cases; platform
+ingest accepts **both 1.0 and 1.1** explicitly; PR-comment CVE-first + no-`==` + display_id-preferred
+tests). SARIF still validates against the vendored 2.1.0 schema. Terminal/JSON snapshots regenerated
+(`CVE-2019-10906 · jinja2 2.10` header; `display_id` additive next to the unchanged raw `id`).
+Dashboard `npm run build` + `npm run lint` clean.
+
+**Open questions:** none blocking. Next: 12.2 — scan metadata honesty (kill "0000000 main").
+
+---
+
 ## CLI → dashboard upload flow  (2026-06-10)
 
 **Status:** complete, full gate green; live HTTP e2e verified.

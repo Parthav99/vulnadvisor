@@ -12,6 +12,7 @@ from typing import Any
 
 from vulnadvisor.engine.safe_fix import resolve_safe_fix
 from vulnadvisor.model.dependency import DependencySource
+from vulnadvisor.model.display import display_id
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
 
@@ -46,12 +47,17 @@ def _security_severity(finding: ScoredFinding) -> str:
 
 
 def _rule(finding: ScoredFinding) -> dict[str, Any]:
-    """Build a SARIF reportingDescriptor (rule) for a finding's advisory."""
+    """Build a SARIF reportingDescriptor (rule) for a finding's advisory.
+
+    ``id`` (the SARIF ruleId) stays the stable raw advisory id; only the human-readable
+    ``shortDescription`` uses the canonical CVE-first display identity.
+    """
     advisory = finding.matched.advisory
+    label = display_id(advisory)
     return {
         "id": advisory.id,
         "name": "VulnerableDependency",
-        "shortDescription": {"text": advisory.summary or advisory.id},
+        "shortDescription": {"text": f"{label}: {advisory.summary}" if advisory.summary else label},
         "helpUri": f"https://osv.dev/vulnerability/{advisory.id}",
         "properties": {"security-severity": _security_severity(finding)},
     }

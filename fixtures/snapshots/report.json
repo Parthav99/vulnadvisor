@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "tool": {
     "name": "vulnadvisor",
     "version": "0.1.0"
@@ -27,6 +27,7 @@
       },
       "advisory": {
         "id": "GHSA-462w-v97r-4m45",
+        "display_id": "CVE-2019-10906",
         "aliases": [
           "CVE-2019-10906"
         ],
@@ -71,6 +72,7 @@
       },
       "advisory": {
         "id": "GHSA-flask-dos0",
+        "display_id": "CVE-2018-1000656",
         "aliases": [
           "CVE-2018-1000656"
         ],

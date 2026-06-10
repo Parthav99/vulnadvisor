@@ -11,6 +11,7 @@ from vulnadvisor.model.advisory import (
 )
 from vulnadvisor.model.callpath import CallPath, CallStep
 from vulnadvisor.model.dependency import Dependency, DependencySource
+from vulnadvisor.model.display import display_id, display_title, select_display_id
 from vulnadvisor.model.import_mapping import (
     ImportMapping,
     MappingConfidence,
@@ -67,4 +68,7 @@ __all__ = [
     "SymbolExtraction",
     "SymbolKind",
     "VulnerableSymbol",
+    "display_id",
+    "display_title",
+    "select_display_id",
 ]

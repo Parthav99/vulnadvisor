@@ -21,7 +21,8 @@ __all__ = [
 ]
 
 # The JSON report schema versions this platform understands (see output/json_report.py).
-SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0"})
+# 1.1 is additive over 1.0 (advisory.display_id), so both parse identically here.
+SUPPORTED_SCHEMA_VERSIONS = frozenset({"1.0", "1.1"})
 
 # Stored when reachability was not computed for a finding (the report's reachability was null).
 _UNKNOWN_TIER = "unknown"
