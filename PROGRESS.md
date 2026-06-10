@@ -4,6 +4,39 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 11.4 — Read API + trends  (2026-06-10)
+
+**Status:** complete, Validation Gate passing.
+
+**What was built** — the full read surface over stored scans, all strictly org-scoped:
+
+- `access.py`: `require_org`/`require_repo`/`require_scan` — a user only sees data for orgs they're a
+  member of; **non-members get 404** (we never leak another tenant's org/repo/scan existence).
+- `routers/read.py`: `GET /v1/orgs`, `GET /v1/orgs/{org}` (with repo/member counts),
+  `GET /v1/orgs/{org}/repos`, `GET /v1/orgs/{org}/repos/{repo}`,
+  `GET /v1/orgs/{org}/repos/{repo}/scans` (**keyset pagination** on `(created_at, id)` with an opaque
+  cursor; `?ref`/`?limit`), `GET /v1/scans/{id}`, `GET /v1/scans/{id}/findings`
+  (`?tier`/`?band`/`?min_priority`, priority-desc; each finding is the stored `payload` verbatim),
+  `GET /v1/scans/{a}/diff/{b}` (introduced/fixed finding objects + unchanged count), and
+  `GET /v1/orgs/{org}/repos/{repo}/trend?window=Nd` (per-day actionable/deprioritized/reachable-called
+  from each day's latest scan).
+- `trends.py`: `summarize_tiers` — **sound categorization**: the only deprioritized tier is
+  `not-imported`; everything else (`imported`, `dynamic-unknown`, `imported-and-called`, and any
+  `unknown`/older tier) counts as actionable. `reachable_called` = `imported-and-called`. Pure +
+  unit-tested.
+- Read endpoints authenticate via the existing user resolver (Bearer key -> creating user); OAuth
+  session login is still 11.5.
+
+**Validation:** ruff + format clean · `mypy --strict` clean (68 files) · pytest **354 passed** (read
+tests cover orgs/repos, pagination across pages with no overlap, scan detail + finding filters, diff,
+per-day trend, bad-window 400, and **tenant isolation** — cross-org org/scan reads return 404). Also
+**smoke-tested against real Postgres** (compose): ingest + keyset pagination + JSONB payload
+round-trip + trend + diff all correct on PG, not just SQLite.
+
+**Next:** 11.5 — Auth: GitHub OAuth (dashboard session) + API key issue/revoke endpoints.
+
+---
+
 ## Task 11.3 — Ingest API + diff (the value spine)  (2026-06-10)
 
 **Status:** complete, Validation Gate passing.

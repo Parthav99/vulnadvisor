@@ -1,60 +1,20 @@
 """Ingest API: a real ``vulnadvisor`` report persists findings and returns the correct diff.
 
-The reports here are built by the **actual engine** (``build_report`` over real ``score_match``
-findings), so this exercises the same JSON the CLI emits — proving the platform and CLI never
-diverge. Malformed / unsupported reports and cross-org keys are rejected.
+The reports here are built by the **actual engine** (see ``_helpers``), so this exercises the same
+JSON the CLI emits — proving the platform and CLI never diverge. Malformed / unsupported reports and
+cross-org keys are rejected.
 """
 
 from typing import Any
 
+from _helpers import build_report_doc
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from vulnadvisor.engine.scoring import score_match
-from vulnadvisor.model import (
-    Advisory,
-    AffectedPackage,
-    AffectedRange,
-    Dependency,
-    DependencySource,
-    EpssScore,
-    MatchedAdvisory,
-)
-from vulnadvisor.output.json_report import build_report
 from vulnadvisor_platform.models import Finding, Org
 
 _HDR = "Authorization"
-
-
-def _scored(name: str, advisory_id: str, *, version: str = "1.0") -> Any:
-    matched = MatchedAdvisory(
-        dependency=Dependency(
-            name=name,
-            raw_name=name,
-            version=version,
-            source=DependencySource.REQUIREMENTS_TXT,
-            is_direct=True,
-        ),
-        advisory=Advisory(
-            id=advisory_id,
-            aliases=(f"CVE-2024-{abs(hash(advisory_id)) % 9999:04d}",),
-            summary=f"{name} vulnerability",
-            cvss_vector="CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
-            affected=(
-                AffectedPackage(name=name, ranges=(AffectedRange(introduced="0", fixed="99"),)),
-            ),
-        ),
-        epss=EpssScore(cve="CVE-2024-0001", probability=0.5, percentile=0.9),
-        in_kev=True,
-    )
-    return score_match(matched)
-
-
-def build_report_doc(specs: list[tuple[str, str]]) -> dict[str, Any]:
-    """A real engine JSON report for the given ``(package, advisory_id)`` findings."""
-    findings = [_scored(name, advisory_id) for name, advisory_id in specs]
-    return build_report(findings, [], tool_version="1.0.3")
 
 
 def _body(report: dict[str, Any], *, ref: str = "refs/heads/main", sha: str = "abc123") -> dict:
