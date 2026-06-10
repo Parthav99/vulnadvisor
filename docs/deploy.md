@@ -101,8 +101,16 @@ smoke test (you can still upload scans with an API key), then come back.
 
 1. **OAuth app** (dashboard login) — <https://github.com/settings/developers> → **New OAuth App**:
    - Homepage URL: `https://vulnadvisor.vercel.app`
-   - Authorization callback URL: `https://vulnadvisor-api.fly.dev/v1/auth/github/callback`
+   - Authorization callback URL: `https://vulnadvisor.vercel.app/api/v1/auth/github/callback`
    - Copy the **Client ID** and generate a **Client secret**.
+
+   > **Why the callback points at the dashboard, not the backend.** The dashboard renders
+   > server-side and forwards the session cookie to the API. A cookie set by the backend's own
+   > domain is invisible to that rendering (different domain). So the dashboard proxies `/api/*`
+   > to the backend (see `dashboard/next.config.ts`), and the OAuth callback goes through that
+   > proxy — `https://vulnadvisor.vercel.app/api/v1/auth/github/callback` — so the session cookie
+   > is scoped to the dashboard's domain and SSR can read it. The webhook URL below stays on the
+   > backend (it's server-to-server from GitHub and uses no cookie).
 
 2. **GitHub App** (webhooks + PR comments) — <https://github.com/settings/apps> → **New GitHub App**:
    - Webhook URL: `https://vulnadvisor-api.fly.dev/v1/github/webhook`
@@ -118,7 +126,7 @@ smoke test (you can still upload scans with an API key), then come back.
    fly secrets set \
      GITHUB_CLIENT_ID="Iv1.abc123" \
      GITHUB_CLIENT_SECRET="your-oauth-client-secret" \
-     GITHUB_REDIRECT_URI="https://vulnadvisor-api.fly.dev/v1/auth/github/callback" \
+     GITHUB_REDIRECT_URI="https://vulnadvisor.vercel.app/api/v1/auth/github/callback" \
      GITHUB_WEBHOOK_SECRET="your-webhook-secret" \
      GITHUB_APP_ID="123456" \
      GITHUB_APP_SLUG="vulnadvisor" \
@@ -162,24 +170,25 @@ curl -X POST https://vulnadvisor-api.fly.dev/v1/orgs/<org>/repos/<repo>/scans \
 
 ## 3. Vercel — point the dashboard at the backend
 
-The dashboard reads two URLs:
+The dashboard needs the backend's base URL. `API_URL` is used **both** for server-side rendering
+and as the destination of the `/api/*` proxy (`dashboard/next.config.ts`) that the browser uses for
+the OAuth flow — so it's the one that matters. Use your backend's real host (Fly **or** Render):
 
-| Variable               | Used by                       | Value                                  |
-| ---------------------- | ----------------------------- | -------------------------------------- |
-| `API_URL`              | server-side rendering (SSR)   | `https://vulnadvisor-api.fly.dev`      |
-| `NEXT_PUBLIC_API_URL`  | browser links (login/install) | `https://vulnadvisor-api.fly.dev`      |
+| Variable               | Used by                                         | Value (example)                    |
+| ---------------------- | ----------------------------------------------- | ---------------------------------- |
+| `API_URL`              | SSR fetches **and** the `/api/*` proxy target   | `https://vulnadvisor-api.onrender.com` |
+| `NEXT_PUBLIC_API_URL`  | optional; legacy, no longer used for login      | (same, or leave unset)             |
 
-Set both for the **Production** environment. Via the CLI (run inside `dashboard/`):
+Set it for the **Production** environment. Via the CLI (run inside `dashboard/`):
 
 ```bash
 cd dashboard
 vercel link                         # link this folder to your Vercel project (one-time)
 
-printf 'https://vulnadvisor-api.fly.dev' | vercel env add NEXT_PUBLIC_API_URL production
-printf 'https://vulnadvisor-api.fly.dev' | vercel env add API_URL production
+printf 'https://vulnadvisor-api.onrender.com' | vercel env add API_URL production
 ```
 
-Or via the UI: **Vercel → your project → Settings → Environment Variables**, add both with the
+Or via the UI: **Vercel → your project → Settings → Environment Variables**, add it with the
 Production scope.
 
 > Do **not** set `DASHBOARD_API_TOKEN` in production — it's a dev/preview convenience that renders the
@@ -220,7 +229,8 @@ Or push any commit to the branch Vercel auto-builds, or hit **Redeploy** in the 
 | ---------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `/healthz` 503 / app won't boot                | Bad `DATABASE_URL`. Must be `postgresql+asyncpg://…` with **no** `?sslmode=`. `fly logs`. |
 | Login redirects to `localhost:3000`            | `DASHBOARD_URL` secret not set to the Vercel URL on Fly.                            |
-| OAuth "redirect_uri mismatch"                  | OAuth app callback URL ≠ `GITHUB_REDIRECT_URI` secret. Make them identical.         |
-| Dashboard shows "sign in" but login works once | `NEXT_PUBLIC_API_URL`/`API_URL` not set, or Vercel not redeployed after setting them. |
+| OAuth "redirect_uri mismatch"                  | OAuth app callback URL ≠ `GITHUB_REDIRECT_URI` secret. Both must be the dashboard proxy path `https://vulnadvisor.vercel.app/api/v1/auth/github/callback`. |
+| Login succeeds (307 back) but API calls 401    | Session cookie set on the backend domain, not the dashboard's. Ensure the OAuth callback uses the `/api/...` proxy path (above) and `API_URL` is set on Vercel so `/api/*` proxies to the backend. |
+| Dashboard shows "sign in" but never loads data | `API_URL` not set on Vercel, or Vercel not redeployed after setting it.             |
 | PR comments never appear                       | GitHub App not installed on the repo, or `GITHUB_WEBHOOK_SECRET` mismatch (check `fly logs`). |
 | Neon "too many connections"                    | Free tier is small; the app uses a single worker. Don't raise uvicorn workers on 256MB. |

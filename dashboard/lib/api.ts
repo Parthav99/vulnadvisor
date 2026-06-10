@@ -55,10 +55,14 @@ export async function apiGetOrNull<T>(path: string): Promise<T | null> {
   }
 }
 
+// Auth / install links are full-page browser navigations. They go through the same-origin
+// /api proxy (see next.config.ts) so the OAuth callback's Set-Cookie lands on the dashboard's
+// own domain — without that, the session cookie would be scoped to the backend domain and
+// invisible to this app's server-side rendering.
 export function loginUrl(): string {
-  return `${PUBLIC_API_BASE}/v1/auth/github/login`;
+  return `/api/v1/auth/github/login`;
 }
 
 export function installUrl(): string {
-  return `${PUBLIC_API_BASE}/v1/github/install`;
+  return `/api/v1/github/install`;
 }
