@@ -1,0 +1,39 @@
+# File: render.yaml
+# Render.com Blueprint for the VulnAdvisor platform backend (FastAPI).
+# Free tier: a single Docker web service that spins down when idle and wakes on the next request.
+#
+# Deploy:
+#   1. Push this file to the repo (done).
+#   2. Render dashboard -> New -> Blueprint -> pick this repo. Render reads render.yaml.
+#   3. Fill in DATABASE_URL when prompted (see the note on its value below), then Apply.
+#
+# The image is built from the repo-root Dockerfile (build context = repo root) even though the app
+# source lives in platform/ — the Dockerfile copies platform/ in and also installs the core
+# `vulnadvisor` package, so the whole repo must be the build context.
+
+services:
+  - type: web
+    name: vulnadvisor-api
+    runtime: docker
+    plan: free
+    region: oregon            # change to your nearest Render region (e.g. frankfurt, singapore)
+    dockerfilePath: ./Dockerfile
+    dockerContext: .          # repo root: Dockerfile needs pyproject.toml, uv.lock, src/, platform/
+    healthCheckPath: /healthz
+    autoDeploy: true          # redeploy automatically on push to the connected branch
+    envVars:
+      # Async SQLAlchemy URL. Render injects PORT itself; the Dockerfile's uvicorn honors $PORT.
+      #
+      # IMPORTANT: this app talks to Postgres via asyncpg, so the value MUST use the
+      # `postgresql+asyncpg://` scheme and must NOT include `?sslmode=...` (asyncpg rejects it;
+      # managed hosts negotiate TLS automatically). Example, using a free Neon database:
+      #   postgresql+asyncpg://user:pass@ep-cool-name.us-east-1.aws.neon.tech/neondb
+      # `sync: false` -> Render prompts for it on first apply and never stores it in the repo.
+      - key: DATABASE_URL
+        sync: false
+      # Signs session cookies. Let Render generate a strong random value once.
+      - key: SECRET_KEY
+        generateValue: true
+      # Where the backend sends the browser after a successful GitHub login.
+      - key: DASHBOARD_URL
+        value: https://vulnadvisor.vercel.app
