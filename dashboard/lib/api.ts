@@ -34,6 +34,8 @@ export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: await authHeaders(),
     cache: "no-store",
+    // Send credentials (the session cookie) on cross-origin requests to the API.
+    credentials: "include",
   });
   if (!res.ok) {
     throw new ApiError(res.status, `GET ${path} -> ${res.status}`);

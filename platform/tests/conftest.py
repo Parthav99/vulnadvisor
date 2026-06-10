@@ -61,6 +61,8 @@ async def client(
 
     app.dependency_overrides[get_session] = _override_session
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+    # https base URL so the now-Secure session cookie round-trips through httpx's cookie jar
+    # (Secure cookies are only sent over https), matching production behaviour.
+    async with AsyncClient(transport=transport, base_url="https://test") as http_client:
         yield http_client
     app.dependency_overrides.clear()

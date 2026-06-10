@@ -5,9 +5,11 @@ API-key auth round-trip. Ingest, read, and GitHub-App routes arrive in Tasks 11.
 """
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
 from vulnadvisor_platform import __version__
+from vulnadvisor_platform.config import get_settings
 from vulnadvisor_platform.db import SessionDep
 from vulnadvisor_platform.models import Membership, Org
 from vulnadvisor_platform.routers import auth, github, ingest, keys, read
@@ -19,6 +21,19 @@ app = FastAPI(
     version=__version__,
     summary="Reachability-first vulnerability triage for teams.",
 )
+
+# The dashboard is served from a different origin (Vercel) than this API, so the browser only
+# sends the session cookie when CORS explicitly allows that origin *with* credentials. A wildcard
+# origin is disallowed alongside ``allow_credentials=True``; we name the dashboard origin, sourced
+# from DASHBOARD_URL (e.g. https://vulnadvisor.vercel.app in production).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[get_settings().dashboard_url],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(auth.router)
 app.include_router(github.router)
 app.include_router(ingest.router)

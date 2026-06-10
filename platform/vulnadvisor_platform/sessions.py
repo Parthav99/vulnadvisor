@@ -54,17 +54,27 @@ async def user_from_session(request: Request, session: AsyncSession) -> User | N
 
 
 def set_session_cookie(response: Response, user_id: uuid.UUID) -> None:
-    """Set the signed session cookie for ``user_id`` on ``response``."""
+    """Set the signed session cookie for ``user_id`` on ``response``.
+
+    ``SameSite=None; Secure`` is required so the browser sends this cookie on cross-origin
+    requests from the dashboard (a different domain than the API) — without it, subsequent
+    API calls are unauthenticated. ``Secure`` means it is only ever sent over HTTPS.
+    """
     token = sign_session(str(user_id), get_settings().secret_key)
     response.set_cookie(
         SESSION_COOKIE,
         token,
         max_age=_SESSION_MAX_AGE,
         httponly=True,
-        samesite="lax",
+        samesite="none",
+        secure=True,
     )
 
 
 def clear_session_cookie(response: Response) -> None:
-    """Remove the session cookie (logout)."""
-    response.delete_cookie(SESSION_COOKIE)
+    """Remove the session cookie (logout).
+
+    The clearing cookie must carry the same ``SameSite``/``Secure`` attributes it was set with,
+    or the browser won't match and delete it.
+    """
+    response.delete_cookie(SESSION_COOKIE, httponly=True, samesite="none", secure=True)
