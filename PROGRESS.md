@@ -4,6 +4,41 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 11.3 — Ingest API + diff (the value spine)  (2026-06-10)
+
+**Status:** complete, Validation Gate passing.
+
+**What was built** — `POST /v1/orgs/{org_slug}/repos/{repo_name}/scans`: CI/CLI/runner uploads the
+`vulnadvisor scan --format json` report it already produced (never source). The platform validates,
+denormalizes findings, and diffs vs the previous scan on the same ref, returning
+`{scan_id, summary, diff_summary}`.
+
+- `reports.py` (pure, defensive per CLAUDE.md): `parse_report` validates `schema_version` (only
+  `1.0`), requires each finding's `dependency.name`/`advisory.id`/`score.band`/`score.value`, and
+  rejects malformed input with a clear `ReportValidationError` (-> HTTP 422) instead of storing
+  garbage. The **full finding object is stored verbatim as `payload`** (CLI/platform never diverge);
+  denormalized columns are for querying only. `diff_finding_keys` diffs by identity
+  `(package, advisory_id)` -> introduced/fixed/unchanged.
+- `routers/ingest.py`: org lookup (404 if missing) + **org-scoped API-key check** (403 if the key's
+  org != path org); upserts the `Repository` (so CI can publish without a prior GitHub App install);
+  finds the previous scan on the ref as the diff baseline *before* inserting; writes the `Scan` +
+  `Finding` rows; returns the diff. 201 on success.
+- `security.py`: refactored to a shared `_resolve_api_key`; added `get_current_api_key`/`CurrentApiKey`
+  (org-scoped ingest auth) alongside the existing user resolver.
+- Schemas: `IngestRequest` (`commit_sha`, `ref`, `pr_number?`, `source`, `report`), `DiffSummary`,
+  `IngestResponse`.
+
+**Validation:** ruff + format clean · `mypy --strict` clean (65 files) · pytest **343 passed**
+(10 new, hermetic on in-memory SQLite). The ingest tests feed **real engine-built reports**
+(`build_report` over real `score_match` findings) so they exercise the exact JSON the CLI emits:
+persist-and-first-diff (introduced=all), second-scan diff (1 introduced / 1 fixed / 1 unchanged),
+per-ref scoping, empty report, and rejections (401 no key, 403 cross-org, 404 unknown org, 422
+unsupported/missing schema + malformed finding).
+
+**Next:** 11.4 — Read API + trends (orgs/repos/scans/findings/trend, pagination, strict org-scoping).
+
+---
+
 ## Task 11.2 — Platform backend skeleton + data model  (2026-06-10)
 
 **Status:** complete, Validation Gate passing. First M11 task (started on the maintainer's explicit

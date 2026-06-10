@@ -41,37 +41,56 @@ def generate_api_key() -> tuple[str, str, str]:
     return full, prefix, hash_key(full)
 
 
-async def get_current_user(credentials: _CredentialsDep, session: SessionDep) -> User:
-    """Resolve the authenticated user from a Bearer API key, or raise 401.
-
-    Rejects a missing/non-Bearer header, an unknown or revoked key, and a key whose creating user no
-    longer exists. On success, stamps ``last_used_at`` and returns the :class:`User`.
-    """
-    unauthorized = HTTPException(
+def _unauthorized() -> HTTPException:
+    return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="missing or invalid API key",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise unauthorized
 
+
+async def _resolve_api_key(
+    credentials: HTTPAuthorizationCredentials | None, session: SessionDep
+) -> ApiKey:
+    """Look up a non-revoked API key from a Bearer credential, or raise 401. Does not commit."""
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise _unauthorized()
     digest = hash_key(credentials.credentials)
     key = (
         await session.execute(
             select(ApiKey).where(ApiKey.hash == digest, ApiKey.revoked_at.is_(None))
         )
     ).scalar_one_or_none()
-    if key is None or key.created_by is None:
-        raise unauthorized
+    if key is None:
+        raise _unauthorized()
+    return key
 
+
+async def get_current_api_key(credentials: _CredentialsDep, session: SessionDep) -> ApiKey:
+    """Resolve the org-scoped API key for ingest auth; stamps ``last_used_at``."""
+    key = await _resolve_api_key(credentials, session)
+    key.last_used_at = utcnow()
+    await session.commit()
+    return key
+
+
+async def get_current_user(credentials: _CredentialsDep, session: SessionDep) -> User:
+    """Resolve the authenticated user (the API key's creator), or raise 401.
+
+    Rejects a missing/non-Bearer header, an unknown or revoked key, and a key whose creating user no
+    longer exists. On success, stamps ``last_used_at`` and returns the :class:`User`.
+    """
+    key = await _resolve_api_key(credentials, session)
+    if key.created_by is None:
+        raise _unauthorized()
     user = await session.get(User, key.created_by)
     if user is None:
-        raise unauthorized
-
+        raise _unauthorized()
     key.last_used_at = utcnow()
     await session.commit()
     return user
 
 
-# Reusable FastAPI dependency annotation for the authenticated user.
+# Reusable FastAPI dependency annotations.
 CurrentUser = Annotated[User, Depends(get_current_user)]
+CurrentApiKey = Annotated[ApiKey, Depends(get_current_api_key)]
