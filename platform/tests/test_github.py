@@ -253,3 +253,79 @@ def test_render_pr_comment_clean_pr() -> None:
     assert MARKER in body
     assert "No new reachable" in body
     assert "2 finding(s) fixed" in body
+
+
+# --- installation token (RS256 JWT) -------------------------------------------------------------
+
+
+def _rsa_keypair() -> tuple[str, str]:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    public_pem = (
+        key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    return private_pem, public_pem
+
+
+def test_app_jwt_is_valid_rs256() -> None:
+    import jwt
+
+    from vulnadvisor_platform.config import Settings
+    from vulnadvisor_platform.github_app import GitHubApp
+
+    private_pem, public_pem = _rsa_keypair()
+    app_client = GitHubApp(Settings(github_app_id="12345", github_app_private_key=private_pem))
+    claims = jwt.decode(app_client._app_jwt(), public_pem, algorithms=["RS256"])
+    assert claims["iss"] == "12345"
+    assert claims["exp"] > claims["iat"]
+
+
+async def test_installation_token_exchange(monkeypatch: Any) -> None:
+    import httpx
+    import jwt
+
+    from vulnadvisor_platform import github_app as ga
+    from vulnadvisor_platform.config import Settings
+
+    private_pem, public_pem = _rsa_keypair()
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("Authorization", "")
+        return httpx.Response(201, json={"token": "ghs_live", "expires_at": "2026-01-01T00:00:00Z"})
+
+    real_async_client = httpx.AsyncClient  # capture before patching to avoid self-recursion
+    monkeypatch.setattr(
+        ga.httpx,
+        "AsyncClient",
+        lambda **kw: real_async_client(transport=httpx.MockTransport(handler)),
+    )
+    app_client = ga.GitHubApp(Settings(github_app_id="12345", github_app_private_key=private_pem))
+
+    token = await app_client._installation_token(987)
+    assert token == "ghs_live"
+    assert seen["url"].endswith("/app/installations/987/access_tokens")
+    # The JWT we sent GitHub is a valid RS256 token signed by our key.
+    sent_jwt = seen["auth"].removeprefix("Bearer ")
+    assert jwt.decode(sent_jwt, public_pem, algorithms=["RS256"])["iss"] == "12345"
+
+
+async def test_installation_token_requires_config() -> None:
+    import pytest
+
+    from vulnadvisor_platform.config import Settings
+    from vulnadvisor_platform.github_app import GitHubApp, GitHubAppError
+
+    app_client = GitHubApp(Settings())  # no app credentials configured
+    with pytest.raises(GitHubAppError):
+        await app_client._installation_token(1)

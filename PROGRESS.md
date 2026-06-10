@@ -4,6 +4,25 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 11.6 follow-up — live GitHub App installation token (RS256 JWT)  (2026-06-10)
+
+**Status:** complete, Validation Gate passing. Closes the one deferred piece from 11.6.
+
+Added **PyJWT==2.13.0 + cryptography==48.0.1** to the `platform` dependency group (approved by the
+maintainer; still never ships in the published CLI wheel). Implemented
+`GitHubApp._installation_token`: sign a short-lived **RS256 JWT** (iss = App id, backdated `iat`,
+≤10-min `exp`) with the App private key via `jwt.encode`, then exchange it at
+`POST /app/installations/{id}/access_tokens` for the installation token. Clear `GitHubAppError` when
+credentials are missing, the installation id is absent, or the private key is malformed. The webhook
+PR-comment path is now fully live (given configured App credentials).
+
+**Validation:** ruff + format clean · `mypy --strict` clean (76 files) · pytest **374 passed** (3 new):
+`_app_jwt` produces a token that **verifies against the RSA public key** (RS256, correct iss/exp); the
+token exchange posts to the right URL with a valid Bearer JWT and returns the installation token (via
+a generated RSA keypair + mocked transport); and missing credentials raise `GitHubAppError`.
+
+---
+
 ## Task 11.6 — GitHub App: webhook + installation sync + PR diff comment  (2026-06-10)
 
 **Status:** complete, Validation Gate passing. **No new dependencies** (stdlib `hmac` + httpx).
