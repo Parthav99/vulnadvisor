@@ -1,4 +1,4 @@
-import { Skeleton } from "@/components/ui";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // Diff: header + stat strip + introduced/fixed sections.
 export default function Loading() {

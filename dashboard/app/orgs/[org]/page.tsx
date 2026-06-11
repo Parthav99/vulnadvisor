@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull } from "@/lib/api";
-import { Card, EmptyState, PageHeader, Stat } from "@/components/ui";
+import { EmptyState, PageHeader, Stat } from "@/components/blocks";
+import { Card, CardContent } from "@/components/ui/card";
 import { formatDate } from "@/lib/format";
 import type { OrgDetail, Repo } from "@/lib/types";
 
@@ -36,30 +37,35 @@ export default async function OrgPage({ params }: { params: Promise<{ org: strin
         <Stat label="Plan" value={org.plan} />
       </div>
 
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide muted">Repositories</h2>
+      <h2 className="mb-2 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+        Repositories
+      </h2>
       {repos.length === 0 ? (
         <EmptyState>
           No repositories have reported scans yet. Install the GitHub App or upload a report with{" "}
-          <code className="mono text-[#e6edf3]">vulnadvisor scan . --upload</code>.
+          <code className="mono text-foreground">vulnadvisor scan . --upload</code>.
         </EmptyState>
       ) : (
         <ul className="grid gap-3">
           {repos.map((repo) => (
             <li key={repo.id}>
               <Link href={`/orgs/${slug}/repos/${repo.name}`} className="block">
-                <Card className="flex items-center justify-between hover:border-[#58a6ff]">
-                  <div>
+                <Card
+                  size="sm"
+                  className="flex-row items-center justify-between transition-shadow hover:ring-ring/40"
+                >
+                  <CardContent>
                     <div className="mono font-semibold">{repo.name}</div>
-                    <div className="muted text-sm">
+                    <div className="text-sm text-muted-foreground">
                       {repo.is_private ? "private" : "public"} · default {repo.default_branch}
                     </div>
-                  </div>
-                  <div className="muted text-right text-sm">
+                  </CardContent>
+                  <CardContent className="text-right text-sm text-muted-foreground">
                     <div>{repo.scan_count} scans</div>
                     <div>
                       {repo.last_scan_at ? `last ${formatDate(repo.last_scan_at)}` : "no scans yet"}
                     </div>
-                  </div>
+                  </CardContent>
                 </Card>
               </Link>
             </li>

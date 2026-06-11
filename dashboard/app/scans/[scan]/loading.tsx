@@ -1,4 +1,4 @@
-import { Skeleton } from "@/components/ui";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // Scan: header + filter bar + three-card finding skeletons.
 export default function Loading() {

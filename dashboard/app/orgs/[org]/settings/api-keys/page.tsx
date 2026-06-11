@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull } from "@/lib/api";
-import { PageHeader } from "@/components/ui";
+import { PageHeader } from "@/components/blocks";
 import type { ApiKey, OrgDetail } from "@/lib/types";
 import { KeysManager } from "./keys-manager";
 
@@ -30,7 +30,7 @@ export default async function ApiKeysPage({ params }: { params: Promise<{ org: s
         }
       />
       <KeysManager slug={slug} initialKeys={keys} />
-      <p className="muted mt-4 text-xs">
+      <p className="mt-4 text-xs text-muted-foreground">
         Keys are org-scoped and shown only once at creation. Source code never leaves your machine —
         only the JSON report is uploaded.
       </p>

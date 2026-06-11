@@ -1,39 +1,165 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * "Aegis" design tokens — the visual language of being protected.
+ * SOC console, not crypto landing page:
+ *  - deep #0a0e14 base with the #0d1117 surface family
+ *  - ONE guarded accent (teal --safe) reserved strictly for protected/safe states
+ *  - red strictly for confirmed risk, amber for uncertainty, blue for links/low
+ * The app is permanently dark: tokens live on :root and <html> carries the
+ * `dark` class so component dark: variants apply.
+ */
 :root {
   color-scheme: dark;
+
+  --background: #0a0e14;
+  --foreground: #e6edf3;
+  --card: #0d1117;
+  --card-foreground: #e6edf3;
+  --popover: #11161f;
+  --popover-foreground: #e6edf3;
+  --primary: #e6edf3;
+  --primary-foreground: #0a0e14;
+  --secondary: #161b22;
+  --secondary-foreground: #e6edf3;
+  --muted: #161b22;
+  --muted-foreground: #8b949e;
+  --accent: #1a212b;
+  --accent-foreground: #e6edf3;
+  --destructive: #f85149;
+  --border: #222a35;
+  --input: #30363d;
+  --ring: #58a6ff;
+  --radius: 0.625rem;
+
+  --chart-1: #ff7b72;
+  --chart-2: #2dd4bf;
+  --chart-3: #e3b341;
+  --chart-4: #79c0ff;
+  --chart-5: #8b949e;
+
+  --sidebar: #0d1117;
+  --sidebar-foreground: #e6edf3;
+  --sidebar-primary: #e6edf3;
+  --sidebar-primary-foreground: #0a0e14;
+  --sidebar-accent: #1a212b;
+  --sidebar-accent-foreground: #e6edf3;
+  --sidebar-border: #222a35;
+  --sidebar-ring: #58a6ff;
+
+  /* Status semantics (see lib/format.ts — the source of truth for usage) */
+  --safe: #2dd4bf; /* protected / not-imported / fixed — the ONLY accent */
+  --risk: #ff7b72; /* confirmed risk text (critical band, imported-and-called, KEV) */
+  --risk-strong: #f85149; /* confirmed risk emphasis */
+  --elevated: #ffa657; /* high band */
+  --warn: #e3b341; /* uncertainty (medium band, imported, dynamic-unknown) */
+  --info: #79c0ff; /* low band */
+  --link: #58a6ff; /* navigation, never a state */
 }
 
-body {
-  background: #0d1117;
-  color: #e6edf3;
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-geist-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --color-safe: var(--safe);
+  --color-risk: var(--risk);
+  --color-risk-strong: var(--risk-strong);
+  --color-elevated: var(--elevated);
+  --color-warn: var(--warn);
+  --color-info: var(--info);
+  --color-link: var(--link);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Motion presets: 150–200 ms, gentle ease-out. Use sparingly. */
+  --ease-aegis: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --default-transition-duration: 180ms;
 }
 
-@layer components {
-  .card {
-    @apply rounded-lg border border-[#30363d] bg-[#161b22] p-4;
-  }
+/* Inline code / identifiers (CVE ids, SHAs, call paths) in the surrounding text size. */
+@utility mono {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
 
-  .muted {
-    @apply text-[#8b949e];
+/* Navigation links — blue is wayfinding, never a state color. */
+@utility link {
+  color: var(--color-link);
+  &:hover {
+    text-decoration: underline;
   }
+}
 
-  .link {
-    @apply text-[#58a6ff] hover:underline;
+/* Radar-grid background texture (pure CSS, no image): faint neutral grid swept by a
+   radial fade from the top — rendered by a dedicated fixed element in the app shell. */
+@utility radar-grid {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in srgb, var(--foreground) 4%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in srgb, var(--foreground) 4%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 36px 36px;
+  mask-image: radial-gradient(ellipse 90% 65% at 50% 0%, black 0%, transparent 80%);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
   }
-
-  .pill {
-    @apply inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium;
+  html {
+    @apply bg-background font-sans;
   }
-
-  .btn {
-    @apply inline-flex items-center rounded-md border border-[#30363d] bg-[#21262d] px-3 py-1.5
-      text-sm font-medium text-[#e6edf3] hover:bg-[#30363d];
-  }
-
-  .mono {
-    @apply font-mono text-[0.85em];
+  body {
+    @apply text-foreground;
   }
 }

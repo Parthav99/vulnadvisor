@@ -1,4 +1,4 @@
-import { Skeleton } from "@/components/ui";
+import { Skeleton } from "@/components/ui/skeleton";
 
 // Org: header + stat strip + repo rows.
 export default function Loading() {

@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull } from "@/lib/api";
-import { Badge, EmptyState, PageHeader } from "@/components/ui";
+import { EmptyState, PageHeader } from "@/components/blocks";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { FindingCard } from "@/components/finding-card";
 import { bandClass, formatDate, shortRef, shortSha } from "@/lib/format";
 import type { FindingsResponse, ScanDetail } from "@/lib/types";
@@ -52,7 +55,7 @@ export default async function ScanPage({
           ) : (
             <>
               Scan{" "}
-              <Badge className="border-[#6e7681] text-[#8b949e] bg-[#6e768122] align-middle">
+              <Badge variant="outline" className="align-middle text-muted-foreground">
                 local scan
               </Badge>
             </>
@@ -68,32 +71,42 @@ export default async function ScanPage({
       />
 
       {(scan.degraded_sources ?? []).length > 0 ? (
-        <div className="card mb-4 border-[#d29922] text-[#e3b341]">
-          Degraded sources: {scan.degraded_sources.join(", ")} — results may be incomplete.
-        </div>
+        <Card size="sm" className="mb-4 ring-warn/50">
+          <CardContent className="text-warn">
+            Degraded sources: {scan.degraded_sources.join(", ")} — results may be incomplete.
+          </CardContent>
+        </Card>
       ) : null}
 
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-        <Link href={`/scans/${scanId}`} className={`btn ${tier || band ? "" : "border-[#58a6ff]"}`}>
-          all
-        </Link>
+        <Button asChild variant="outline" size="sm" className={tier || band ? "" : "border-ring"}>
+          <Link href={`/scans/${scanId}`}>all</Link>
+        </Button>
         {TIERS.map((t) => (
-          <Link
+          <Button
             key={t}
-            href={`/scans/${scanId}${filterLink({ tier: t, band })}`}
-            className={`btn ${tier === t ? "border-[#58a6ff]" : ""}`}
+            asChild
+            variant="outline"
+            size="sm"
+            className={tier === t ? "border-ring" : ""}
           >
-            {t}
-          </Link>
+            <Link href={`/scans/${scanId}${filterLink({ tier: t, band })}`}>{t}</Link>
+          </Button>
         ))}
         {BANDS.map((b) => (
-          <Link
+          <Button
             key={b}
-            href={`/scans/${scanId}${filterLink({ tier, band: b })}`}
-            className={`btn ${band === b ? "border-[#58a6ff]" : ""}`}
+            asChild
+            variant="outline"
+            size="sm"
+            className={band === b ? "border-ring" : ""}
           >
-            <Badge className={bandClass(b)}>{b}</Badge>
-          </Link>
+            <Link href={`/scans/${scanId}${filterLink({ tier, band: b })}`}>
+              <Badge variant="outline" className={bandClass(b)}>
+                {b}
+              </Badge>
+            </Link>
+          </Button>
         ))}
       </div>
 

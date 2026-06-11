@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { FullPageNotice } from "@/components/ui";
+import { FullPageNotice } from "@/components/blocks";
+import { Button } from "@/components/ui/button";
 
 // Catches notFound() from any segment without its own not-found.tsx, plus all unmatched URLs.
 export default function NotFound() {
@@ -7,9 +8,9 @@ export default function NotFound() {
     <FullPageNotice
       title="Page not found"
       action={
-        <Link href="/" className="btn">
-          Back to home
-        </Link>
+        <Button asChild variant="outline">
+          <Link href="/">Back to home</Link>
+        </Button>
       }
     >
       This page doesn&apos;t exist, or you don&apos;t have access to it.

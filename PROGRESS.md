@@ -4,6 +4,74 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 13.1 — "Aegis" design tokens + app shell  (2026-06-11)
+
+**Status:** complete, Validation Gate passing. First M13 task.
+
+The visual language of "being protected" — SOC console, not crypto landing page:
+
+- **New npm deps (the ones pre-listed in task.md for 13.1):** shadcn/ui via
+  `npx shadcn init -y -b radix -p nova` (the `radix-nova` preset = Radix primitives + Lucide +
+  Geist — exactly the planned stack; pulls `radix-ui`, `cmdk`, `class-variance-authority`,
+  `clsx`, `tailwind-merge`, `tw-animate-css`, `lucide-react`), plus `geist` and `motion`.
+  Copied-in components: button, badge, card, skeleton, command, dialog, dropdown-menu, input,
+  input-group, separator, textarea (`components/ui/`).
+- **Aegis tokens** (`globals.css`, Tailwind v4 `:root` vars + `@theme inline`): base deepened to
+  `#0a0e14` with the `#0d1117` surface family; **one guarded accent** `--safe: #2dd4bf` (teal)
+  reserved strictly for protected/safe states; `--risk`/`--risk-strong` red strictly for
+  confirmed risk; `--warn` amber for uncertainty (dynamic-unknown badges get a **dashed**
+  border so uncertainty reads as unresolved); `--info`/`--link` blue for low band + wayfinding.
+  Geist Sans/Mono via the `geist` package (next/font/local under the hood — self-hosted, zero
+  network, matches the privacy posture; `--font-sans`/`--font-mono` wired in `@theme`).
+  Motion presets 150–200 ms (`lib/motion.ts`) under `MotionConfig reducedMotion="user"`.
+  Radar-grid texture: pure-CSS `@utility radar-grid` (neutral foreground-4% grid lines — not
+  teal — swept by a radial mask), rendered as a fixed element behind the shell.
+- **App shell:** left sidebar (brand, **org switcher** DropdownMenu, nav: Repos / Analytics
+  ("Soon", disabled until 13.4) / Settings, "Local-first · no telemetry" trust footer), top bar
+  with **⌘K command palette** (shadcn Command in a CommandDialog: jump to any org, repo, recent
+  scan, or page; Ctrl/⌘K listener + Search button), `motion.main` 180 ms content fade.
+- **Streaming-safe architecture (the bug found live):** an `await` in the root layout made
+  Next flush the shell before pages resolved, turning `notFound()` responses into early-flush
+  200s. Fix: the root layout is **synchronous**; the data-dependent shell parts stream in via
+  `Suspense` slots (`shell-slots.tsx`: async `ShellSidebar`/`ShellPalette` over a React
+  `cache()`-deduped `getShellData()` in `lib/shell-data.ts` — orgs → repos → 3 recent scans
+  per repo, bounded, **never throws**: API-down degrades to the minimal shell so the page's own
+  branded error boundary stays in charge). Palette open-state is a client context
+  (`palette-context.tsx`) shared by the top-bar trigger and the streamed dialog. Second live
+  find: this registry's `CommandDialog` does **not** wrap children in a `<Command>` root —
+  without it cmdk crashes on open (`subscribe` of undefined); wrapped explicitly.
+- **Migration:** hand-rolled `components/ui.tsx` + `nav.tsx` **deleted**; `.card`/`.btn`/`.pill`/
+  `.muted`/`.link` CSS classes gone (kept `mono` + `link` as design-system `@utility`s). All
+  pages/loading/not-found/error screens now compose shadcn primitives + `components/blocks.tsx`
+  (PageHeader/Stat/EmptyState/FullPageNotice). `lib/format.ts` band/tier classes are
+  **token-based** (zero hardcoded hex anywhere outside `components/ui/`); trend chart uses
+  `var(--risk)`/`var(--safe)`/`var(--risk-strong)`. Favicon + `icon.svg` regenerated teal-on-
+  `#0a0e14`.
+
+**Palette audit:** teal appears only on: `not-imported` tier badge, diff "Fixed" heading,
+deprioritized trend line, the privacy "opt-in" badge, the local-first shield, and the brand
+mark. dynamic-unknown is amber (dashed), never purple/safe-looking. KEV/critical/
+imported-and-called are red; high orange; medium amber; low blue.
+
+**Validation:** dashboard `npm run build` + `npm run lint` clean · ruff + format clean ·
+`mypy --strict src` clean (58 files) · **pytest 431 passed** (no Python changes). **Live e2e**
+(seeded SQLite: acme org with webapp [real-sha 1-finding scan + null-sha 0-finding scan] and
+zero-scans repos, empty-org; uvicorn + `next start`): **22/22 SSR assertions PASS** — every
+route renders inside the new shell (home, org, empty org, repo, 0-scan repo, scan, empty scan,
+diff, settings, api-keys), shell markers on all, branded 404s, zero "0000000", zero legacy
+hex/classes in HTML, all four security headers + no `unsafe-eval` (12.3 regression guard).
+**⌘K browser e2e (headless Edge via puppeteer-core, nothing added to the repo): 4/4 PASS** —
+Ctrl+K opens, typing "webapp" + Enter lands on `/orgs/acme/repos/webapp`, reopening and typing
+the sha lands on the seeded scan with the finding rendered. Screenshots eyeballed: sidebar/
+switcher/palette/3-card finding all correct. Note (pre-existing, verified against the deployed
+v0.2): unknown org/scan return streamed not-found UI with HTTP 200 (loading.tsx streaming);
+only unmatched URLs are status-404 — unchanged by this task.
+
+**Open questions:** none blocking. Next: 13.2 — interactive finding cards v2 (progressive
+disclosure, evidence drawer, copy button).
+
+---
+
 ## Task 12.3 — Dashboard hardening + error/loading polish  (2026-06-11)
 
 **Status:** complete, Validation Gate passing. Closes M12 → **dashboard v0.2** (tag `dashboard-v0.2`).

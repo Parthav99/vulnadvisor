@@ -1,7 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Card, EmptyState } from "@/components/ui";
+import { EmptyState } from "@/components/blocks";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { formatDate } from "@/lib/format";
 import type { ApiKey, ApiKeyCreated } from "@/lib/types";
 
@@ -97,37 +100,39 @@ export function KeysManager({ slug, initialKeys }: { slug: string; initialKeys: 
   return (
     <div>
       <form onSubmit={createKey} className="mb-4 flex flex-wrap items-center gap-2">
-        <input
-          className="min-w-48 flex-1 rounded-md border border-[#30363d] bg-[#0d1117] px-3 py-2 text-sm text-[#e6edf3] outline-none focus:border-[#3fb950]"
+        <Input
+          className="min-w-48 flex-1"
           placeholder="Key name (e.g. ci-github-actions)"
           value={name}
           onChange={(e) => setName(e.target.value)}
           disabled={creating}
         />
-        <button className="btn" type="submit" disabled={creating}>
+        <Button variant="outline" type="submit" disabled={creating}>
           {creating ? "Generating…" : "Generate key"}
-        </button>
+        </Button>
       </form>
 
-      {error ? <p className="mb-3 text-sm text-[#ff7b72]">{error}</p> : null}
+      {error ? <p className="mb-3 text-sm text-risk">{error}</p> : null}
 
       {created ? (
-        <Card className="mb-4 border-[#3fb950]">
-          <p className="mb-1 text-sm font-semibold text-[#56d364]">
-            Copy this key now — it is shown only once.
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <code className="mono break-all rounded bg-[#0d1117] px-2 py-1 text-xs text-[#e6edf3]">
-              {created.secret}
-            </code>
-            <button className="btn" type="button" onClick={copySecret}>
-              {copied ? "Copied ✓" : "Copy"}
-            </button>
-          </div>
-          <p className="muted mt-2 text-xs">
-            Use it as <span className="mono">Authorization: Bearer &lt;key&gt;</span>, or run{" "}
-            <span className="mono">vulnadvisor scan . --upload --api-key &lt;key&gt;</span>.
-          </p>
+        <Card size="sm" className="mb-4 ring-foreground/25">
+          <CardContent>
+            <p className="mb-1 text-sm font-semibold">
+              Copy this key now — it is shown only once.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <code className="mono rounded bg-background px-2 py-1 text-xs break-all">
+                {created.secret}
+              </code>
+              <Button variant="outline" size="sm" type="button" onClick={copySecret}>
+                {copied ? "Copied ✓" : "Copy"}
+              </Button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Use it as <span className="mono">Authorization: Bearer &lt;key&gt;</span>, or run{" "}
+              <span className="mono">vulnadvisor scan . --upload --api-key &lt;key&gt;</span>.
+            </p>
+          </CardContent>
         </Card>
       ) : null}
 
@@ -137,29 +142,27 @@ export function KeysManager({ slug, initialKeys }: { slug: string; initialKeys: 
         <ul className="grid gap-2">
           {keys.map((key) => (
             <li key={key.id}>
-              <Card className="flex items-center justify-between">
-                <div>
+              <Card size="sm" className="flex-row items-center justify-between">
+                <CardContent>
                   <span className="font-semibold">{key.name}</span>{" "}
-                  <span className="muted mono text-xs">{key.prefix}…</span>
-                  {key.revoked_at ? (
-                    <span className="ml-2 text-xs text-[#ff7b72]">revoked</span>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="muted text-right text-xs">
+                  <span className="mono text-xs text-muted-foreground">{key.prefix}…</span>
+                  {key.revoked_at ? <span className="ml-2 text-xs text-risk">revoked</span> : null}
+                </CardContent>
+                <CardContent className="flex items-center gap-3">
+                  <div className="text-right text-xs text-muted-foreground">
                     <div>created {formatDate(key.created_at)}</div>
                     <div>last used {formatDate(key.last_used_at)}</div>
                   </div>
                   {key.revoked_at ? null : (
                     <button
-                      className="text-xs text-[#ff7b72] hover:underline"
+                      className="text-xs text-risk hover:underline"
                       type="button"
                       onClick={() => revokeKey(key.id)}
                     >
                       Revoke
                     </button>
                   )}
-                </div>
+                </CardContent>
               </Card>
             </li>
           ))}

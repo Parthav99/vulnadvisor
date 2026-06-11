@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull } from "@/lib/api";
-import { Card, EmptyState, PageHeader } from "@/components/ui";
+import { EmptyState, PageHeader } from "@/components/blocks";
 import { TrendChart } from "@/components/trend-chart";
-import { Badge } from "@/components/ui";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { bandClass, formatDate, shortRef, shortSha } from "@/lib/format";
 import type { Repo, ScanPage, TrendResponse } from "@/lib/types";
 
@@ -53,7 +55,7 @@ export default async function RepoPage({
       />
 
       <section className="mb-6">
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide muted">
+        <h2 className="mb-2 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
           90-day trend
         </h2>
         <TrendChart points={trend?.points ?? []} />
@@ -61,30 +63,34 @@ export default async function RepoPage({
 
       {refs.length > 1 ? (
         <nav className="mb-3 flex flex-wrap gap-2 text-sm" aria-label="Filter by ref">
-          <Link href={base} className={`btn ${selectedRef ? "" : "border-[#58a6ff]"}`}>
-            all refs
-          </Link>
+          <Button asChild variant="outline" size="sm" className={selectedRef ? "" : "border-ring"}>
+            <Link href={base}>all refs</Link>
+          </Button>
           {refs.map((r) => (
-            <Link
+            <Button
               key={r}
-              href={`${base}?ref=${encodeURIComponent(r)}`}
-              className={`btn ${selectedRef === r ? "border-[#58a6ff]" : ""}`}
+              asChild
+              variant="outline"
+              size="sm"
+              className={selectedRef === r ? "border-ring" : ""}
             >
-              {shortRef(r)}
-            </Link>
+              <Link href={`${base}?ref=${encodeURIComponent(r)}`}>{shortRef(r)}</Link>
+            </Button>
           ))}
         </nav>
       ) : null}
 
       {scans.length >= 2 ? (
-        <p className="muted mb-3 text-sm">
+        <p className="mb-3 text-sm text-muted-foreground">
           <Link href={`/scans/${scans[1].id}/diff/${scans[0].id}`} className="link">
             Compare the two latest scans →
           </Link>
         </p>
       ) : null}
 
-      <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide muted">Scans</h2>
+      <h2 className="mb-2 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+        Scans
+      </h2>
       {scans.length === 0 ? (
         <EmptyState>
           {allScans.length > 0 ? (
@@ -92,7 +98,7 @@ export default async function RepoPage({
           ) : (
             <>
               No scans uploaded yet. Run{" "}
-              <code className="mono text-[#e6edf3]">vulnadvisor scan . --upload</code> from this
+              <code className="mono text-foreground">vulnadvisor scan . --upload</code> from this
               repository to publish the first report.
             </>
           )}
@@ -102,27 +108,36 @@ export default async function RepoPage({
           {scans.map((scan) => (
             <li key={scan.id}>
               <Link href={`/scans/${scan.id}`} className="block">
-                <Card className="flex items-center justify-between hover:border-[#58a6ff]">
-                  <div>
+                <Card
+                  size="sm"
+                  className="flex-row items-center justify-between transition-shadow hover:ring-ring/40"
+                >
+                  <CardContent>
                     {shortSha(scan.commit_sha) ? (
                       <span className="mono">{shortSha(scan.commit_sha)}</span>
                     ) : (
-                      <Badge className="border-[#6e7681] text-[#8b949e] bg-[#6e768122]">
+                      <Badge variant="outline" className="text-muted-foreground">
                         local scan
                       </Badge>
                     )}{" "}
                     {shortRef(scan.ref) ? (
-                      <span className="muted">{shortRef(scan.ref)}</span>
+                      <span className="text-muted-foreground">{shortRef(scan.ref)}</span>
                     ) : null}
-                    {scan.pr_number ? <span className="muted"> · PR #{scan.pr_number}</span> : null}
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <Badge className={bandClass("critical")}>
+                    {scan.pr_number ? (
+                      <span className="text-muted-foreground"> · PR #{scan.pr_number}</span>
+                    ) : null}
+                  </CardContent>
+                  <CardContent className="flex items-center gap-3">
+                    <Badge variant="outline" className={bandClass("critical")}>
                       {scan.summary.by_band?.critical ?? 0} critical
                     </Badge>
-                    <span className="muted text-sm">{scan.summary.total ?? 0} findings</span>
-                    <span className="muted text-sm">{formatDate(scan.created_at)}</span>
-                  </div>
+                    <span className="text-sm text-muted-foreground">
+                      {scan.summary.total ?? 0} findings
+                    </span>
+                    <span className="text-sm text-muted-foreground">
+                      {formatDate(scan.created_at)}
+                    </span>
+                  </CardContent>
                 </Card>
               </Link>
             </li>

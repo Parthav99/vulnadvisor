@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { apiGetOrNull } from "@/lib/api";
-import { EmptyState, PageHeader, Stat } from "@/components/ui";
+import { EmptyState, PageHeader, Stat } from "@/components/blocks";
+import { Card, CardContent } from "@/components/ui/card";
 import { FindingCard } from "@/components/finding-card";
 import { displayId } from "@/lib/format";
 import type { DiffResponse } from "@/lib/types";
@@ -29,7 +30,7 @@ export default async function DiffPage({
       </div>
 
       <section className="mb-6">
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-[#ff7b72]">
+        <h2 className="mb-2 text-sm font-semibold tracking-wide text-risk uppercase">
           Introduced
         </h2>
         {diff.introduced.length === 0 ? (
@@ -47,20 +48,25 @@ export default async function DiffPage({
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-[#56d364]">Fixed</h2>
+        <h2 className="mb-2 text-sm font-semibold tracking-wide text-safe uppercase">Fixed</h2>
         {diff.fixed.length === 0 ? (
           <EmptyState>No findings were fixed.</EmptyState>
         ) : (
           <ul className="grid gap-2">
             {diff.fixed.map((finding) => (
-              <li
-                key={`${finding.dependency.name}:${finding.advisory.id}`}
-                className="card flex items-center justify-between"
-              >
-                <span className="mono">
-                  {finding.dependency.name} {finding.dependency.version || "(unpinned)"}
-                </span>
-                <span className="muted mono text-xs">{displayId(finding.advisory)}</span>
+              <li key={`${finding.dependency.name}:${finding.advisory.id}`}>
+                <Card size="sm" className="flex-row items-center justify-between">
+                  <CardContent>
+                    <span className="mono">
+                      {finding.dependency.name} {finding.dependency.version || "(unpinned)"}
+                    </span>
+                  </CardContent>
+                  <CardContent>
+                    <span className="mono text-xs text-muted-foreground">
+                      {displayId(finding.advisory)}
+                    </span>
+                  </CardContent>
+                </Card>
               </li>
             ))}
           </ul>

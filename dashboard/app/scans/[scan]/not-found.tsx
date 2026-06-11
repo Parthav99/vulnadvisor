@@ -1,14 +1,15 @@
 import Link from "next/link";
-import { FullPageNotice } from "@/components/ui";
+import { FullPageNotice } from "@/components/blocks";
+import { Button } from "@/components/ui/button";
 
 export default function ScanNotFound() {
   return (
     <FullPageNotice
       title="Scan not found"
       action={
-        <Link href="/" className="btn">
-          Back to home
-        </Link>
+        <Button asChild variant="outline">
+          <Link href="/">Back to home</Link>
+        </Button>
       }
     >
       This scan doesn&apos;t exist, or it belongs to an organization you&apos;re not a member of.

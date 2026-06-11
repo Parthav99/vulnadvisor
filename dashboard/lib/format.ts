@@ -1,19 +1,25 @@
 // Presentation helpers: colors for priority bands and reachability tiers, date formatting.
+//
+// Aegis palette semantics (the source of truth for state colors app-wide):
+//   red = confirmed risk only · amber = uncertainty · blue = low/wayfinding ·
+//   teal (--safe) = the ONE guarded accent, used solely for provably-safe states
+//   (not-imported is the only "confidently safe" tier).
 
 const BAND_CLASSES: Record<string, string> = {
-  critical: "border-[#f85149] text-[#ff7b72] bg-[#f8514922]",
-  high: "border-[#db6d28] text-[#ffa657] bg-[#db6d2822]",
-  medium: "border-[#d29922] text-[#e3b341] bg-[#d2992222]",
-  low: "border-[#388bfd] text-[#79c0ff] bg-[#388bfd22]",
-  info: "border-[#6e7681] text-[#8b949e] bg-[#6e768122]",
+  critical: "border-risk/50 text-risk bg-risk/10",
+  high: "border-elevated/50 text-elevated bg-elevated/10",
+  medium: "border-warn/50 text-warn bg-warn/10",
+  low: "border-info/50 text-info bg-info/10",
+  info: "border-muted-foreground/50 text-muted-foreground bg-muted-foreground/10",
 };
 
 const TIER_CLASSES: Record<string, string> = {
-  "imported-and-called": "border-[#f85149] text-[#ff7b72] bg-[#f8514922]",
-  imported: "border-[#d29922] text-[#e3b341] bg-[#d2992222]",
-  "dynamic-unknown": "border-[#a371f7] text-[#d2a8ff] bg-[#a371f722]",
-  "not-imported": "border-[#3fb950] text-[#56d364] bg-[#3fb95022]",
-  unknown: "border-[#6e7681] text-[#8b949e] bg-[#6e768122]",
+  "imported-and-called": "border-risk/50 text-risk bg-risk/10",
+  imported: "border-warn/50 text-warn bg-warn/10",
+  // Dashed border: uncertainty is visibly *unresolved*, never styled as safe.
+  "dynamic-unknown": "border-dashed border-warn/60 text-warn bg-warn/10",
+  "not-imported": "border-safe/50 text-safe bg-safe/10",
+  unknown: "border-muted-foreground/50 text-muted-foreground bg-muted-foreground/10",
 };
 
 const TIER_LABELS: Record<string, string> = {

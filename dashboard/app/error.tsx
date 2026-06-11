@@ -1,7 +1,8 @@
 "use client"; // Error boundaries must be Client Components
 
 import { useEffect } from "react";
-import { FullPageNotice } from "@/components/ui";
+import { FullPageNotice } from "@/components/blocks";
+import { Button } from "@/components/ui/button";
 
 // Branded fallback for unexpected runtime errors (e.g. the platform API being unreachable).
 // Never renders the raw error message — only the opaque digest for support correlation.
@@ -20,9 +21,9 @@ export default function Error({
     <FullPageNotice
       title="Something went wrong"
       action={
-        <button type="button" className="btn" onClick={() => unstable_retry()}>
+        <Button type="button" variant="outline" onClick={() => unstable_retry()}>
           Try again
-        </button>
+        </Button>
       }
     >
       <p>We couldn&apos;t load this page. The API may be waking up — retry in a moment.</p>

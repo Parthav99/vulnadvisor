@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull, installUrl } from "@/lib/api";
-import { Card, EmptyState, PageHeader } from "@/components/ui";
+import { EmptyState, PageHeader } from "@/components/blocks";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { formatDate } from "@/lib/format";
 import type { ApiKey, OrgDetail } from "@/lib/types";
 
@@ -21,23 +24,29 @@ export default async function SettingsPage({ params }: { params: Promise<{ org: 
       <PageHeader title={`${org.name} · settings`} subtitle={`${org.slug} · your role: ${org.role}`} />
 
       <section className="mb-6">
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide muted">GitHub App</h2>
-        <Card className="flex items-center justify-between">
-          <span className="muted text-sm">
+        <h2 className="mb-2 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+          GitHub App
+        </h2>
+        <Card size="sm" className="flex-row items-center justify-between">
+          <CardContent className="text-sm text-muted-foreground">
             Install the VulnAdvisor GitHub App to get PR comments and repository sync.
-          </span>
-          <a className="btn" href={installUrl()}>
-            Install / configure
-          </a>
+          </CardContent>
+          <CardContent>
+            <Button asChild variant="outline">
+              <a href={installUrl()}>Install / configure</a>
+            </Button>
+          </CardContent>
         </Card>
       </section>
 
       <section className="mb-6">
         <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm font-semibold uppercase tracking-wide muted">API keys</h2>
-          <Link className="btn" href={`/orgs/${slug}/settings/api-keys`}>
-            Manage keys
-          </Link>
+          <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+            API keys
+          </h2>
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/orgs/${slug}/settings/api-keys`}>Manage keys</Link>
+          </Button>
         </div>
         {keys.length === 0 ? (
           <EmptyState>
@@ -51,18 +60,16 @@ export default async function SettingsPage({ params }: { params: Promise<{ org: 
           <ul className="grid gap-2">
             {keys.map((key) => (
               <li key={key.id}>
-                <Card className="flex items-center justify-between">
-                  <div>
+                <Card size="sm" className="flex-row items-center justify-between">
+                  <CardContent>
                     <span className="font-semibold">{key.name}</span>{" "}
-                    <span className="muted mono text-xs">{key.prefix}…</span>
-                    {key.revoked_at ? (
-                      <span className="ml-2 text-xs text-[#ff7b72]">revoked</span>
-                    ) : null}
-                  </div>
-                  <div className="muted text-right text-xs">
+                    <span className="mono text-xs text-muted-foreground">{key.prefix}…</span>
+                    {key.revoked_at ? <span className="ml-2 text-xs text-risk">revoked</span> : null}
+                  </CardContent>
+                  <CardContent className="text-right text-xs text-muted-foreground">
                     <div>created {formatDate(key.created_at)}</div>
                     <div>last used {formatDate(key.last_used_at)}</div>
-                  </div>
+                  </CardContent>
                 </Card>
               </li>
             ))}
@@ -71,13 +78,19 @@ export default async function SettingsPage({ params }: { params: Promise<{ org: 
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide muted">Cloud scanning</h2>
-        <Card className="flex items-center justify-between">
-          <span className="muted text-sm">
-            Cloud-side scanning is <span className="text-[#e6edf3]">disabled</span> — source code
+        <h2 className="mb-2 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+          Cloud scanning
+        </h2>
+        <Card size="sm" className="flex-row items-center justify-between">
+          <CardContent className="text-sm text-muted-foreground">
+            Cloud-side scanning is <span className="text-foreground">disabled</span> — source code
             never leaves your infrastructure. CI uploads JSON reports only.
-          </span>
-          <span className="pill border-[#3fb950] text-[#56d364]">opt-in</span>
+          </CardContent>
+          <CardContent>
+            <Badge variant="outline" className="border-safe/50 text-safe">
+              opt-in
+            </Badge>
+          </CardContent>
         </Card>
       </section>
     </div>

@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { apiGetOrNull, loginUrl } from "@/lib/api";
-import { Card, EmptyState, PageHeader } from "@/components/ui";
+import { EmptyState, PageHeader } from "@/components/blocks";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import type { Org } from "@/lib/types";
 
 export default async function Home() {
@@ -14,9 +16,11 @@ export default async function Home() {
           subtitle="Reachability-first triage for your team's Python dependencies."
         />
         <Card>
-          <a className="btn" href={loginUrl()}>
-            Sign in with GitHub
-          </a>
+          <CardContent>
+            <Button asChild variant="outline">
+              <a href={loginUrl()}>Sign in with GitHub</a>
+            </Button>
+          </CardContent>
         </Card>
       </div>
     );
@@ -32,11 +36,13 @@ export default async function Home() {
           {orgs.map((org) => (
             <li key={org.id}>
               <Link href={`/orgs/${org.slug}`} className="block">
-                <Card className="hover:border-[#58a6ff]">
-                  <div className="font-semibold">{org.name}</div>
-                  <div className="muted text-sm">
-                    {org.slug} · {org.role} · {org.plan}
-                  </div>
+                <Card size="sm" className="transition-shadow hover:ring-ring/40">
+                  <CardContent>
+                    <div className="font-semibold">{org.name}</div>
+                    <div className="text-sm text-muted-foreground">
+                      {org.slug} · {org.role} · {org.plan}
+                    </div>
+                  </CardContent>
                 </Card>
               </Link>
             </li>
