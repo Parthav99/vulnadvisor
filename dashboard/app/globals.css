@@ -152,6 +152,37 @@
   mask-image: radial-gradient(ellipse 90% 65% at 50% 0%, black 0%, transparent 80%);
 }
 
+/* Posture-hero status pulse: a slow ping behind the status dot. Subtle by design —
+   the hero is a state, not an alarm bell. Killed by the reduced-motion rule below. */
+@keyframes status-pulse {
+  0% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.1);
+  }
+}
+@utility status-pulse {
+  animation: status-pulse 2.4s var(--ease-aegis) infinite;
+}
+
+/* Reduced motion respected app-wide: every CSS animation/transition collapses to an
+   instant. JS-driven (motion) animations honor it separately via useReducedMotion /
+   MotionConfig reducedMotion="user". */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

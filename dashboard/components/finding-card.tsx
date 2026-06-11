@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useState } from "react";
-import { motion } from "motion/react";
+import { motion, useReducedMotion } from "motion/react";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -109,6 +109,7 @@ function EvidenceDrawer({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const drawerId = useId();
+  const reduceMotion = useReducedMotion() ?? false;
   const counts = [
     callPaths.length > 0 ? `${callPaths.length} call path${callPaths.length === 1 ? "" : "s"}` : null,
     evidence.length > 0 ? `${evidence.length} import site${evidence.length === 1 ? "" : "s"}` : null,
@@ -137,7 +138,7 @@ function EvidenceDrawer({
         inert={!open}
         initial={false}
         animate={open ? { height: "auto", opacity: 1 } : { height: 0, opacity: 0 }}
-        transition={{ duration: FADE_DURATION, ease: EASE_AEGIS }}
+        transition={{ duration: reduceMotion ? 0 : FADE_DURATION, ease: EASE_AEGIS }}
         className="overflow-hidden"
       >
         <div className="space-y-3 px-3 pb-3">
@@ -197,6 +198,7 @@ export function FindingCard({
   const version = dependency.version || "(unpinned)";
   const [open, setOpen] = useState(defaultOpen);
   const panelId = useId();
+  const reduceMotion = useReducedMotion() ?? false;
   const callPaths = reachability?.call_paths ?? [];
   const evidence = reachability?.evidence ?? [];
   const story = score.verdict || advisory.summary || "No summary available.";
@@ -249,7 +251,7 @@ export function FindingCard({
         inert={!open}
         initial={false}
         animate={open ? { height: "auto", opacity: 1 } : { height: 0, opacity: 0 }}
-        transition={{ duration: FADE_DURATION, ease: EASE_AEGIS }}
+        transition={{ duration: reduceMotion ? 0 : FADE_DURATION, ease: EASE_AEGIS }}
         className="overflow-hidden"
       >
         <article className="space-y-3 border-t px-3 py-3">

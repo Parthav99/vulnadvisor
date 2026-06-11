@@ -2,9 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull } from "@/lib/api";
 import { EmptyState, PageHeader, Stat } from "@/components/blocks";
+import { PostureHero } from "@/components/posture-hero";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDate } from "@/lib/format";
-import type { OrgDetail, Repo } from "@/lib/types";
+import { computePosture } from "@/lib/posture";
+import type { AnalyticsOverview, OrgDetail, Repo } from "@/lib/types";
 
 export async function generateMetadata({ params }: { params: Promise<{ org: string }> }) {
   const { org } = await params;
@@ -15,7 +17,11 @@ export default async function OrgPage({ params }: { params: Promise<{ org: strin
   const { org: slug } = await params;
   const org = await apiGetOrNull<OrgDetail>(`/v1/orgs/${slug}`);
   if (org === null) notFound();
-  const repos = (await apiGetOrNull<Repo[]>(`/v1/orgs/${slug}/repos`)) ?? [];
+  const [repos, overview] = await Promise.all([
+    apiGetOrNull<Repo[]>(`/v1/orgs/${slug}/repos`).then((r) => r ?? []),
+    apiGetOrNull<AnalyticsOverview>(`/v1/orgs/${slug}/analytics/overview`),
+  ]);
+  const scannedRepos = repos.filter((r) => r.scan_count > 0).length;
 
   return (
     <div>
@@ -30,6 +36,8 @@ export default async function OrgPage({ params }: { params: Promise<{ org: strin
           </>
         }
       />
+
+      {overview ? <PostureHero posture={computePosture(overview, scannedRepos)} /> : null}
 
       <div className="mb-6 grid gap-3 sm:grid-cols-3">
         <Stat label="Repositories" value={org.repo_count} />

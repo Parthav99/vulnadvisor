@@ -4,6 +4,67 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 13.5 — Security-posture hero + a11y/perf gate  (2026-06-11)
+
+**Status:** complete, Validation Gate passing. Closes M13 → **dashboard v1.0** (tag
+`dashboard-v1.0`). No new dependencies (`node --test` + Node ≥23.6 native TS type-stripping
+power the new wording tests — `npm test`).
+
+**The hero** — org home answers "am I protected?" in one glance:
+
+- **`lib/posture.ts`** (pure, unit-tested): `computePosture(overview, scannedRepoCount)` →
+  five levels with sound wording rules baked in: **KEV > 0 → "At risk"** even if every KEV
+  finding is deprioritized (escalation-only; KEV = exploited in the wild) →
+  **confirmed call path → "At risk"** → **dynamic-unknown-only → "Unverified — N findings
+  cannot be ruled out"** (never "Protected", detail says "treat these as unresolved") →
+  **imported-only → "Under watch"** (with a "N of them resists verification" note when dynamic
+  is mixed in) → **"Protected"** only when scans exist AND actionable == 0.
+  `scannedRepoCount` (from the repos list the page already fetches) disambiguates "no findings
+  because nothing scanned" → **"Awaiting first scan — protection is unverified until…"**, so an
+  unscanned org never reads as safe.
+- **`components/posture-hero.tsx`**: shield card on `/orgs/{org}` (ShieldAlert red / Shield
+  amber / ShieldCheck teal / unverified gets the **dashed** amber border per the uncertainty
+  convention), status dot with a **2.4 s CSS ping** (`status-pulse` keyframes; no pulse on
+  "awaiting"), `aria-label="Security posture"`. Renders only when the overview endpoint
+  responds (degrades to the old page, never guesses).
+
+**The a11y/perf pass:**
+
+- **Reduced motion now truly disables *all* animation:** global
+  `@media (prefers-reduced-motion: reduce)` rule collapses every CSS animation/transition to
+  0.01 ms, and the JS-driven motion animations (shell content fade, finding-card panel/drawer
+  height) opt out via `useReducedMotion()` (MotionConfig `reducedMotion="user"` only suppresses
+  transforms — opacity/height tweens needed the explicit opt-out).
+- **Skip link** ("Skip to content" → `#main` on `motion.main`): first tab stop, sr-only until
+  focused. Fonts already optimal (self-hosted Geist via next/font); images are inline SVG +
+  ICO only — nothing further to optimize (best-practices 100 confirms).
+
+**Validation:** `npm test` **11/11** wording cases (incl. the 4 gate mixes, KEV-overrides-
+deprioritized soundness sweep, grammar) · build + lint clean · ruff + format clean ·
+`mypy --strict src platform` clean (82 files) · **pytest 446 passed** (no Python changes).
+**Live e2e** (re-seeded `c:\tmp\va132` stack: acme = KEV at-risk, safe-org = deprioritized-only,
+dyn-org = dynamic-unknown-only, empty-org = unscanned):
+- **SSR 16/16 PASS** — each org renders its exact headline/detail; dyn-org and empty-org HTML
+  contain zero "Protected —"; dashed frame on unverified; pulse absent on awaiting; skip link +
+  `#main` in the shell.
+- **Browser 8/8 PASS** (headless Edge, puppeteer-core) — pulse animates 2.4 s/infinite by
+  default; **`prefers-reduced-motion: reduce` verified**: pulse + chevron collapse to ~0 ms and
+  the card expand completes within 2 frames (instant), while normal motion still tweens; skip
+  link is the first tab stop, becomes visible on focus, jumps to `#main`. Hero screenshots
+  (at-risk/protected/unverified) eyeballed.
+- **Lighthouse (desktop preset, documented):** home **100/100**, repo **99/100**, scan (50
+  findings) **100/100**, analytics **98/100** (perf/a11y; best-practices 100 across) — gate
+  ≥90/≥95 met everywhere. Mobile emulation documented honestly: analytics 65, scan 76 (recharts
+  hydration, a11y 100 both) — desktop is the product form factor (13.4 precedent); mobile perf
+  stays on the backlog.
+
+**Deploy:** pushed to main (Vercel auto-deploys `dashboard/`); tagged **`dashboard-v1.0`**.
+
+**Open questions:** none blocking. M13 complete — the product looks fundable. Next: M14 —
+Task 14.1 `vulnadvisor login` (device flow).
+
+---
+
 ## Task 13.4 — Analytics page (charts)  (2026-06-11)
 
 **Status:** complete, Validation Gate passing. **New npm dep (pre-listed in task.md, approved at

@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { MotionConfig, motion } from "motion/react";
+import { MotionConfig, motion, useReducedMotion } from "motion/react";
 import { Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Brand } from "@/components/shell/brand";
@@ -40,10 +40,19 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  // MotionConfig reducedMotion="user" only suppresses transforms; the content fade is
+  // opacity, so it must opt out explicitly for "all animation disabled" to hold.
+  const reduceMotion = useReducedMotion() ?? false;
 
   return (
     <MotionConfig reducedMotion="user">
       <PaletteProvider>
+        <a
+          href="#main"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-md focus:bg-card focus:px-3 focus:py-2 focus:text-sm focus:ring-2 focus:ring-ring"
+        >
+          Skip to content
+        </a>
         <div aria-hidden className="radar-grid" />
         <div className="relative z-10 flex min-h-dvh">
           {sidebar}
@@ -53,10 +62,11 @@ export function AppShell({
               <SearchButton />
             </header>
             <motion.main
+              id="main"
               key={pathname}
-              initial={{ opacity: 0, y: 4 }}
+              initial={reduceMotion ? false : { opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: FADE_DURATION, ease: EASE_AEGIS }}
+              transition={{ duration: reduceMotion ? 0 : FADE_DURATION, ease: EASE_AEGIS }}
               className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 md:px-8"
             >
               {children}
