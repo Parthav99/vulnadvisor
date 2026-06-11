@@ -16,6 +16,7 @@ from sqlalchemy import func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vulnadvisor_platform.access import require_org, require_repo, require_scan
+from vulnadvisor_platform.analytics import parse_window
 from vulnadvisor_platform.db import SessionDep, utcnow
 from vulnadvisor_platform.models import Finding, Membership, Org, Repository, Scan
 from vulnadvisor_platform.schemas import (
@@ -67,17 +68,6 @@ def _decode_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
         return datetime.fromisoformat(data["ts"]), uuid.UUID(data["id"])
     except (ValueError, KeyError, TypeError) as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid cursor") from exc
-
-
-def _parse_window(window: str) -> int:
-    text = window.strip().lower().removesuffix("d")
-    try:
-        days = int(text)
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "window must look like '90d'") from exc
-    if not 1 <= days <= 365:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "window must be between 1 and 365 days")
-    return days
 
 
 async def _finding_payloads(
@@ -178,7 +168,7 @@ async def repo_trend(
     """Per-day actionable/deprioritized/reachable-called counts from each day's latest scan."""
     org, _ = await require_org(session, user, org_slug)
     repo = await require_repo(session, org, repo_name)
-    days = _parse_window(window)
+    days = parse_window(window)
     cutoff = utcnow() - timedelta(days=days)
 
     scans = (

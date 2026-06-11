@@ -187,6 +187,64 @@ class DiffResponse(BaseModel):
     unchanged: int
 
 
+# --- Analytics (Task 13.3) ------------------------------------------------------------------------
+
+
+class AnalyticsOverview(BaseModel):
+    """Org-wide security posture, aggregated over each repo's latest scan."""
+
+    org_id: uuid.UUID
+    repo_count: int
+    repos_at_risk: int
+    total_findings: int
+    actionable: int
+    deprioritized: int
+    reachable_called: int
+    kev_count: int
+    by_band: dict[str, int]
+    by_tier: dict[str, int]
+
+
+class OrgTrendResponse(BaseModel):
+    """Per-day org-wide actionable/deprioritized/reachable-called counts over a window."""
+
+    org_id: uuid.UUID
+    window_days: int
+    points: list[TrendPoint]
+
+
+class PackageRisk(BaseModel):
+    """One package's aggregated risk across the org's latest scans."""
+
+    package: str
+    max_priority: float
+    band: str
+    finding_count: int
+    repo_count: int
+
+
+class PackagesResponse(BaseModel):
+    """Top risky packages (by max priority, then finding count) across the org."""
+
+    org_id: uuid.UUID
+    packages: list[PackageRisk]
+
+
+class ResolutionStats(BaseModel):
+    """Resolved-finding stats: how many were fixed and the median days to fix."""
+
+    resolved_count: int
+    median_days: float | None
+
+
+class ResolutionResponse(BaseModel):
+    """Median days from first-seen to fixed, overall and per band (derived from scan diffs)."""
+
+    org_id: uuid.UUID
+    overall: ResolutionStats
+    bands: dict[str, ResolutionStats]
+
+
 # --- API keys (Task 11.5) -----------------------------------------------------------------------
 
 

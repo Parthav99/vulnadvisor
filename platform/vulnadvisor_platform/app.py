@@ -12,7 +12,7 @@ from vulnadvisor_platform import __version__
 from vulnadvisor_platform.config import get_settings
 from vulnadvisor_platform.db import SessionDep
 from vulnadvisor_platform.models import Membership, Org
-from vulnadvisor_platform.routers import auth, github, ingest, keys, read
+from vulnadvisor_platform.routers import analytics, auth, github, ingest, keys, read
 from vulnadvisor_platform.schemas import HealthResponse, MeResponse, OrgMembershipOut
 from vulnadvisor_platform.security import CurrentUser
 
@@ -34,6 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(analytics.router)
 app.include_router(auth.router)
 app.include_router(github.router)
 app.include_router(ingest.router)

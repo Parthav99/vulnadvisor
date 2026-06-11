@@ -4,6 +4,64 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 13.3 — Analytics API (aggregates) + data retention  (2026-06-11)
+
+**Status:** complete, Validation Gate passing. No new dependencies, **no schema change / no
+migration** — everything is aggregates over the existing tables, and compaction only empties
+`findings.payload`.
+
+Four read endpoints under `/v1/orgs/{org}/analytics/` (new `routers/analytics.py`; tenant
+isolation identical to 11.4 — non-members get 404 via `require_org`):
+
+- **`/overview`** — current posture over **each repo's latest scan** (any ref; window-function
+  `row_number()` keyset order `(created_at, id)`, never double-counting history): totals by band
+  (stable shape, all 5 bands) and by tier (all 4 tiers), actionable/deprioritized/reachable-called
+  (via the sound `summarize_tiers` from 11.4 — only `not-imported` deprioritizes), **KEV count**
+  (SQL JSON path `payload['in_kev']` — works on SQLite JSON and PG JSONB), and **repos at risk**
+  (distinct repos whose latest scan has any non-`not-imported` finding), plus `repo_count`/
+  `total_findings` for the 13.4 KPI strip.
+- **`/trend?window=30d|90d`** — org-wide per-day stacked counts: each day's latest scan per repo,
+  summed across repos (mirrors the 11.4 repo-trend semantics; one grouped query, no N+1). Days
+  with scans but zero findings still emit a zero point. `parse_window` moved to a shared
+  `analytics.py` helper module (read.py's private copy deleted — same 400 semantics, tested).
+- **`/packages?limit=`** — top risky packages over latest scans: `max(priority)`, finding count,
+  distinct-repo count, ordered max-priority → count → name. Each package's **band is read from
+  its top-priority finding row** (second window query) rather than re-deriving the engine's
+  priority→band thresholds — the engine stays the authority.
+- **`/resolution`** — median days first-seen→fixed, overall + per band. The platform stores no
+  finding lifecycle, so it's **reconstructed from consecutive scan diffs** per (repo, ref)
+  timeline: pure `resolution_episodes()` in `analytics.py` (a finding's episode starts at the
+  first scan containing it, ends at the first later scan without it; still-present = unresolved,
+  contributes nothing; disappear-and-reappear = one episode per contiguous run; band recorded at
+  first sight). Median via `statistics.median`; bands with no episodes report `null`.
+
+**Retention guard** (new `compact.py`, free-tier Neon): `python -m vulnadvisor_platform.compact
+--days N [--apply]` — empties `findings.payload` for scans that are **both** older than N days
+**and** superseded on their (repo, ref) partition (null refs partition together, so local scans
+keep their own latest). Denormalized columns always survive → every analytics number stays
+intact; latest-per-ref always keeps full payloads → the dashboard's current view and the KEV
+count (payload-dependent, latest-only) are never degraded. **Dry-run by default** (`--apply` to
+prune); idempotent (already-pruned payloads — `payload::text = '{}'`, portable to both backends —
+drop out of the plan, so a cron re-run is a no-op); `plan_compaction`/`apply_compaction` share the
+exact same selection, so dry-run reports precisely what live deletes (tested). Runs in the
+deployed container as-is (Dockerfile already puts `platform/` on the path); locally needs
+`PYTHONPATH=platform`.
+
+**Validation:** ruff + format clean · `mypy --strict src platform` clean (82 files) · **pytest 446
+passed** (+15: hand-computed overview incl. superseded-scan exclusion + empty org; org trend incl.
+same-day-superseded scan + bad window 400; packages ranking/band/repo-count/limit + superseded
+exclusion; resolution medians per band incl. per-ref independence + unresolved exclusion + pure
+reappearance/unresolved episode tests; compact dry-run==live + latest-per-ref survives any cutoff
++ idempotent re-run + CLI dry-run-by-default output + parser validation). **Live Postgres smoke**
+(docker compose, `alembic upgrade head` + `alembic check` clean — no drift): all four endpoints +
+plan/apply/replan compaction verified against PG (the JSONB `in_kev` path, `payload::text` cast,
+and window functions behave identically to SQLite). Dashboard untouched (charts are 13.4).
+
+**Open questions:** none blocking. Next: 13.4 — analytics page (charts; new npm dep `recharts`
+via shadcn charts to approve at task start).
+
+---
+
 ## Task 13.2 — Interactive finding cards v2 (the attack story, uncut)  (2026-06-11)
 
 **Status:** complete, Validation Gate passing. No new dependencies.
