@@ -26,13 +26,27 @@ from vulnadvisor_platform.security import CurrentApiKey
 router = APIRouter(tags=["ingest"])
 
 
+def _clean_commit_sha(value: str | None) -> str | None:
+    """Empty or placeholder ("0000…") SHAs become null — never stored and rendered as fact."""
+    sha = (value or "").strip()
+    if not sha or set(sha) == {"0"}:
+        return None
+    return sha
+
+
+def _clean_ref(value: str | None) -> str | None:
+    """Empty/whitespace refs become null."""
+    ref = (value or "").strip()
+    return ref or None
+
+
 async def _store_scan(
     session: AsyncSession,
     org: Org,
     repo_name: str,
     *,
-    commit_sha: str,
-    ref: str,
+    commit_sha: str | None,
+    ref: str | None,
     pr_number: int | None,
     source: ScanSource,
     report: dict[str, Any],
@@ -41,7 +55,10 @@ async def _store_scan(
 
     Shared by the path-scoped ingest endpoint and the key-scoped ``/v1/scans`` upload; the caller
     is responsible for authorizing the ``org``. Pure storage logic — no auth decisions here.
+    Placeholder commit SHAs (all zeros, from pre-12.2 CLIs) are normalized to null on the way in.
     """
+    commit_sha = _clean_commit_sha(commit_sha)
+    ref = _clean_ref(ref)
     try:
         parsed = parse_report(report)
     except ReportValidationError as exc:
@@ -60,6 +77,7 @@ async def _store_scan(
         await session.flush()
 
     # The previous scan on this ref (before inserting the new one) is the diff baseline.
+    # A null ref compares as IS NULL, so local scans diff against the previous local scan.
     previous = (
         await session.execute(
             select(Scan)

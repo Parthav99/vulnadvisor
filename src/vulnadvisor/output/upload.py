@@ -45,11 +45,14 @@ def upload_report(
     api_url: str,
     api_key: str,
     repo: str,
-    ref: str = "refs/heads/main",
-    commit_sha: str = "0" * 40,
+    ref: str | None = None,
+    commit_sha: str | None = None,
     timeout: float = 30.0,
 ) -> UploadResult:
     """POST ``report`` to ``{api_url}/v1/scans`` authenticated with ``api_key``.
+
+    ``ref``/``commit_sha`` are sent as JSON ``null`` when unknown — never a placeholder value —
+    so the dashboard can label the upload a local scan instead of rendering fake provenance.
 
     Raises :class:`UploadError` on a missing URL/key, an unreachable server, a non-2xx response, or
     a response that is not the expected JSON object.

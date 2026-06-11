@@ -4,6 +4,48 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 12.2 — Scan metadata honesty (kill "0000000 main")  (2026-06-11)
+
+**Status:** complete, Validation Gate passing.
+
+No placeholder data rendered as fact, anywhere:
+
+- **CLI — new `output/gitmeta.py`** (stdlib-only): `detect_scan_metadata(path)` returns
+  `ScanMetadata(commit_sha, ref)` where either field is **null when honestly unknown — never
+  forty zeros**. Precedence: `GITHUB_SHA`/`GITHUB_REF` (CI; validated — a malformed or all-zero
+  env SHA is rejected) → `git rev-parse HEAD` / `git symbolic-ref --short HEAD` run defensively
+  in the scanned directory (git missing, non-repo, detached HEAD, timeout → null, never a crash).
+  `upload_report` defaults `commit_sha`/`ref` to `None` and sends JSON null; `_upload_report` in
+  the CLI threads the detected metadata through (`os.environ` placeholder logic deleted).
+- **Platform:** `Scan.commit_sha`/`Scan.ref` are now **nullable** (model + `ScanListItem`/
+  `ScanDetailOut`/`IngestRequest`/`ScanUploadRequest` schemas; the old `"0"*40` /
+  `"refs/heads/main"` body defaults are gone). New Alembic migration `7c41aa90d2e1` (alter to
+  nullable; downgrade backfills the old placeholders first). Ingest **normalizes** pre-12.2
+  placeholder values on the way in (`_clean_commit_sha`: all-zero/empty → null; `_clean_ref`:
+  blank → null), and the diff baseline compares null refs as `IS NULL`, so local scans diff
+  against the previous local scan.
+- **Dashboard:** `shortSha()`/`shortRef()` now accept null and **guard placeholders** (an
+  all-zero SHA renders as if null); `ScanListItem`/`ScanDetail` types nullable. Repo scan rows
+  and the scan page header render a neutral gray **"local scan"** badge when no commit is
+  recorded; the ref-filter bar skips null refs; the scan subtitle drops the missing segments.
+
+**Validation:** ruff + format clean · `mypy --strict src` clean (58 files) · **pytest 431 passed**
+(+17: 12 gitmeta tests — real temp git repo incl. detached HEAD + file-path parent, non-repo,
+git-absent, CI-env precedence, zero/malformed SHA rejection; upload null/explicit payloads; CLI
+`--upload` sends null metadata from a non-repo dir; platform null-stored + zeros-normalized +
+null-ref diff + real-sha-kept + read-API-null tests). **Migration applied to live Postgres**
+(docker compose): `alembic upgrade head` clean, `alembic check` no drift, columns verified
+nullable. Dashboard `build`/`lint` clean. **Live SSR e2e:** seeded SQLite (null-sha + real-sha
+scans), uvicorn + `next start` → repo page and scan page show **"local scan"** with zero
+"0000000" anywhere; the real-sha scan shows `aaaaaaa`. **Live CLI e2e:** `vulnadvisor scan
+examples/quickstart --upload` from this checkout uploaded with the actual HEAD
+(`ce621d5d…`, ref `main`) confirmed via the read API.
+
+**Open questions:** none blocking. Next: 12.3 — dashboard hardening + error/loading polish
+(security headers, branded error/loading states, favicon/metadata) → tag `dashboard-v0.2`.
+
+---
+
 ## Task 12.1 — Canonical finding identity (CVE-first display)  (2026-06-10)
 
 **Status:** complete, Validation Gate passing. First M12 task.

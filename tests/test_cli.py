@@ -109,6 +109,9 @@ def test_scan_upload_posts_full_report_and_confirms(
         return UploadResult(scan_id="scan-123", introduced=1, fixed=0, unchanged=0)
 
     monkeypatch.setattr(cli_main, "upload_report", fake_upload)
+    # Deterministic outside/inside CI: no GITHUB_* env, and tmp_path is not a git repo.
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.delenv("GITHUB_REF", raising=False)
     result = runner.invoke(
         app,
         [
@@ -130,6 +133,9 @@ def test_scan_upload_posts_full_report_and_confirms(
     assert captured["api_key"] == "va_test.secret"
     assert captured["repo"] == tmp_path.resolve().name
     assert captured["report"]["schema_version"] == "1.1"  # type: ignore[index]
+    # A local scan of a non-repo directory carries null metadata — never "0000000" (Task 12.2).
+    assert captured["commit_sha"] is None
+    assert captured["ref"] is None
     assert "Uploaded" in result.stdout and "scan-123" in result.stdout
     assert "dash.example.com/scans/scan-123" in result.stdout
 

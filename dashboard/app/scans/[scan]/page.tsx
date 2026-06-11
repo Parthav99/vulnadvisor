@@ -40,15 +40,24 @@ export default async function ScanPage({
     <div>
       <PageHeader
         title={
-          <>
-            Scan <span className="mono">{shortSha(scan.commit_sha)}</span>
-          </>
+          shortSha(scan.commit_sha) ? (
+            <>
+              Scan <span className="mono">{shortSha(scan.commit_sha)}</span>
+            </>
+          ) : (
+            <>
+              Scan{" "}
+              <Badge className="border-[#6e7681] text-[#8b949e] bg-[#6e768122] align-middle">
+                local scan
+              </Badge>
+            </>
+          )
         }
         subtitle={
           <>
-            {shortRef(scan.ref)}
-            {scan.pr_number ? ` · PR #${scan.pr_number}` : ""} · {scan.source} · {scan.status} ·{" "}
-            {formatDate(scan.created_at)}
+            {shortRef(scan.ref) ? `${shortRef(scan.ref)} · ` : ""}
+            {scan.pr_number ? `PR #${scan.pr_number} · ` : ""}
+            {scan.source} · {scan.status} · {formatDate(scan.created_at)}
           </>
         }
       />

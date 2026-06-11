@@ -88,10 +88,19 @@ export function displayTitle(finding: {
   return `${displayId(finding.advisory)} · ${finding.dependency.name} ${version}`;
 }
 
-export function shortSha(sha: string): string {
-  return sha.slice(0, 7);
+// Null or placeholder ("0000…") SHAs mean "no commit recorded" — callers render a neutral
+// "local scan" badge instead of fabricated provenance (Task 12.2).
+const PLACEHOLDER_SHA_RE = /^0+$/;
+
+export function shortSha(sha: string | null | undefined): string | null {
+  if (!sha) return null;
+  const trimmed = sha.trim();
+  if (!trimmed || PLACEHOLDER_SHA_RE.test(trimmed)) return null;
+  return trimmed.slice(0, 7);
 }
 
-export function shortRef(ref: string): string {
-  return ref.replace(/^refs\/heads\//, "").replace(/^refs\/tags\//, "");
+export function shortRef(ref: string | null | undefined): string | null {
+  if (!ref) return null;
+  const short = ref.replace(/^refs\/heads\//, "").replace(/^refs\/tags\//, "").trim();
+  return short || null;
 }

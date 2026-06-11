@@ -29,8 +29,8 @@ export interface ScanSummary {
 
 export interface ScanListItem {
   id: string;
-  commit_sha: string;
-  ref: string;
+  commit_sha: string | null;
+  ref: string | null;
   pr_number: number | null;
   source: string;
   status: string;
@@ -47,8 +47,8 @@ export interface ScanPage {
 export interface ScanDetail {
   id: string;
   repo_id: string;
-  commit_sha: string;
-  ref: string;
+  commit_sha: string | null;
+  ref: string | null;
   pr_number: number | null;
   source: string;
   status: string;

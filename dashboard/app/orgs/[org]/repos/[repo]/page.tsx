@@ -23,7 +23,9 @@ export default async function RepoPage({
   const page = await apiGetOrNull<ScanPage>(`/v1/orgs/${org}/repos/${repo}/scans?limit=50`);
   const allScans = page?.items ?? [];
 
-  const refs = Array.from(new Set(allScans.map((s) => s.ref)));
+  const refs = Array.from(
+    new Set(allScans.map((s) => s.ref).filter((r): r is string => r !== null))
+  );
   const scans = selectedRef ? allScans.filter((s) => s.ref === selectedRef) : allScans;
   const base = `/orgs/${org}/repos/${repo}`;
 
@@ -83,8 +85,16 @@ export default async function RepoPage({
               <Link href={`/scans/${scan.id}`} className="block">
                 <Card className="flex items-center justify-between hover:border-[#58a6ff]">
                   <div>
-                    <span className="mono">{shortSha(scan.commit_sha)}</span>{" "}
-                    <span className="muted">{shortRef(scan.ref)}</span>
+                    {shortSha(scan.commit_sha) ? (
+                      <span className="mono">{shortSha(scan.commit_sha)}</span>
+                    ) : (
+                      <Badge className="border-[#6e7681] text-[#8b949e] bg-[#6e768122]">
+                        local scan
+                      </Badge>
+                    )}{" "}
+                    {shortRef(scan.ref) ? (
+                      <span className="muted">{shortRef(scan.ref)}</span>
+                    ) : null}
                     {scan.pr_number ? <span className="muted"> · PR #{scan.pr_number}</span> : null}
                   </div>
                   <div className="flex items-center gap-3">

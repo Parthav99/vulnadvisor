@@ -1,6 +1,5 @@
 """VulnAdvisor command-line entrypoint (Typer app)."""
 
-import os
 from collections.abc import Callable
 from enum import Enum
 from importlib.metadata import PackageNotFoundError
@@ -22,6 +21,7 @@ from vulnadvisor.llm.client import build_anthropic_client
 from vulnadvisor.llm.explainer import Explainer
 from vulnadvisor.model.advisory import Advisory
 from vulnadvisor.output.gating import parse_fail_on, should_fail
+from vulnadvisor.output.gitmeta import detect_scan_metadata
 from vulnadvisor.output.json_report import build_report, to_json
 from vulnadvisor.output.sarif import to_sarif_json
 from vulnadvisor.output.upload import UploadError, upload_report
@@ -313,21 +313,23 @@ def _upload_report(
 ) -> None:
     """Build the full JSON report and POST it to the platform; print a confirmation or fail.
 
-    Always uploads every finding (never the ``--top`` display subset). CI commit/ref are read from
-    GITHUB_SHA/GITHUB_REF when present so PR diffs line up; otherwise sensible defaults are used.
+    Always uploads every finding (never the ``--top`` display subset). Commit/ref come from
+    GITHUB_SHA/GITHUB_REF in CI, else from git in the scanned directory, else they are sent as
+    null (never placeholder zeros) so the dashboard labels the upload a local scan.
     """
     document = build_report(
         report.findings, report.degraded_sources, tool_version=_resolve_version()
     )
     repo_name = repo or (path if path.is_dir() else path.parent).resolve().name
+    metadata = detect_scan_metadata(path)
     try:
         result = upload_report(
             document,
             api_url=api_url or "",
             api_key=api_key or "",
             repo=repo_name,
-            ref=os.environ.get("GITHUB_REF") or "refs/heads/main",
-            commit_sha=(os.environ.get("GITHUB_SHA") or "0" * 40)[:40],
+            ref=metadata.ref,
+            commit_sha=metadata.commit_sha,
         )
     except UploadError as exc:
         typer.secho(f"Upload failed: {exc}", fg=typer.colors.RED, err=True)

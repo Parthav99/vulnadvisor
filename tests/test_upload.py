@@ -53,6 +53,22 @@ def test_upload_success_parses_result(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["auth"] == "Bearer va_x.secret"
     assert captured["payload"]["repo"] == "web"
     assert captured["payload"]["report"] == _REPORT
+    # Unknown commit/ref are sent as JSON null — never placeholder zeros (Task 12.2).
+    assert captured["payload"]["commit_sha"] is None
+    assert captured["payload"]["ref"] is None
+
+
+def test_upload_sends_detected_commit_and_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_urlopen(request: Any, timeout: float = 0) -> _FakeResponse:
+        captured["payload"] = json.loads(request.data)
+        return _FakeResponse(json.dumps({"scan_id": "scan-1", "diff_summary": {}}).encode())
+
+    monkeypatch.setattr(upload_mod.urllib.request, "urlopen", fake_urlopen)
+    upload_report(_REPORT, **_ARGS, ref="main", commit_sha="a" * 40)
+    assert captured["payload"]["commit_sha"] == "a" * 40
+    assert captured["payload"]["ref"] == "main"
 
 
 def test_upload_http_error_includes_status(monkeypatch: pytest.MonkeyPatch) -> None:

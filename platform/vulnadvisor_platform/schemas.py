@@ -35,10 +35,14 @@ class MeResponse(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    """Body for ``POST /v1/orgs/{org}/repos/{repo}/scans`` — a CLI/CI report upload."""
+    """Body for ``POST /v1/orgs/{org}/repos/{repo}/scans`` — a CLI/CI report upload.
 
-    commit_sha: str
-    ref: str
+    ``commit_sha``/``ref`` are optional: a local scan outside a git checkout honestly sends null
+    rather than placeholder values.
+    """
+
+    commit_sha: str | None = None
+    ref: str | None = None
     pr_number: int | None = None
     source: ScanSource = ScanSource.CI
     report: dict[str, Any]
@@ -48,12 +52,12 @@ class ScanUploadRequest(BaseModel):
     """Body for ``POST /v1/scans`` — a CLI/CI upload where the org is taken from the API key.
 
     Unlike :class:`IngestRequest`, the repository name is in the body (the report itself carries no
-    repo/org identity), and commit/ref default so a bare ``--upload`` works outside CI.
+    repo/org identity). Commit/ref are optional so a bare ``--upload`` works outside a git repo.
     """
 
     repo: str = Field(min_length=1, max_length=200)
-    commit_sha: str = "0" * 40
-    ref: str = "refs/heads/main"
+    commit_sha: str | None = None
+    ref: str | None = None
     pr_number: int | None = None
     source: ScanSource = ScanSource.CI
     report: dict[str, Any]
@@ -113,8 +117,8 @@ class ScanListItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    commit_sha: str
-    ref: str
+    commit_sha: str | None
+    ref: str | None
     pr_number: int | None
     source: str
     status: str
@@ -137,8 +141,8 @@ class ScanDetailOut(BaseModel):
 
     id: uuid.UUID
     repo_id: uuid.UUID
-    commit_sha: str
-    ref: str
+    commit_sha: str | None
+    ref: str | None
     pr_number: int | None
     source: str
     status: str

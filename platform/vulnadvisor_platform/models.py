@@ -143,15 +143,19 @@ class Installation(Base):
 
 
 class Scan(Base):
-    """One uploaded or produced ``vulnadvisor`` report for a repo at a commit/ref."""
+    """One uploaded or produced ``vulnadvisor`` report for a repo at a commit/ref.
+
+    ``commit_sha``/``ref`` are nullable: a local ``scan --upload`` outside a git checkout has no
+    commit to report, and null is rendered honestly ("local scan") instead of placeholder zeros.
+    """
 
     __tablename__ = "scans"
     __table_args__ = (Index("ix_scans_repo_created", "repo_id", "created_at"),)
 
     id: Mapped[UuidPk]
     repo_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"))
-    commit_sha: Mapped[str] = mapped_column(String(40))
-    ref: Mapped[str] = mapped_column(String(255))
+    commit_sha: Mapped[str | None] = mapped_column(String(40))
+    ref: Mapped[str | None] = mapped_column(String(255))
     pr_number: Mapped[int | None] = mapped_column()
     source: Mapped[str] = mapped_column(String(16), default=ScanSource.CI.value)
     tool_version: Mapped[str] = mapped_column(String(32))
