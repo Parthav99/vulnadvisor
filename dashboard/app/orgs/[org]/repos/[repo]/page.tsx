@@ -7,6 +7,15 @@ import { Badge } from "@/components/ui";
 import { bandClass, formatDate, shortRef, shortSha } from "@/lib/format";
 import type { Repo, ScanPage, TrendResponse } from "@/lib/types";
 
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ org: string; repo: string }>;
+}) {
+  const { org, repo } = await params;
+  return { title: `${org}/${repo}` };
+}
+
 export default async function RepoPage({
   params,
   searchParams,
@@ -77,7 +86,17 @@ export default async function RepoPage({
 
       <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide muted">Scans</h2>
       {scans.length === 0 ? (
-        <EmptyState>No scans for this selection.</EmptyState>
+        <EmptyState>
+          {allScans.length > 0 ? (
+            "No scans on this ref."
+          ) : (
+            <>
+              No scans uploaded yet. Run{" "}
+              <code className="mono text-[#e6edf3]">vulnadvisor scan . --upload</code> from this
+              repository to publish the first report.
+            </>
+          )}
+        </EmptyState>
       ) : (
         <ul className="grid gap-2">
           {scans.map((scan) => (

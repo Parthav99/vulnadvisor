@@ -5,6 +5,11 @@ import { PageHeader } from "@/components/ui";
 import type { ApiKey, OrgDetail } from "@/lib/types";
 import { KeysManager } from "./keys-manager";
 
+export async function generateMetadata({ params }: { params: Promise<{ org: string }> }) {
+  const { org } = await params;
+  return { title: `API keys · ${org}` };
+}
+
 export default async function ApiKeysPage({ params }: { params: Promise<{ org: string }> }) {
   const { org: slug } = await params;
   const org = await apiGetOrNull<OrgDetail>(`/v1/orgs/${slug}`);

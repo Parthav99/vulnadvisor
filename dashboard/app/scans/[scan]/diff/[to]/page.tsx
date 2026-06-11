@@ -5,6 +5,8 @@ import { FindingCard } from "@/components/finding-card";
 import { displayId } from "@/lib/format";
 import type { DiffResponse } from "@/lib/types";
 
+export const metadata = { title: "Scan diff" };
+
 // Route: /scans/{from}/diff/{to} — the `scan` slug is the "from" scan (kept consistent with the
 // sibling /scans/[scan] route, which Next requires to share the same slug name).
 export default async function DiffPage({

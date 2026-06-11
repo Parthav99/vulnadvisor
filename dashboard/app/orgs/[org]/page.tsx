@@ -5,6 +5,11 @@ import { Card, EmptyState, PageHeader, Stat } from "@/components/ui";
 import { formatDate } from "@/lib/format";
 import type { OrgDetail, Repo } from "@/lib/types";
 
+export async function generateMetadata({ params }: { params: Promise<{ org: string }> }) {
+  const { org } = await params;
+  return { title: org };
+}
+
 export default async function OrgPage({ params }: { params: Promise<{ org: string }> }) {
   const { org: slug } = await params;
   const org = await apiGetOrNull<OrgDetail>(`/v1/orgs/${slug}`);
@@ -33,7 +38,10 @@ export default async function OrgPage({ params }: { params: Promise<{ org: strin
 
       <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide muted">Repositories</h2>
       {repos.length === 0 ? (
-        <EmptyState>No repositories have reported scans yet.</EmptyState>
+        <EmptyState>
+          No repositories have reported scans yet. Install the GitHub App or upload a report with{" "}
+          <code className="mono text-[#e6edf3]">vulnadvisor scan . --upload</code>.
+        </EmptyState>
       ) : (
         <ul className="grid gap-3">
           {repos.map((repo) => (
@@ -48,7 +56,9 @@ export default async function OrgPage({ params }: { params: Promise<{ org: strin
                   </div>
                   <div className="muted text-right text-sm">
                     <div>{repo.scan_count} scans</div>
-                    <div>last {formatDate(repo.last_scan_at)}</div>
+                    <div>
+                      {repo.last_scan_at ? `last ${formatDate(repo.last_scan_at)}` : "no scans yet"}
+                    </div>
                   </div>
                 </Card>
               </Link>

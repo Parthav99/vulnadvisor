@@ -4,6 +4,63 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 12.3 — Dashboard hardening + error/loading polish  (2026-06-11)
+
+**Status:** complete, Validation Gate passing. Closes M12 → **dashboard v0.2** (tag `dashboard-v0.2`).
+
+The "feels secure" floor — correct headers, no raw error screens, no layout jank:
+
+- **Security headers** (`next.config.ts` `headers()`, applied to `/:path*` so every route + the 404
+  carries them): `Content-Security-Policy` (default/script/style/img/font/connect `'self'`-based,
+  `object-src 'none'`, `frame-ancestors 'none'`, `base-uri`/`form-action 'self'`; **no
+  `unsafe-eval`** in production — dev mode conditionally adds it + `ws:` for HMR only),
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`,
+  `Permissions-Policy: camera=(), microphone=(), geolocation=()`, plus legacy
+  `X-Frame-Options: DENY`. (`script-src` keeps `'unsafe-inline'` — Next bootstraps hydration with
+  inline scripts; a nonce-based CSP needs middleware and is out of scope per the gate.)
+- **Branded error/loading/not-found:** new `Skeleton` + `FullPageNotice` primitives in
+  `components/ui.tsx`. Per-segment skeleton `loading.tsx` (never spinners — cold starts look
+  intentional) for home, org, repo, scan, diff, settings, api-keys, each mirroring its page's
+  layout, with `role="status"` + sr-only text. `not-found.tsx`: branded root (also catches all
+  unmatched URLs) + contextual org/repo/scan variants ("…or you don't have access"). Root
+  `error.tsx` (client boundary, Next 16 `unstable_retry`) never renders the raw error — message is
+  "API may be waking up", digest shown for support correlation only.
+- **Identity:** branded `favicon.ico` (generated 32×32 PNG-in-ICO, dark `#0d1117` + green diamond,
+  replaces the create-next-app default) + `app/icon.svg`; root metadata: title template
+  (`%s · VulnAdvisor`), description, OpenGraph (site_name/title/description/type); per-page
+  `<title>` on org (`acme`), repo (`acme/webapp`), scan (`Scan <id8>`), diff, settings, api-keys.
+  (Note: a root layout's `title.template` does not apply to `page.tsx` in the same segment —
+  documented Next behavior — so home uses the root default title.)
+- **Dead-state audit fixes:** repo with 0 scans now teaches (`vulnadvisor scan . --upload`) instead
+  of "No scans for this selection" (which is kept for a ref-filter with no matches); scan with 0
+  findings says "This scan reported no findings." when unfiltered (filter message only when a
+  filter is active); org with 0 repos teaches App-install/upload; org repo rows show "no scans yet"
+  instead of "last —"; `degraded_sources` null-guarded.
+
+**Validation:** dashboard `npm run build` + `npm run lint` clean · ruff + format clean ·
+`mypy --strict src` clean (58 files) · **pytest 431 passed** (no Python changes). **Live e2e**
+(seeded SQLite: acme org with `zero-scans` repo + `webapp` repo holding a null-sha 0-finding scan
+and a real-sha 1-finding scan; `empty-org` with no repos; uvicorn + `next start`):
+- `curl -I` on `/`, deep routes, and the 404 shows **all four headers**; CSP has **no
+  `unsafe-eval`** (asserted).
+- SSR assertions all PASS: home lists both orgs · empty org teaches · 0-scan repo teaches ·
+  0-finding scan reports honestly + "local scan" badge, zero "0000000" · 1-finding scan renders
+  the 3 cards (`CVE-2019-10906`) · filtered-empty message distinct · diff/settings/api-keys render ·
+  unmatched URL → branded 404 (HTTP 404) · unknown org/repo/scan → contextual not-found screens.
+- **API-down probe:** page streams skeleton + opaque digest, **no ECONNREFUSED/stack text in the
+  HTML**; the branded error boundary takes over client-side (verified via the streamed `$RX`
+  digest trigger — boundary rendering itself needs a JS browser).
+- Favicon served `image/x-icon` with valid ICO signature; `icon.svg` + OG tags verified in SSR HTML.
+
+**Deploy:** Vercel deploys `dashboard/` from main via Git integration (docs/deploy.md) — pushed;
+spot-check `https://vulnadvisor.vercel.app` headers/404 after the deploy lands. Tagged
+`dashboard-v0.2`.
+
+**Open questions:** none blocking. M12 complete. Next: M13 — Task 13.1 design tokens + app shell
+(new npm deps to approve at task start: shadcn/ui + Radix peers, lucide-react, motion, geist).
+
+---
+
 ## Task 12.2 — Scan metadata honesty (kill "0000000 main")  (2026-06-11)
 
 **Status:** complete, Validation Gate passing.

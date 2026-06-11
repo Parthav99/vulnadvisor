@@ -9,6 +9,11 @@ import type { FindingsResponse, ScanDetail } from "@/lib/types";
 const TIERS = ["imported-and-called", "imported", "dynamic-unknown", "not-imported"];
 const BANDS = ["critical", "high", "medium", "low", "info"];
 
+export async function generateMetadata({ params }: { params: Promise<{ scan: string }> }) {
+  const { scan } = await params;
+  return { title: `Scan ${scan.slice(0, 8)}` };
+}
+
 export default async function ScanPage({
   params,
   searchParams,
@@ -62,7 +67,7 @@ export default async function ScanPage({
         }
       />
 
-      {scan.degraded_sources.length > 0 ? (
+      {(scan.degraded_sources ?? []).length > 0 ? (
         <div className="card mb-4 border-[#d29922] text-[#e3b341]">
           Degraded sources: {scan.degraded_sources.join(", ")} — results may be incomplete.
         </div>
@@ -93,7 +98,11 @@ export default async function ScanPage({
       </div>
 
       {items.length === 0 ? (
-        <EmptyState>No findings match this filter.</EmptyState>
+        <EmptyState>
+          {tier || band
+            ? "No findings match this filter."
+            : "This scan reported no findings."}
+        </EmptyState>
       ) : (
         <div className="space-y-4">
           {items.map((finding) => (

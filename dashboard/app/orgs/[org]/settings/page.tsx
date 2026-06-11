@@ -5,6 +5,11 @@ import { Card, EmptyState, PageHeader } from "@/components/ui";
 import { formatDate } from "@/lib/format";
 import type { ApiKey, OrgDetail } from "@/lib/types";
 
+export async function generateMetadata({ params }: { params: Promise<{ org: string }> }) {
+  const { org } = await params;
+  return { title: `Settings · ${org}` };
+}
+
 export default async function SettingsPage({ params }: { params: Promise<{ org: string }> }) {
   const { org: slug } = await params;
   const org = await apiGetOrNull<OrgDetail>(`/v1/orgs/${slug}`);

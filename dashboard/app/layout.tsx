@@ -2,9 +2,22 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Nav } from "@/components/nav";
 
+const DESCRIPTION =
+  "Reachability-first vulnerability triage for Python — see which findings are actually reachable from your code, with the evidence.";
+
 export const metadata: Metadata = {
-  title: "VulnAdvisor",
-  description: "Reachability-first vulnerability triage for teams.",
+  title: {
+    default: "VulnAdvisor — reachability-first triage",
+    template: "%s · VulnAdvisor",
+  },
+  description: DESCRIPTION,
+  applicationName: "VulnAdvisor",
+  openGraph: {
+    siteName: "VulnAdvisor",
+    title: "VulnAdvisor — reachability-first triage",
+    description: DESCRIPTION,
+    type: "website",
+  },
 };
 
 export default function RootLayout({
