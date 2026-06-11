@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull } from "@/lib/api";
 import { EmptyState, PageHeader } from "@/components/blocks";
-import { TrendChart } from "@/components/trend-chart";
+import { TrendAreaChart } from "@/components/analytics-charts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -58,7 +58,18 @@ export default async function RepoPage({
         <h2 className="mb-2 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
           90-day trend
         </h2>
-        <TrendChart points={trend?.points ?? []} />
+        <Card size="sm">
+          <CardContent>
+            {(trend?.points.length ?? 0) > 0 ? (
+              <TrendAreaChart
+                points={trend?.points ?? []}
+                ariaLabel="Actionable versus deprioritized findings over time"
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground">No scans in this window yet.</p>
+            )}
+          </CardContent>
+        </Card>
       </section>
 
       {refs.length > 1 ? (

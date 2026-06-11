@@ -214,13 +214,18 @@ class OrgTrendResponse(BaseModel):
 
 
 class PackageRisk(BaseModel):
-    """One package's aggregated risk across the org's latest scans."""
+    """One package's aggregated risk across the org's latest scans.
+
+    ``top_scan_id`` is the scan holding the package's top-priority finding, so the dashboard can
+    click through from a chart bar to the ranked finding list that contains it.
+    """
 
     package: str
     max_priority: float
     band: str
     finding_count: int
     repo_count: int
+    top_scan_id: uuid.UUID | None
 
 
 class PackagesResponse(BaseModel):

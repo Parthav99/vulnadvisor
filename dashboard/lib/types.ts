@@ -99,6 +99,52 @@ export interface TrendResponse {
   points: TrendPoint[];
 }
 
+// Org analytics (Task 13.3 endpoints).
+
+export interface AnalyticsOverview {
+  org_id: string;
+  repo_count: number;
+  repos_at_risk: number;
+  total_findings: number;
+  actionable: number;
+  deprioritized: number;
+  reachable_called: number;
+  kev_count: number;
+  by_band: Record<string, number>;
+  by_tier: Record<string, number>;
+}
+
+export interface OrgTrendResponse {
+  org_id: string;
+  window_days: number;
+  points: TrendPoint[];
+}
+
+export interface PackageRisk {
+  package: string;
+  max_priority: number;
+  band: string;
+  finding_count: number;
+  repo_count: number;
+  top_scan_id: string | null;
+}
+
+export interface PackagesResponse {
+  org_id: string;
+  packages: PackageRisk[];
+}
+
+export interface ResolutionStats {
+  resolved_count: number;
+  median_days: number | null;
+}
+
+export interface ResolutionResponse {
+  org_id: string;
+  overall: ResolutionStats;
+  bands: Record<string, ResolutionStats>;
+}
+
 export interface DiffResponse {
   from_scan_id: string;
   to_scan_id: string;

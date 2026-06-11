@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, FolderGit2, House, Radar, Settings } from "lucide-react";
+import { BarChart3, Building2, FolderGit2, House, Radar, Settings } from "lucide-react";
 import {
   Command,
   CommandDialog,
@@ -107,6 +107,16 @@ export function CommandPalette({ data }: { data: ShellData }) {
               >
                 <Building2 aria-hidden />
                 {org.name}
+              </CommandItem>
+            ))}
+            {data.orgs.map((org) => (
+              <CommandItem
+                key={`${org.id}-analytics`}
+                value={`analytics ${org.slug} ${org.name}`}
+                onSelect={() => go(`/orgs/${org.slug}/analytics`)}
+              >
+                <BarChart3 aria-hidden />
+                {org.name} analytics
               </CommandItem>
             ))}
             {data.orgs.map((org) => (

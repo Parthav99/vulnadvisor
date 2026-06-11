@@ -119,7 +119,12 @@ export function Sidebar({ orgs }: { orgs: Org[] }) {
               pathname === `/orgs/${orgSlug}` || pathname.startsWith(`/orgs/${orgSlug}/repos`)
             }
           />
-          <NavItem icon={BarChart3} label="Analytics" disabled badge="Soon" />
+          <NavItem
+            href={`/orgs/${orgSlug}/analytics`}
+            icon={BarChart3}
+            label="Analytics"
+            active={pathname.startsWith(`/orgs/${orgSlug}/analytics`)}
+          />
           <NavItem
             href={`/orgs/${orgSlug}/settings`}
             icon={Settings}

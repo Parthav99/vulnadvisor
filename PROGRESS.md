@@ -4,6 +4,62 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 13.4 — Analytics page (charts)  (2026-06-11)
+
+**Status:** complete, Validation Gate passing. **New npm dep (pre-listed in task.md, approved at
+task start): `recharts@3.8.0`** via `npx shadcn add chart` (adds `components/ui/chart.tsx`, themed
+from the 13.1 `--chart-*`/state tokens).
+
+**`/orgs/{org}/analytics`** (new route; sidebar "Analytics" enabled — "Soon" badge gone — and the
+⌘K palette gained "{org} analytics"):
+
+- **KPI strip** (server-rendered, SSR-assertable): Protected repos (`repo_count − repos_at_risk`
+  of total, teal), Actionable findings (red when >0, teal at 0), KEV count (same semantics),
+  Median fix time (overall median from `/analytics/resolution`, "—" when nothing resolved yet).
+- **Severity donut** (findings by band, center = total) · **Reachability split donut** — *our*
+  chart: center shows **"N% deprioritized"** in teal; dynamic-unknown renders as a lighter amber
+  (uncertainty stays amber-family, never safe-looking) · **90-day stacked area trend**
+  (actionable over deprioritized; reachable-called drawn as a **line**, never stacked — it's a
+  subset of actionable, stacking would double-count) · **top-risky-packages horizontal bars**
+  (0–100 priority axis labeled, bars colored by band, names mono).
+- **Click-through:** small additive platform change — `PackageRisk.top_scan_id` (the scan holding
+  the package's top-priority finding, from the existing rank-1 window query; no migration).
+  Clicking a bar routes to that scan's ranked finding list; an **sr-only link list** provides the
+  same path for keyboard/screen-reader users. Every chart carries `role="img"` + an `aria-label`
+  that includes the actual values (so even the SSR HTML carries the numbers — recharts pie
+  sectors only paint after hydration).
+- Chart animations **disabled** (`isAnimationActive={false}`): deterministic rendering, no
+  half-drawn donuts at screenshot/LCP time, and nothing to suppress in the 13.5 reduced-motion
+  pass. Empty states teach (`vulnadvisor scan . --upload`) per chart; analytics `loading.tsx`
+  skeleton mirrors the layout.
+- **Repo page trend migrated** to the same kit (`TrendAreaChart` shared component);
+  `components/trend-chart.tsx` (hand-rolled SVG) **deleted**. SSR text-split lesson from 13.2
+  re-applied (" of N" as a single template string).
+
+**Validation:** dashboard `npm run build` + `npm run lint` clean · ruff + format clean ·
+`mypy --strict src platform` clean (82 files) · **pytest 446 passed** (packages test now also
+asserts `top_scan_id`). **Live e2e** (seeded SQLite via temp scripts in `c:\tmp\va134`, nothing
+added to the repo: acme org = 3 repos / 3 scans across 3 days with hand-computable analytics
+[protected 1 of 3 · actionable 3 · KEV 2 · median fix 5 days · tier split 25% deprioritized ·
+packages jinja2 95/flask 75/requests 50/yaml 20] + an empty org; uvicorn + `next start`):
+- **SSR 21/21 PASS** — KPI numbers in server HTML; chart aria-labels carry the exact values;
+  sr-only click-through link present; empty org teaches on all four charts with 0-of-0 KPIs and
+  no chart SVG; repo page on recharts with the old "peak N" SVG gone; unknown org → not-found.
+- **Browser 21/21 PASS** (headless Edge, puppeteer-core) — donut sector counts + center labels
+  ("4 findings", "25% deprioritized"), legends, 2 stacked areas + reachable-called line + 3 dated
+  x-ticks + numeric y-axis, 4 band-colored bars, **bar click → lands on the scan and the jinja2
+  CVE-2019-10906 card renders**, sidebar nav + palette navigation. Screenshots eyeballed
+  (seeded + empty): deck-ready.
+- **Lighthouse (documented):** desktop preset **98** perf (FCP 0.3s · LCP 1.1s · TBT 40ms ·
+  CLS 0.006) — gate ≥85 met on the product's form factor. Mobile emulation (slow-4G + 4× CPU
+  throttle) scores 58, dominated by recharts hydration — flagged as input for the 13.5 a11y/perf
+  pass.
+
+**Open questions:** none blocking. Next: 13.5 — security-posture hero + a11y/perf gate
+(Lighthouse ≥90 perf / ≥95 a11y on home, repo, scan, analytics; `prefers-reduced-motion`).
+
+---
+
 ## Task 13.3 — Analytics API (aggregates) + data retention  (2026-06-11)
 
 **Status:** complete, Validation Gate passing. No new dependencies, **no schema change / no

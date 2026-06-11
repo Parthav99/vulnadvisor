@@ -224,31 +224,41 @@ async def analytics_packages(
         )
     ).all()
 
-    # Band of each package's top-priority finding: read it from the stored finding rather than
-    # re-deriving the engine's priority->band thresholds here (the engine stays the authority).
+    # Each package's top-priority finding: its band is read from the stored row rather than
+    # re-deriving the engine's priority->band thresholds (the engine stays the authority), and
+    # its scan id gives the dashboard a click-through target to the ranked finding list.
     rank = (
         func.row_number()
         .over(partition_by=Finding.package, order_by=(Finding.priority.desc(), Finding.id))
         .label("rank")
     )
     ranked = (
-        select(Finding.package, Finding.band, rank).where(Finding.scan_id.in_(latest)).subquery()
+        select(Finding.package, Finding.band, Finding.scan_id, rank)
+        .where(Finding.scan_id.in_(latest))
+        .subquery()
     )
-    band_rows = (
-        await session.execute(select(ranked.c.package, ranked.c.band).where(ranked.c.rank == 1))
-    ).all()
-    band_by_package: dict[str, str] = {package: band for package, band in band_rows}
-
-    packages = [
-        PackageRisk(
-            package=package,
-            max_priority=max_priority,
-            band=band_by_package.get(package, PriorityBand.INFO.value),
-            finding_count=finding_count,
-            repo_count=repo_count,
+    top_rows = (
+        await session.execute(
+            select(ranked.c.package, ranked.c.band, ranked.c.scan_id).where(ranked.c.rank == 1)
         )
-        for package, max_priority, finding_count, repo_count in agg_rows
-    ]
+    ).all()
+    top_by_package: dict[str, tuple[str, uuid.UUID | None]] = {
+        package: (band, scan_id) for package, band, scan_id in top_rows
+    }
+
+    packages: list[PackageRisk] = []
+    for package, max_priority, finding_count, repo_count in agg_rows:
+        band, top_scan_id = top_by_package.get(package, (PriorityBand.INFO.value, None))
+        packages.append(
+            PackageRisk(
+                package=package,
+                max_priority=max_priority,
+                band=band,
+                finding_count=finding_count,
+                repo_count=repo_count,
+                top_scan_id=top_scan_id,
+            )
+        )
     return PackagesResponse(org_id=org.id, packages=packages)
 
 

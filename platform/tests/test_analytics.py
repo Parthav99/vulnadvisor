@@ -278,6 +278,9 @@ async def test_packages_ranked_by_max_priority(
     assert jinja["band"] == "critical"  # the band of its top-priority finding
     assert jinja["finding_count"] == 2
     assert jinja["repo_count"] == 2
+    # Click-through target: the scan holding the package's top-priority finding.
+    assert jinja["top_scan_id"] == str(web_latest)
+    assert packages[0]["top_scan_id"] == str(web_latest)
     assert packages[0]["finding_count"] == 1
     assert packages[0]["repo_count"] == 1
 
