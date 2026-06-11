@@ -4,6 +4,55 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 13.2 — Interactive finding cards v2 (the attack story, uncut)  (2026-06-11)
+
+**Status:** complete, Validation Gate passing. No new dependencies.
+
+Progressive disclosure: rebuilt `dashboard/components/finding-card.tsx` as a client component
+(`"use client"`); both consumers (scan page, diff page) unchanged — same `<FindingCard finding>`
+signature, optional `defaultOpen`.
+
+- **Collapsed row:** display_title (`CVE-… · pkg version`), one-line verdict (CSS `truncate`
+  only — the full text is always in the DOM), band/tier/KEV badges, rotating chevron. Rows are
+  `<button aria-expanded aria-controls>`; Enter **and** Space toggle natively;
+  `focus-visible:ring-inset` keeps the ring visible inside the Card's `overflow-hidden`.
+- **Expanded panel — always rendered, never clamped:** the panel stays in the DOM (SSR carries
+  the full story; the previous gates' SSR assertions keep working). Collapse = motion height→0
+  (`initial={false}` so SSR emits inline `height:0`) + **`inert`**, so hidden content is out of
+  the tab order and the a11y tree — Tab from a collapsed row lands on the next row, never inside.
+  Layout: **Card A full-width** (story gets the width it needs), Cards B (risk facts: priority,
+  tier, EPSS, KEV — KEV line turns `text-risk` when listed, CVSS base) and C (fix command +
+  **copy button** with `aria-live` "Copied" feedback + "Fixed in <version>") in a 2-col grid.
+- **Evidence drawer** (second-level disclosure, own `aria-expanded`): call paths parsed from the
+  engine's rendered `a -> b -> vuln (file:line)` format (model/callpath.py) into **step chains**
+  — mono chips joined by `→`, final vulnerable step styled `text-risk` ring, location suffix —
+  plus import sites as `file:line` chips and the reachability reason. **Defaults open when a
+  concrete call path exists** (the evidence is the demo), closed otherwise.
+- Tier/band filter bar untouched — it already persists via URL params (12.x). Two SSR niceties:
+  JSX `{a}:{b}` text pairs became single template strings so React doesn't split them with
+  `<!-- -->` comment nodes (cleaner DOM text + robust assertions).
+
+**Validation:** dashboard `npm run build` + `npm run lint` clean · ruff + format clean ·
+`mypy --strict src` clean (58 files) · **pytest 431 passed** (no Python changes). **Live e2e**
+(seeded SQLite via temp scripts in `c:\tmp\va132` — nothing added to the repo: acme/webapp scan
+with **50 findings**, marquee = jinja2 CVE-2019-10906, KEV, **1,593-char story**, 2 call paths,
+2 import sites; uvicorn + `next start`):
+- **SSR 23/23 PASS** — full story present untruncated; 50 cards in DOM; 50 collapsed rows +
+  37 closed drawers (+1 org-switcher) `aria-expanded=false`; 13 call-path drawers SSR'd open;
+  inline `height:0` on collapsed panels; copy button + exact fix command; step-chain spans,
+  arrows, `(app/web.py:42)` location, reflective `getattr(jinja2, ...)` chain, import chips;
+  tier/band filter links carry URL params.
+- **Browser 18/18 PASS** (headless Edge, puppeteer-core): keyboard-only walkthrough — Tab →
+  first row (collapsed), Tab skips the inert panel, Enter expands, Tab → copy button, Enter →
+  **clipboard holds exactly** `uv pip install "jinja2>=2.11.3"`, "Copied" announced; story
+  ≥1,200 chars, not CSS-clamped, fully laid out; drawer toggle keyboard-reachable + open by
+  default; Space collapses; 50 rows render compact (tallest collapsed row < 90 px); focus ring visible.
+  Screenshots (collapsed list + expanded card) eyeballed: 5-s scan collapsed, 60-s read expanded.
+
+**Open questions:** none blocking. Next: 13.3 — analytics API (aggregates) + data retention.
+
+---
+
 ## Task 13.1 — "Aegis" design tokens + app shell  (2026-06-11)
 
 **Status:** complete, Validation Gate passing. First M13 task.
