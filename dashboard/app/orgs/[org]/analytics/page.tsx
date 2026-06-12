@@ -178,8 +178,11 @@ export default async function AnalyticsPage({ params }: { params: Promise<{ org:
       {overview.total_findings === 0 ? (
         <div className="mt-6">
           <EmptyState>
-            Nothing to chart yet. Once scans are uploaded, this page answers &ldquo;what changed,
-            what&apos;s reachable, and how fast do we fix it&rdquo; at a glance.
+            Nothing to chart yet —{" "}
+            <Link className="link" href="/demo/analytics">
+              see this page with data in the demo org
+            </Link>
+            .
           </EmptyState>
         </div>
       ) : null}

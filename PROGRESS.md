@@ -4,6 +4,87 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 14.3 — Product tour + teaching empty states + demo mode  (2026-06-12)
+
+**Status:** complete, Validation Gate passing. **New npm dep (approved at task start):
+`driver.js@1.4.0`** (pinned exact; ~5 kB, zero deps, MIT) — dashboard-only, the published
+wheel is untouched.
+
+Nobody lands on a page they don't understand, including logged-out visitors:
+
+- **Product tour** (driver.js, Aegis-themed via `popoverClass` + token overrides in
+  `globals.css`): two legs joined by a sessionStorage handoff. Leg A on an org home —
+  posture hero ("Am I protected?") → repo list — then navigates to that org's **latest real
+  scan**; leg B there — first finding card (**expanded for the user** before highlighting) →
+  tier badge ("why it's quiet") → sidebar Analytics → Settings. Pure step/rule definitions in
+  `lib/tour.ts` (selectors, leg shapes, `shouldAutoStart`); runner in
+  `components/tour/product-tour.tsx`, streamed as a third shell slot (`ShellTour` computes
+  latest-scan-per-org from the existing palette data). Steps anchor to **stable
+  `data-tour` attributes** (posture-hero, repo-list, finding-card, tier-badge,
+  nav-analytics, nav-settings, help-menu); steps whose element is absent/invisible are
+  filtered (demo has no Settings → that step drops out). **Auto-starts once** on a signed-in
+  org home; completing OR dismissing writes `va_tour_done` (localStorage, allowed per task)
+  — it never reappears unasked. Re-launchable from the new top-bar **help menu**
+  (CircleHelp: Product tour / Explore the demo org / Documentation); on a non-start page it
+  navigates home first. `prefers-reduced-motion` → `animate: false`.
+- **driver.js 1.4.0 bug found live and worked around:** the library never registers its
+  internal `nextClick`/`prevClick`/`closeClick` hooks, so without explicit handlers the
+  popover **buttons are silent no-ops** (only arrow keys work — verified in the bundled
+  source: `L("nextClick")` dispatches into an empty registry). Fix: global
+  `onNextClick/onPrevClick/onCloseClick` calling `moveNext/movePrevious/destroy`; the
+  handoff step's own `onNextClick` still takes precedence.
+- **Demo mode (`/demo`)** — public, no auth, watermarked, **read-only by construction**:
+  `lib/demo-data.ts` is a typed seeded org (Acme Robotics (demo): payments-api with a
+  jinja2 CVE-2019-10906 KEV + call-path marquee and a previous scan with a since-fixed
+  flask finding; etl-pipeline with imported/dynamic-unknown; internal-tools all
+  not-imported) whose **overview/packages aggregates are computed from the findings** at
+  module load, so the demo can never contradict its own cards; the trend's last point is
+  pinned to the derived totals. Routes `/demo`, `/demo/repos/[repo]`, `/demo/scans/[scan]`
+  (working tier/band filters), `/demo/analytics` compose the exact product components
+  (PostureHero, FindingCard, recharts kit — `PackagesBar` gained an additive
+  `scanPathPrefix` so click-through stays in /demo). Demo pages import **only demo-data +
+  presentational components — never `lib/api`**; the demo layout banner ("Demo organization
+  — sample data, read-only") carries "Take the 60-second tour" + a sign-in link; the
+  sidebar shows a demo org chip, Repos/Analytics nav, and a disabled Settings. The demo
+  **never auto-starts** the tour (banner offers it instead).
+- **Empty-state pass (one sentence + one action):** home signed-out card gains "or explore
+  the live demo" (the landing-page hook); org-with-no-repos → "Set up scanning" button
+  (was two competing actions); repo trend/scans-empty/ref-filter → upload command or "show
+  all refs"; clean scan → `--fail-on high` CI hint; filtered scan → "clear the filter";
+  empty analytics footer → **links to /demo/analytics** ("see this page with data");
+  setup-page per-org empty tightened to one action.
+
+**Validation:** dashboard `npm run build` + `npm run lint` clean · **`npm test` 28/28**
+(+17: auto-start contract incl. done-flag/handoff/demo/non-home cases, start/scan page
+classification, leg shapes, **selector drift guard** — every tour selector must exist as a
+`data-tour` anchor in the sources; demo: no `lib/api`/`next/headers`/`fetch(`/`<form`/
+mutating-component imports anywhere under `app/demo`, watermark present, every finding has
+known tier/band + fix, summaries match findings, overview internally consistent, trend's
+last point equals the overview, packages ranked + clicking through to existing demo scans,
+tour scan's first finding has a call path + KEV) · ruff + format clean · `mypy --strict
+src platform` clean (86 files) · **pytest 509 passed, 1 skipped** (no Python changes).
+**Live e2e** (seeded SQLite in `c:\tmp\va143`; uvicorn + `next start` + headless Edge):
+- **SSR 29/29 PASS** — and the four /demo pages return identical 200s **with the API
+  process down** (zero backend coupling proven); watermark/tour-offer/hero("At risk — 1
+  KEV-listed finding")/anchors/repos in HTML; scan page carries CVE-2019-10906 + KEV badge
+  + call path + fix command; tier filter filters; unknown demo scan → not-found; analytics
+  KPIs + aria values + /demo-scoped click-through; signed-out home links the demo; no
+  `<form>` on any demo page.
+- **Browser 25/25 PASS** — tour auto-starts on first org-home visit, walks hero → repo
+  list → **navigates to the real scan** → finding card auto-expanded (asserted
+  `aria-expanded=true`) → tier badge → analytics → settings → Done writes the flag;
+  **reload shows no tour** (completion AND skip paths both asserted); clearing the flag
+  re-arms it; help menu relaunches from a non-start page (navigates to the org home);
+  demo: never auto-starts, banner button runs the full tour inside /demo with the settings
+  step filtered, and **zero browser requests hit the API** across the whole demo session
+  (request-log asserted). Screenshots eyeballed (tour step 1, expanded KEV finding mid-tour,
+  demo repo page).
+
+**Open questions:** none blocking. M14 complete. Next: M15 — Task 15.1 copilot backend
+(new npm deps `ai` + `@ai-sdk/anthropic` to approve at task start).
+
+---
+
 ## Task 14.2 — One-click GitHub App install + auto-setup PR  (2026-06-12)
 
 **Status:** complete, Validation Gate passing. **New dev dep (approved at task start):

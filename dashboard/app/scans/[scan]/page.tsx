@@ -112,9 +112,21 @@ export default async function ScanPage({
 
       {items.length === 0 ? (
         <EmptyState>
-          {tier || band
-            ? "No findings match this filter."
-            : "This scan reported no findings."}
+          {tier || band ? (
+            <>
+              No findings match this filter —{" "}
+              <Link className="link" href={`/scans/${scanId}`}>
+                clear the filter
+              </Link>
+              .
+            </>
+          ) : (
+            <>
+              This scan reported no findings — keep it that way with{" "}
+              <code className="mono text-foreground">vulnadvisor scan . --fail-on high</code> in
+              CI.
+            </>
+          )}
         </EmptyState>
       ) : (
         <div className="space-y-4">

@@ -8,6 +8,7 @@ import {
   ShellPalette,
   ShellSidebar,
   ShellSidebarFallback,
+  ShellTour,
 } from "@/components/shell/shell-slots";
 import { cn } from "@/lib/utils";
 
@@ -52,6 +53,11 @@ export default function RootLayout({
           palette={
             <Suspense fallback={null}>
               <ShellPalette />
+            </Suspense>
+          }
+          tour={
+            <Suspense fallback={null}>
+              <ShellTour />
             </Suspense>
           }
         >

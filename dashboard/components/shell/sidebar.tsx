@@ -58,6 +58,7 @@ function NavItem({
   active,
   disabled,
   badge,
+  dataTour,
 }: {
   href?: string;
   icon: React.ComponentType<{ className?: string; "aria-hidden"?: boolean }>;
@@ -65,6 +66,7 @@ function NavItem({
   active?: boolean;
   disabled?: boolean;
   badge?: string;
+  dataTour?: string;
 }) {
   const className = cn(
     "flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors",
@@ -88,15 +90,22 @@ function NavItem({
     return <span className={className}>{body}</span>;
   }
   return (
-    <Link href={href} className={className} aria-current={active ? "page" : undefined}>
+    <Link
+      href={href}
+      className={className}
+      aria-current={active ? "page" : undefined}
+      data-tour={dataTour}
+    >
       {body}
     </Link>
   );
 }
 
-/** Left sidebar: brand, org switcher, main nav, trust footer. Hidden below md. */
+/** Left sidebar: brand, org switcher, main nav, trust footer. Hidden below md.
+ *  On /demo routes the nav points at the demo org instead — same frame, sample data. */
 export function Sidebar({ orgs }: { orgs: Org[] }) {
   const pathname = usePathname();
+  const isDemo = pathname === "/demo" || pathname.startsWith("/demo/");
 
   // Current org from the URL when on an org-scoped route; otherwise the first org,
   // so the sidebar always has a sane navigation target.
@@ -108,8 +117,34 @@ export function Sidebar({ orgs }: { orgs: Org[] }) {
   return (
     <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col gap-4 border-r border-sidebar-border bg-sidebar/80 px-3 py-4 backdrop-blur md:flex">
       <Brand className="px-2" />
-      <OrgSwitcher orgs={orgs} currentSlug={orgSlug} />
-      {orgSlug ? (
+      {isDemo ? (
+        <div className="flex items-center justify-between rounded-md border px-3 py-1.5 text-sm">
+          <span className="truncate">Acme Robotics</span>
+          <Badge variant="outline" className="text-warn">
+            demo
+          </Badge>
+        </div>
+      ) : (
+        <OrgSwitcher orgs={orgs} currentSlug={orgSlug} />
+      )}
+      {isDemo ? (
+        <nav aria-label="Main" className="flex flex-col gap-0.5">
+          <NavItem
+            href="/demo"
+            icon={FolderGit2}
+            label="Repos"
+            active={pathname === "/demo" || pathname.startsWith("/demo/repos")}
+          />
+          <NavItem
+            href="/demo/analytics"
+            icon={BarChart3}
+            label="Analytics"
+            active={pathname.startsWith("/demo/analytics")}
+            dataTour="nav-analytics"
+          />
+          <NavItem icon={Settings} label="Settings" disabled badge="demo" />
+        </nav>
+      ) : orgSlug ? (
         <nav aria-label="Main" className="flex flex-col gap-0.5">
           <NavItem
             href={`/orgs/${orgSlug}`}
@@ -124,12 +159,14 @@ export function Sidebar({ orgs }: { orgs: Org[] }) {
             icon={BarChart3}
             label="Analytics"
             active={pathname.startsWith(`/orgs/${orgSlug}/analytics`)}
+            dataTour="nav-analytics"
           />
           <NavItem
             href={`/orgs/${orgSlug}/settings`}
             icon={Settings}
             label="Settings"
             active={pathname.startsWith(`/orgs/${orgSlug}/settings`)}
+            dataTour="nav-settings"
           />
         </nav>
       ) : null}

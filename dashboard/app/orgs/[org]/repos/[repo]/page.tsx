@@ -66,7 +66,11 @@ export default async function RepoPage({
                 ariaLabel="Actionable versus deprioritized findings over time"
               />
             ) : (
-              <p className="text-sm text-muted-foreground">No scans in this window yet.</p>
+              <p className="text-sm text-muted-foreground">
+                No scans in this window yet — run{" "}
+                <code className="mono text-foreground">vulnadvisor scan . --upload</code> to chart
+                the first one.
+              </p>
             )}
           </CardContent>
         </Card>
@@ -105,10 +109,16 @@ export default async function RepoPage({
       {scans.length === 0 ? (
         <EmptyState>
           {allScans.length > 0 ? (
-            "No scans on this ref."
+            <>
+              No scans on this ref —{" "}
+              <Link className="link" href={base}>
+                show all refs
+              </Link>
+              .
+            </>
           ) : (
             <>
-              No scans uploaded yet. Run{" "}
+              No scans uploaded yet — run{" "}
               <code className="mono text-foreground">vulnadvisor scan . --upload</code> from this
               repository to publish the first report.
             </>

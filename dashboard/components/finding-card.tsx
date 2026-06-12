@@ -204,7 +204,7 @@ export function FindingCard({
   const story = score.verdict || advisory.summary || "No summary available.";
 
   return (
-    <Card size="sm" className="gap-0 py-0">
+    <Card size="sm" className="gap-0 py-0" data-tour="finding-card">
       <button
         type="button"
         aria-expanded={open}
@@ -228,7 +228,11 @@ export function FindingCard({
           <Badge variant="outline" className={bandClass(score.band)}>
             {score.band} · {Math.round(score.value)}
           </Badge>
-          <Badge variant="outline" className={cn("max-sm:hidden", tierClass(tier))}>
+          <Badge
+            variant="outline"
+            data-tour="tier-badge"
+            className={cn("max-sm:hidden", tierClass(tier))}
+          >
             {tierLabel(tier)}
           </Badge>
           {in_kev ? (

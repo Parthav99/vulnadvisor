@@ -169,6 +169,62 @@
   animation: status-pulse 2.4s var(--ease-aegis) infinite;
 }
 
+/* Product-tour popover (driver.js) themed to the Aegis tokens. driver.css ships a light
+   default; every surface/typography rule is overridden via the popoverClass hook. */
+.driver-popover.aegis-tour {
+  background-color: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 22rem;
+}
+.driver-popover.aegis-tour .driver-popover-title {
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.driver-popover.aegis-tour .driver-popover-description {
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+.driver-popover.aegis-tour .driver-popover-progress-text {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+.driver-popover.aegis-tour .driver-popover-close-btn {
+  color: var(--muted-foreground);
+}
+.driver-popover.aegis-tour .driver-popover-close-btn:hover {
+  color: var(--foreground);
+}
+.driver-popover.aegis-tour .driver-popover-navigation-btns button {
+  background-color: var(--secondary);
+  color: var(--secondary-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.3rem 0.7rem;
+  font: inherit;
+  font-size: 0.8rem;
+  text-shadow: none;
+}
+.driver-popover.aegis-tour .driver-popover-navigation-btns button:hover {
+  background-color: var(--accent);
+  border-color: var(--ring);
+}
+.driver-popover.aegis-tour .driver-popover-arrow-side-top.driver-popover-arrow {
+  border-top-color: var(--popover);
+}
+.driver-popover.aegis-tour .driver-popover-arrow-side-bottom.driver-popover-arrow {
+  border-bottom-color: var(--popover);
+}
+.driver-popover.aegis-tour .driver-popover-arrow-side-left.driver-popover-arrow {
+  border-left-color: var(--popover);
+}
+.driver-popover.aegis-tour .driver-popover-arrow-side-right.driver-popover-arrow {
+  border-right-color: var(--popover);
+}
+
 /* Reduced motion respected app-wide: every CSS animation/transition collapses to an
    instant. JS-driven (motion) animations honor it separately via useReducedMotion /
    MotionConfig reducedMotion="user". */

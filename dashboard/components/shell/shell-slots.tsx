@@ -2,6 +2,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Brand } from "@/components/shell/brand";
 import { CommandPalette } from "@/components/shell/command-palette";
 import { Sidebar } from "@/components/shell/sidebar";
+import { ProductTour } from "@/components/tour/product-tour";
+import { DEMO_TOUR_SCAN_ID } from "@/lib/demo-data";
 import { getShellData } from "@/lib/shell-data";
 
 // Async server slots for the shell. They stream into the layout behind their own
@@ -33,4 +35,25 @@ export function ShellSidebarFallback() {
 export async function ShellPalette() {
   const data = await getShellData();
   return <CommandPalette data={data} />;
+}
+
+/** The product-tour runner: needs the latest scan per org so leg A can hand off to a
+ *  real finding. Streams like the other slots; renders nothing visible. */
+export async function ShellTour() {
+  const data = await getShellData();
+  const latestScanByOrg: Record<string, string> = {};
+  const latestAt: Record<string, string> = {};
+  for (const scan of data.scans) {
+    if (!(scan.org in latestAt) || scan.createdAt > latestAt[scan.org]) {
+      latestScanByOrg[scan.org] = scan.id;
+      latestAt[scan.org] = scan.createdAt;
+    }
+  }
+  return (
+    <ProductTour
+      orgSlugs={data.orgs.map((o) => o.slug)}
+      latestScanByOrg={latestScanByOrg}
+      demoScanId={DEMO_TOUR_SCAN_ID}
+    />
+  );
 }

@@ -16,10 +16,17 @@ export default async function Home() {
           subtitle="Reachability-first triage for your team's Python dependencies."
         />
         <Card>
-          <CardContent>
+          <CardContent className="flex flex-wrap items-center gap-3">
             <Button asChild variant="outline">
               <a href={loginUrl()}>Sign in with GitHub</a>
             </Button>
+            <span className="text-sm text-muted-foreground">
+              or{" "}
+              <Link href="/demo" className="link">
+                explore the live demo
+              </Link>{" "}
+              — no account needed.
+            </span>
           </CardContent>
         </Card>
       </div>

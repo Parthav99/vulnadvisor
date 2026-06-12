@@ -243,8 +243,15 @@ const PACKAGES_CONFIG: ChartConfig = {
 
 /** Horizontal bars of the riskiest packages by top priority (0–100), colored by band.
  *  Clicking a bar opens the scan holding that package's top-priority finding; an sr-only
- *  link list provides the same click-through for keyboard and screen-reader users. */
-export function PackagesBar({ packages }: { packages: PackageRisk[] }) {
+ *  link list provides the same click-through for keyboard and screen-reader users.
+ *  `scanPathPrefix` keeps the click-through inside /demo on the demo analytics page. */
+export function PackagesBar({
+  packages,
+  scanPathPrefix = "/scans/",
+}: {
+  packages: PackageRisk[];
+  scanPathPrefix?: string;
+}) {
   const router = useRouter();
   if (packages.length === 0) return null;
   const height = Math.max(160, packages.length * 36 + 48);
@@ -317,7 +324,7 @@ export function PackagesBar({ packages }: { packages: PackageRisk[] }) {
                 fill={BAND_COLORS[pkg.band] ?? BAND_COLORS.info}
                 cursor={pkg.top_scan_id ? "pointer" : undefined}
                 onClick={() => {
-                  if (pkg.top_scan_id) router.push(`/scans/${pkg.top_scan_id}`);
+                  if (pkg.top_scan_id) router.push(`${scanPathPrefix}${pkg.top_scan_id}`);
                 }}
               />
             ))}
@@ -328,7 +335,7 @@ export function PackagesBar({ packages }: { packages: PackageRisk[] }) {
         {packages.map((pkg) =>
           pkg.top_scan_id ? (
             <li key={pkg.package}>
-              <Link href={`/scans/${pkg.top_scan_id}`}>
+              <Link href={`${scanPathPrefix}${pkg.top_scan_id}`}>
                 Open the scan with {pkg.package}&apos;s top finding
               </Link>
             </li>

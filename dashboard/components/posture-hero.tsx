@@ -33,6 +33,7 @@ export function PostureHero({ posture }: { posture: Posture }) {
   return (
     <section
       aria-label="Security posture"
+      data-tour="posture-hero"
       className={cn("mb-6 rounded-xl bg-card p-4 sm:p-5", s.frame)}
     >
       <div className="flex items-start gap-4">

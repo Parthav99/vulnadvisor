@@ -72,12 +72,11 @@ export default async function SetupPage() {
               </h2>
               {repos.length === 0 ? (
                 <EmptyState>
-                  No repositories synced for this org yet. Grant the App access to repos when{" "}
+                  No repositories synced for this org yet — grant the App access to repos when{" "}
                   <a className="link" href={installUrl()}>
                     configuring the installation
                   </a>
-                  , or upload locally with{" "}
-                  <code className="mono text-foreground">vulnadvisor scan . --upload</code>.
+                  .
                 </EmptyState>
               ) : (
                 <ul className="grid gap-2">

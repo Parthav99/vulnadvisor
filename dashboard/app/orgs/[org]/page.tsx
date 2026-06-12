@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { apiGetOrNull, installUrl } from "@/lib/api";
+import { apiGetOrNull } from "@/lib/api";
 import { EmptyState, PageHeader, Stat } from "@/components/blocks";
 import { PostureHero } from "@/components/posture-hero";
 import { SetupChip } from "@/components/setup-chip";
@@ -57,15 +57,15 @@ export default async function OrgPage({ params }: { params: Promise<{ org: strin
       </div>
       {repos.length === 0 ? (
         <EmptyState>
-          No repositories have reported scans yet.{" "}
-          <a className="link" href={installUrl()}>
-            Install the GitHub App
-          </a>{" "}
-          or upload a report with{" "}
-          <code className="mono text-foreground">vulnadvisor scan . --upload</code>.
+          <p>No repositories have reported scans yet.</p>
+          <div className="mt-4">
+            <Button asChild variant="outline">
+              <Link href="/setup">Set up scanning</Link>
+            </Button>
+          </div>
         </EmptyState>
       ) : (
-        <ul className="grid gap-3">
+        <ul className="grid gap-3" data-tour="repo-list">
           {repos.map((repo) => (
             <li key={repo.id}>
               <Link href={`/orgs/${slug}/repos/${repo.name}`} className="block">
