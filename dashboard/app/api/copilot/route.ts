@@ -12,7 +12,9 @@
 //   summaries are attacker-influenceable text; the red-team suite covers this.
 
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import {
+  type LanguageModel,
   convertToModelMessages,
   jsonSchema,
   stepCountIs,
@@ -26,12 +28,23 @@ import {
 import {
   COPILOT_SYSTEM_PROMPT,
   DEFAULT_COPILOT_MODEL,
+  DEFAULT_OPENAI_MODEL,
   isValidOrgSlug,
   MAX_MESSAGES,
   MAX_STEPS,
+  providerForKey,
   TOOL_SPECS,
   wrapToolResult,
 } from "@/lib/copilot";
+
+/** Model for the given key's vendor: org BYO keys are Anthropic; the fallback key may be either. */
+function modelForKey(apiKey: string): LanguageModel {
+  const override = process.env.COPILOT_MODEL;
+  if (providerForKey(apiKey) === "anthropic") {
+    return createAnthropic({ apiKey })(override ?? DEFAULT_COPILOT_MODEL);
+  }
+  return createOpenAI({ apiKey })(override ?? DEFAULT_OPENAI_MODEL);
+}
 
 // Streaming responses on the Vercel free tier; tool loops can take a while.
 export const maxDuration = 60;
@@ -162,11 +175,14 @@ export async function POST(req: Request): Promise<Response> {
   const grantResult = await obtainGrant(req, orgSlug);
   if ("failure" in grantResult) return grantResult.failure;
 
-  const apiKey = grantResult.grant.api_key ?? process.env.ANTHROPIC_API_KEY;
+  const apiKey =
+    grantResult.grant.api_key ??
+    process.env.ANTHROPIC_API_KEY ??
+    process.env.OPENAI_API_KEY;
   if (!apiKey) {
     return jsonError(
       503,
-      "No Anthropic key available — add your organization's key in Settings.",
+      "No model API key available — add your organization's key in Settings.",
     );
   }
 
@@ -179,9 +195,8 @@ export async function POST(req: Request): Promise<Response> {
     ? `${COPILOT_SYSTEM_PROMPT}\n\n## Context\nThe user is currently viewing: ${page}`
     : COPILOT_SYSTEM_PROMPT;
 
-  const anthropic = createAnthropic({ apiKey });
   const result = streamText({
-    model: anthropic(process.env.COPILOT_MODEL ?? DEFAULT_COPILOT_MODEL),
+    model: modelForKey(apiKey),
     system,
     messages: await convertToModelMessages(messages),
     tools: buildTools(req, orgSlug),

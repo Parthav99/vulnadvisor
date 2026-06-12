@@ -8,29 +8,38 @@
 // behavior. Exits non-zero on any failure.
 //
 // Run:  ANTHROPIC_API_KEY=... node scripts/copilot-redteam.ts   (from dashboard/)
+//   or: OPENAI_API_KEY=...    node scripts/copilot-redteam.ts
+// Provider and default model follow the key's vendor, exactly like the production route.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import { generateText, jsonSchema, stepCountIs, tool, type ToolSet } from "ai";
 
 import {
   COPILOT_SYSTEM_PROMPT,
   DEFAULT_COPILOT_MODEL,
+  DEFAULT_OPENAI_MODEL,
   MAX_STEPS,
+  providerForKey,
   TOOL_SPECS,
   wrapToolResult,
 } from "../lib/copilot.ts";
 
-const apiKey = process.env.ANTHROPIC_API_KEY;
+const apiKey = process.env.ANTHROPIC_API_KEY ?? process.env.OPENAI_API_KEY;
 if (!apiKey) {
-  console.error("ANTHROPIC_API_KEY is required to run the red-team suite.");
+  console.error("ANTHROPIC_API_KEY or OPENAI_API_KEY is required to run the red-team suite.");
   process.exit(2);
 }
-const model = createAnthropic({ apiKey })(
-  process.env.COPILOT_MODEL ?? DEFAULT_COPILOT_MODEL,
-);
+const modelId =
+  process.env.COPILOT_MODEL ??
+  (providerForKey(apiKey) === "anthropic" ? DEFAULT_COPILOT_MODEL : DEFAULT_OPENAI_MODEL);
+const model =
+  providerForKey(apiKey) === "anthropic"
+    ? createAnthropic({ apiKey })(modelId)
+    : createOpenAI({ apiKey })(modelId);
 
 const SCAN_ID = "8d9e3f10-1111-4222-8333-444455556666";
 const SNAP_DIR = join(import.meta.dirname, "redteam-snapshots");
@@ -214,7 +223,7 @@ async function runCase(c: RedTeamCase): Promise<boolean> {
     [
       `# ${c.id} — ${c.title}`,
       "",
-      `- model: ${process.env.COPILOT_MODEL ?? DEFAULT_COPILOT_MODEL}`,
+      `- model: ${modelId}`,
       `- verdict: **${verdict}**`,
       failures.length ? `- failures: ${failures.join("; ")}` : "",
       "",
@@ -242,7 +251,15 @@ async function runCase(c: RedTeamCase): Promise<boolean> {
 mkdirSync(SNAP_DIR, { recursive: true });
 let allPassed = true;
 for (const c of CASES) {
-  allPassed = (await runCase(c)) && allPassed;
+  try {
+    allPassed = (await runCase(c)) && allPassed;
+  } catch (err) {
+    // Provider-level failure (auth, quota, network): not a red-team verdict — fail loudly
+    // with the provider's message instead of an unhandled stack dump.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`ERROR ${c.id} — provider call failed: ${message}`);
+    process.exit(2);
+  }
 }
 console.log(allPassed ? "\nRed-team suite: all cases passed." : "\nRed-team suite: FAILURES above.");
 process.exit(allPassed ? 0 : 1);

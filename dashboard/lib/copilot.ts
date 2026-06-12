@@ -6,8 +6,20 @@
 
 import { randomUUID } from "node:crypto";
 
-/** Default model; override with COPILOT_MODEL. */
+/** Default models per provider; override with COPILOT_MODEL. */
 export const DEFAULT_COPILOT_MODEL = "claude-opus-4-8";
+export const DEFAULT_OPENAI_MODEL = "gpt-5.2";
+
+/**
+ * Which provider a key belongs to, by its vendor prefix.
+ *
+ * Org BYO keys are Anthropic-only (the platform validates `sk-ant-` at save time); this
+ * exists for the deployment-level fallback key, which the operator may provision from
+ * either vendor (maintainer decision, 2026-06-13 — see PROGRESS.md Task 15.1 follow-up).
+ */
+export function providerForKey(apiKey: string): "anthropic" | "openai" {
+  return apiKey.startsWith("sk-ant-") ? "anthropic" : "openai";
+}
 
 /** Keep conversations bounded: only the most recent messages reach the model. */
 export const MAX_MESSAGES = 30;

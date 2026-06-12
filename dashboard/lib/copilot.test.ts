@@ -10,6 +10,7 @@ import {
   makeBoundary,
   MAX_MESSAGES,
   MAX_STEPS,
+  providerForKey,
   TOOL_SPECS,
   wrapToolResult,
 } from "./copilot.ts";
@@ -114,6 +115,14 @@ test("a payload containing an explicitly-supplied boundary is refused", () => {
 
 test("non-serializable payloads degrade to null, never crash", () => {
   assert.ok(wrapToolResult(undefined).includes("\nnull\n"));
+});
+
+// --- provider detection ---------------------------------------------------------------------------
+
+test("provider follows the key's vendor prefix", () => {
+  assert.equal(providerForKey("sk-ant-api03-xyz"), "anthropic");
+  assert.equal(providerForKey("sk-proj-abc"), "openai");
+  assert.equal(providerForKey("sk-legacy"), "openai");
 });
 
 // --- route limits exist --------------------------------------------------------------------------

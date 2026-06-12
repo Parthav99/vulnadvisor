@@ -72,11 +72,24 @@ burned honestly) → PUT key returns hint `…cdef` only → copilot streams and
 **reaches Anthropic but never appears in the stream** (auth error masked) → cap 3 → **429** →
 DB row holds a Fernet token (`gAAAAAB…`), plaintext absent.
 
+**Follow-up (2026-06-13): provider-flexible fallback key (maintainer decision).** The
+maintainer has no Anthropic key and directed the copilot to use their OpenAI key. Added
+`@ai-sdk/openai@3.0.71` (pinned): the *deployment fallback* key may now be either vendor —
+provider + default model (`claude-opus-4-8` / `gpt-5.2`) are detected from the key's prefix
+(`providerForKey`, unit-tested); `COPILOT_MODEL` still overrides; **org BYO keys remain
+Anthropic-only** (platform still validates `sk-ant-`). The red-team harness follows the same
+detection (`OPENAI_API_KEY` accepted) and now fails cleanly (exit 2 + provider message) on
+auth/quota errors instead of a stack dump. This diverges from the instructions-file stack rule
+("Anthropic API for the plain-English layer") — recorded here as an explicit maintainer call.
+Lint/build clean; `npm test` 43/43.
+
 **Open questions / blocked:**
-- **Red-team live run needs `ANTHROPIC_API_KEY`** (none in env or .env files). Run from
-  `dashboard/`: `ANTHROPIC_API_KEY=... node scripts/copilot-redteam.ts` — writes the ≥5
-  snapshots and exits non-zero on any failed case. Task 15.1's gate is not fully passed until
-  this runs green; everything else is.
+- **Red-team live run still blocked — now on quota, not key type.** The provided OpenAI key
+  authenticates (models list 200) but the account has **zero credits**: every inference call,
+  even `gpt-4.1-nano`, returns `insufficient_quota`. To close the gate either add billing to
+  that OpenAI account or supply any funded key, then from `dashboard/`:
+  `OPENAI_API_KEY=... node scripts/copilot-redteam.ts` (or `ANTHROPIC_API_KEY=...`) — writes
+  the ≥5 snapshots and exits non-zero on any failed case.
 - `npm audit` shows 2 pre-existing moderates (Next.js's bundled postcss), unrelated to the new
   deps; the "fix" downgrades Next to 9.x — ignored deliberately.
 - Production env to set: platform `COPILOT_SERVICE_TOKEN` (+ same value in the dashboard env),
