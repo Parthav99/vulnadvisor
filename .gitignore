@@ -35,3 +35,8 @@ htmlcov/
 Thumbs.db
 Comprehensive Market Analysis.txt
 .gitignore
+
+# Guard against stray npm installs at the repo root (the real one lives in dashboard/)
+node_modules/
+package.json
+package-lock.json
