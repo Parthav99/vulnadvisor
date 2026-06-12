@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -352,3 +352,33 @@ class ApiKeyCreated(BaseModel):
     prefix: str
     created_at: datetime
     secret: str
+
+
+# --- Triage copilot (Task 15.1) -------------------------------------------------------------------
+
+
+class CopilotSettingsOut(BaseModel):
+    """Copilot settings for an org — never the key itself, only a ``…last4`` hint."""
+
+    byo_key_set: bool
+    key_hint: str | None
+    daily_cap: int
+    used_today: int
+
+
+class CopilotKeySet(BaseModel):
+    """Body for ``PUT .../settings/copilot-key`` — the org's own Anthropic API key."""
+
+    api_key: str = Field(min_length=8, max_length=512)
+
+
+class CopilotGrant(BaseModel):
+    """One copilot request grant, returned only to the dashboard's service-token caller.
+
+    ``api_key`` is the decrypted BYO key when the org has one (``key_source="org"``); otherwise
+    ``None`` and the dashboard falls back to its own platform key (``key_source="platform"``).
+    """
+
+    key_source: Literal["org", "platform"]
+    api_key: str | None
+    remaining_today: int

@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # the workflow the setup PR proposes (Task 14.2).
     public_api_url: str = "http://localhost:8000"
 
+    # Triage copilot (Task 15.1). The dashboard's /api/copilot route presents this service token
+    # (alongside the caller's own session) to the grant endpoint to obtain the org's decrypted
+    # BYO Anthropic key + a slot under the daily cap. Empty disables the grant endpoint.
+    copilot_service_token: str = ""
+    # Per-org daily cap on copilot requests (grants per UTC day).
+    copilot_daily_cap: int = 50
+
     # GitHub App (webhooks + PR comments). Empty in dev/tests.
     github_webhook_secret: str = ""
     github_app_slug: str = ""

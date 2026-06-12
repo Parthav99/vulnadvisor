@@ -64,6 +64,10 @@ class Org(Base):
     name: Mapped[str] = mapped_column(String(200))
     github_org_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     plan: Mapped[str] = mapped_column(String(32), default="free")
+    # BYO Anthropic key for the triage copilot (Task 15.1): Fernet ciphertext (key derived from
+    # SECRET_KEY) + a non-secret "…last4" hint. The plaintext is never stored or listed.
+    copilot_key_ciphertext: Mapped[str | None] = mapped_column(String(1024))
+    copilot_key_hint: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[CreatedAt]
 
 
@@ -197,6 +201,19 @@ class DeviceGrant(Base):
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[CreatedAt]
+
+
+class CopilotUsage(Base):
+    """Per-(org, UTC day) counter backing the copilot's daily request cap (Task 15.1)."""
+
+    __tablename__ = "copilot_usage"
+    __table_args__ = (UniqueConstraint("org_id", "day", name="uq_copilot_usage_org_day"),)
+
+    id: Mapped[UuidPk]
+    org_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"))
+    day: Mapped[str] = mapped_column(String(10))
+    count: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[CreatedAt]
 
 

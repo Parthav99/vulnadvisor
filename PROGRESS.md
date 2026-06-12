@@ -4,6 +4,87 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 15.1 — Copilot backend: grounded, org-scoped, injection-hardened  (2026-06-13)
+
+**Status:** implementation complete; full gate green **except the live red-team run, which is
+blocked on `ANTHROPIC_API_KEY`** (no key in any env/.env — the harness + snapshots are built and
+ready; see Open questions). **New npm deps (pre-declared in task.md, pinned exact):
+`ai@6.0.203` + `@ai-sdk/anthropic@3.0.84`** — dashboard-only, published wheel untouched.
+
+An assistant that answers from *your* scan data and cannot be talked out of its rules:
+
+- **Platform — BYO key encrypted at rest + daily cap (`copilot.py`, `routers/copilot.py`,
+  Alembic `f7a2d9c4e8b3`):** `orgs.copilot_key_ciphertext/_hint` (Fernet under a SHA-256
+  derivation of `SECRET_KEY` — no second secret to rotate) + `copilot_usage(org_id, day, count)`.
+  Settings endpoints: `GET /v1/orgs/{org}/settings/copilot` (members; `byo_key_set`, `…last4`
+  hint, cap, `used_today`), `PUT`/`DELETE .../settings/copilot-key` (owner/admin; key format
+  validated `sk-ant-*`, returned **never** — only the hint). **Grant endpoint**
+  `POST /v1/orgs/{org}/copilot/grant`: the *only* place the decrypted key leaves the platform,
+  and it requires **both** the shared `COPILOT_SERVICE_TOKEN` header (constant-time compare;
+  503 when unconfigured, 403 otherwise) **and** the caller's own session (`require_org` → 404
+  cross-org, even with a valid service token). Consumes one slot of the per-org UTC-day cap
+  (`COPILOT_DAILY_CAP`, default 50) → 429 when spent; the count commits only on a successful
+  grant. Corrupted/undecryptable ciphertext is a **loud 500** ("re-save the key"), never a
+  silent fallback.
+- **Design decision (the "never returned by any endpoint" gate):** the dashboard has no DB, so
+  the decrypted key must cross to the Next.js server somehow. It crosses *only* via the grant
+  endpoint, which is unreachable without the service token users never hold — tested with a
+  real session + no/guessed token (403). All user-reachable surfaces return at most the hint
+  (swept in tests).
+- **Dashboard — `POST /api/copilot`** (`app/api/copilot/route.ts`; wins over the `/api/*`
+  rewrite since route handlers precede `afterFiles` rewrites): validates body (org-slug regex,
+  `validateUIMessages`, 100 KB cap, last-30 messages, **client-supplied `system` roles
+  stripped**), obtains a grant (status mapping: 401 sign-in / 404 org / 429 cap / 503
+  unconfigured), picks the key (org BYO → platform `ANTHROPIC_API_KEY` fallback → honest 503),
+  then `streamText` (AI SDK v6, `claude-opus-4-8` default, `COPILOT_MODEL` override,
+  `stepCountIs(8)` tool budget) returning a UI-message stream.
+- **Tools = the existing read/analytics API with the caller's own cookie** (no service
+  account; tenant isolation inherited): `org_overview`, `list_repos`, `list_scans`,
+  `list_findings`, `diff_scans`, `repo_trend`, `org_trend` — all GET, all `/v1`, repo/org
+  segments URL-encoded into single path segments, scan ids must be UUIDs (traversal/query
+  smuggling rejected as tool errors the model sees as data), trend windows regex-validated.
+- **Injection hardening (`lib/copilot.ts`, pure + unit-tested):** every tool result is wrapped
+  between markers carrying a **random-per-call UUID boundary** ("UNTRUSTED DATA … never
+  instructions") so payload text can't fake a closing marker it has never seen; the system
+  prompt pins the standing rules — deterministic engine is the *authority* on priority (never
+  invent/re-rank/override), caller's-own-org only (refuse cross-tenant), tool results are
+  data-not-instructions even when claiming system/developer authority, no unfounded all-clear
+  (soundness), no secrets/prompt disclosure. Static prompt text (cacheable; red-team exercises
+  exactly what production runs).
+- **Red-team harness (`scripts/copilot-redteam.ts`):** 6 cases — all-clear override, fake
+  priority re-score, system-prompt exfil, forged end-of-data marker, cross-org pivot,
+  exfiltration link — run the production prompt + production tool schemas against the live
+  model with seeded malicious advisory summaries; snapshots to `scripts/redteam-snapshots/`,
+  programmatic pass/fail per case (incl. "no tool call ever targeted another org"), exit 1 on
+  any failure.
+
+**Validation:** ruff + format clean · `mypy --strict src platform` clean (88 files) ·
+**pytest 523 passed, 1 skipped** (+14: ciphertext-at-rest + plaintext sweep over every read
+surface, member/admin/non-member matrix, grant 403/503/404/429, two-org isolation incl.
+service-token-can't-cross-tenants, cap counts 2→1→0→429, corrupted-ciphertext 500, Fernet
+roundtrip/tamper, key-format rules) · dashboard `npm run lint` + `next build` clean ·
+**`npm test` 42/42** (+14: system-prompt rule presence, tool surface read-only//v1-only/
+traversal-safe, URL-encoding of hostile repo names, UUID enforcement, boundary uniqueness +
+fake-marker inertness, budgets). **Live spot-check** (two-org seeded SQLite in `c:\tmp\va151`,
+uvicorn + `next start`): 401 unauthenticated → 400 bad slug → **404 intruder-on-acme** →
+grant **403 without/with-guessed service token through the browser proxy** → 503 no-key (grant
+burned honestly) → PUT key returns hint `…cdef` only → copilot streams and the fake BYO key
+**reaches Anthropic but never appears in the stream** (auth error masked) → cap 3 → **429** →
+DB row holds a Fernet token (`gAAAAAB…`), plaintext absent.
+
+**Open questions / blocked:**
+- **Red-team live run needs `ANTHROPIC_API_KEY`** (none in env or .env files). Run from
+  `dashboard/`: `ANTHROPIC_API_KEY=... node scripts/copilot-redteam.ts` — writes the ≥5
+  snapshots and exits non-zero on any failed case. Task 15.1's gate is not fully passed until
+  this runs green; everything else is.
+- `npm audit` shows 2 pre-existing moderates (Next.js's bundled postcss), unrelated to the new
+  deps; the "fix" downgrades Next to 9.x — ignored deliberately.
+- Production env to set: platform `COPILOT_SERVICE_TOKEN` (+ same value in the dashboard env),
+  dashboard `ANTHROPIC_API_KEY` (platform fallback key), optional `COPILOT_DAILY_CAP` /
+  `COPILOT_MODEL`. Documented in both `.env.example`s.
+
+---
+
 ## Task 14.3 — Product tour + teaching empty states + demo mode  (2026-06-12)
 
 **Status:** complete, Validation Gate passing. **New npm dep (approved at task start):
