@@ -4,6 +4,68 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 14.1 — `vulnadvisor login` (device flow)  (2026-06-12)
+
+**Status:** complete, Validation Gate passing. First M14 task. No new dependencies (CLI side is
+stdlib `urllib`/`webbrowser`; platform side reuses the existing key machinery).
+
+Key copy-paste is dead — RFC 8628-shaped three-legged flow:
+
+- **Platform** — new `DeviceGrant` model (`device_grants` table, Alembic `b9e4d3a1c7f2`) +
+  `routers/device.py`:
+  - `POST /v1/device/code` (unauthenticated, **rate-limited**: ≥10 grants per requester IP per
+    60 s → 429, DB-backed so it works multi-instance): mints a human-typable `user_code`
+    (`XK7M-2PQ9`, 8 chars over an unambiguous alphabet — no 0/O/1/I/L) and a high-entropy
+    `device_code` (**only its SHA-256 stored**, like API keys). Returns
+    `verification_uri[_complete]` (dashboard `/activate`), `expires_in` 900 s, `interval` 5 s.
+  - `POST /v1/device/approve` (session/Bearer auth): binds the grant to one of the caller's orgs
+    via `require_org` (non-member org → 404, tenant semantics as everywhere). Input normalized
+    (case/hyphen/space-insensitive). Unknown → 404, expired → 400, already used → 409.
+  - `POST /v1/device/token` (the CLI poll): pending → 400 `{"error":"authorization_pending"}`
+    (RFC error shape); expired → `expired_token`; unknown/consumed → `invalid_grant`. On an
+    approved grant the org-scoped API key is **minted at poll time** — the plaintext secret
+    exists only in that one response, never at rest — named `device login (<client>)` so it's
+    recognizable/revocable under Settings → API keys; the grant is consumed in the same
+    transaction (reuse rejected).
+- **CLI** — `output/credentials.py` (store: `~/.config/vulnadvisor/credentials`, JSON, created
+  via `os.open` mode **0600**, dir 0700, `XDG_CONFIG_HOME` honored; defensive loads → `None`,
+  never a crash) + `output/devicelogin.py` (stdlib client; injectable `sleep`/`clock` for
+  hermetic poll tests). `vulnadvisor login [--api-url] [--no-browser]`: prints the code, opens
+  the browser (fallback prints the URL), polls, stores credentials — **the key is never
+  printed**. `vulnadvisor logout` removes the file. `scan --upload` resolves credentials
+  flag/env first, then the store — a bare `scan --upload` works with no flags after login.
+- **Dashboard** — new `/activate` page: signed-out users get the GitHub sign-in card; signed-in
+  users get a form (code prefilled from `?code=`, org selector from their memberships) that
+  POSTs `/api/v1/device/approve` through the same-origin proxy; success says "Device connected —
+  return to your terminal"; 404/400/409 mapped to human messages.
+- **Windows-console honesty fix found live:** the success messages used "✓"/"—", which crash
+  `cp1252` consoles (UnicodeEncodeError after a *successful* login). login/logout and the
+  pre-existing `scan --upload` confirmation are now ASCII-only — a success must never exit 1
+  while printing itself.
+
+**Validation:** ruff + format clean · `mypy --strict src platform` clean (85 files) ·
+**pytest 482 passed, 1 skipped** (+36: full grant lifecycle incl. the minted key authorizing a
+real `/v1/scans` upload + reuse rejected + hash-only-at-rest asserted; expiry blocks approve and
+token; double-approve 409; unknown 404; unauth 401; **non-member org 404**; **rate limit 429
+after 10**; code normalization; credentials round-trip/malformed/delete/XDG + **0600 asserted on
+POSIX** (skipped on Windows — content/overwrite still asserted); device client: pending→token
+with injected clock, expired/invalid/timeout/429/network errors; CLI: login stores credentials
+**and never prints the key**, login failure exits 1, logout idempotent, bare `scan --upload`
+uses the store, explicit flags beat the store). Migration applied to **live Postgres** (docker
+compose): `alembic upgrade head` + `alembic check` no drift. Dashboard `npm run build` + `lint`
+clean (`/activate` route compiles).
+**Live e2e** (seeded SQLite in `c:\tmp\va141`, uvicorn + `next start`, headless Edge):
+`vulnadvisor login --no-browser` printed `32WH-B9C4` → **browser 7/7 PASS** on the real
+`/activate` page (form rendered, code prefilled from the URL, org defaulted, approve →
+"Device connected", re-approval → "already used") → login exited 0 with credentials stored →
+`scan examples/quickstart --upload` **with no flags and no env vars** uploaded 9 findings →
+read API confirms the scan (`complete`, 9 findings) and lists the minted
+`device login (yeshp@Parth_ROG)` keys.
+
+**Open questions:** none blocking. Next: 14.2 — one-click GitHub App install + auto-setup PR.
+
+---
+
 ## Task 13.5 — Security-posture hero + a11y/perf gate  (2026-06-11)
 
 **Status:** complete, Validation Gate passing. Closes M13 → **dashboard v1.0** (tag

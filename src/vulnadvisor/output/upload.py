@@ -60,7 +60,10 @@ def upload_report(
     if not api_url:
         raise UploadError("no API URL: pass --api-url or set the API_URL environment variable")
     if not api_key:
-        raise UploadError("no API key: pass --api-key or set the VULNADVISOR_API_KEY variable")
+        raise UploadError(
+            "no API key: run 'vulnadvisor login', pass --api-key, "
+            "or set the VULNADVISOR_API_KEY variable"
+        )
 
     url = api_url.rstrip("/") + _ENDPOINT
     payload = json.dumps(

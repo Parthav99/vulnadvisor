@@ -20,6 +20,14 @@ from vulnadvisor.cli.render import render_report
 from vulnadvisor.llm.client import build_anthropic_client
 from vulnadvisor.llm.explainer import Explainer
 from vulnadvisor.model.advisory import Advisory
+from vulnadvisor.output.credentials import (
+    Credentials,
+    default_credentials_path,
+    delete_credentials,
+    load_credentials,
+    save_credentials,
+)
+from vulnadvisor.output.devicelogin import LoginError, poll_device_token, request_device_code
 from vulnadvisor.output.gating import parse_fail_on, should_fail
 from vulnadvisor.output.gitmeta import detect_scan_metadata
 from vulnadvisor.output.json_report import build_report, to_json
@@ -316,7 +324,16 @@ def _upload_report(
     Always uploads every finding (never the ``--top`` display subset). Commit/ref come from
     GITHUB_SHA/GITHUB_REF in CI, else from git in the scanned directory, else they are sent as
     null (never placeholder zeros) so the dashboard labels the upload a local scan.
+
+    Credentials resolve flag/env first, then the ``vulnadvisor login`` store — so a bare
+    ``scan --upload`` works with no flags after a device login.
     """
+    if not api_key or not api_url:
+        stored = load_credentials()
+        if stored is not None:
+            api_key = api_key or stored.api_key
+            api_url = api_url or stored.api_url
+
     document = build_report(
         report.findings, report.degraded_sources, tool_version=_resolve_version()
     )
@@ -336,12 +353,108 @@ def _upload_report(
         raise typer.Exit(code=1) from exc
 
     total = len(report.findings)
+    # ASCII-only: a cp1252 Windows console (or redirected stdout) cannot encode "✓", and a
+    # successful upload must never crash while printing its confirmation.
     typer.secho(
-        f"✓ Uploaded {total} finding(s) to '{repo_name}' (scan {result.scan_id}).",
+        f"Uploaded {total} finding(s) to '{repo_name}' (scan {result.scan_id}).",
         fg=typer.colors.GREEN,
     )
     if dashboard_url:
         typer.echo(f"  View: {dashboard_url.rstrip('/')}/scans/{result.scan_id}")
+
+
+def _default_client_name() -> str:
+    """A recognizable device label like ``alice@laptop`` (defensive; never raises)."""
+    import getpass
+    import socket
+
+    try:
+        user = getpass.getuser()
+    except (OSError, KeyError):
+        user = "user"
+    try:
+        host = socket.gethostname() or "device"
+    except OSError:
+        host = "device"
+    return f"{user}@{host}"[:200]
+
+
+@app.command()
+def login(
+    api_url: Annotated[
+        str | None,
+        typer.Option(
+            "--api-url",
+            envvar="API_URL",
+            help="Platform base URL to log in to (default: the API_URL env var).",
+        ),
+    ] = None,
+    no_browser: Annotated[
+        bool,
+        typer.Option("--no-browser", help="Do not open a browser; just print the activation URL."),
+    ] = False,
+) -> None:
+    """Authenticate this machine with a VulnAdvisor platform (no key copy-paste).
+
+    Requests a device code, opens the dashboard's activation page in your browser, and waits for
+    approval. The minted org-scoped API key is stored in a local credentials file (0600) and is
+    read automatically by ``scan --upload``; it is never printed.
+    """
+    import webbrowser
+
+    if not api_url:
+        raise typer.BadParameter(
+            "no API URL: pass --api-url or set the API_URL environment variable",
+            param_hint="--api-url",
+        )
+
+    try:
+        code = request_device_code(api_url, client_name=_default_client_name())
+    except LoginError as exc:
+        typer.secho(f"Login failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("To finish logging in, enter this code in your dashboard:")
+    typer.secho(f"\n    {code.user_code}\n", bold=True)
+    typer.echo(f"Activation page: {code.verification_uri_complete}")
+
+    opened = False
+    if not no_browser:
+        try:
+            opened = webbrowser.open(code.verification_uri_complete)
+        except webbrowser.Error:
+            opened = False
+    if not opened:
+        typer.echo("Open the URL above in a browser to approve this device.")
+    typer.echo(f"Waiting for approval (code expires in {code.expires_in // 60} min)...")
+
+    try:
+        token = poll_device_token(
+            api_url, code.device_code, interval=code.interval, expires_in=code.expires_in
+        )
+    except LoginError as exc:
+        typer.secho(f"Login failed: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+
+    stored_at = save_credentials(
+        Credentials(
+            api_url=api_url.rstrip("/"), api_key=token.access_token, org_slug=token.org_slug
+        )
+    )
+    # ASCII-only output: a cp1252 Windows console (or redirected stdout) cannot encode "✓"/"—",
+    # and a login that succeeds must never crash while printing its confirmation.
+    typer.secho(f"Logged in to org '{token.org_slug}'.", fg=typer.colors.GREEN)
+    typer.echo(f"Credentials stored at {stored_at} - 'vulnadvisor scan . --upload' now just works.")
+
+
+@app.command()
+def logout() -> None:
+    """Remove the stored credentials written by ``vulnadvisor login``."""
+    path = default_credentials_path()
+    if delete_credentials(path):
+        typer.secho(f"Logged out; removed {path}.", fg=typer.colors.GREEN)
+    else:
+        typer.echo("No stored credentials found; nothing to do.")
 
 
 @app.command(name="backfill")

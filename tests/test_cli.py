@@ -291,3 +291,182 @@ def test_backfill_command(
 def test_backfill_requires_targets() -> None:
     result = runner.invoke(app, ["backfill"])
     assert result.exit_code == 2  # no packages and no --top
+
+
+# --- vulnadvisor login / logout (Task 14.1) -------------------------------------------------------
+
+
+def test_login_stores_credentials_and_never_prints_key(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    import webbrowser
+
+    from vulnadvisor.output.credentials import load_credentials
+    from vulnadvisor.output.devicelogin import DeviceCode, DeviceToken
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    opened: list[str] = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr(
+        cli_main,
+        "request_device_code",
+        lambda api_url, client_name=None: DeviceCode(
+            device_code="dev-secret",
+            user_code="XK7M-2PQ9",
+            verification_uri="https://dash.example.com/activate",
+            verification_uri_complete="https://dash.example.com/activate?code=XK7M-2PQ9",
+            expires_in=900,
+            interval=5,
+        ),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "poll_device_token",
+        lambda api_url, device_code, interval, expires_in: DeviceToken(
+            access_token="va_k.s3cret-key", org_slug="acme"
+        ),
+    )
+
+    result = runner.invoke(app, ["login", "--api-url", "https://api.example.com"])
+
+    assert result.exit_code == 0
+    assert "XK7M-2PQ9" in result.stdout  # the user code is shown
+    assert "va_k.s3cret-key" not in result.output  # the key is never printed
+    assert opened == ["https://dash.example.com/activate?code=XK7M-2PQ9"]
+    stored = load_credentials(tmp_path / "vulnadvisor" / "credentials")
+    assert stored is not None
+    assert stored.api_key == "va_k.s3cret-key"
+    assert stored.api_url == "https://api.example.com"
+    assert stored.org_slug == "acme"
+    assert "Logged in to org 'acme'" in result.stdout
+
+
+def test_login_requires_api_url(
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    monkeypatch.delenv("API_URL", raising=False)
+    result = runner.invoke(app, ["login"])
+    assert result.exit_code == 2
+    assert "API URL" in result.output
+
+
+def test_login_failure_exits_nonzero(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    from vulnadvisor.output.devicelogin import LoginError
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    def boom(api_url, client_name=None):  # type: ignore[no-untyped-def]
+        raise LoginError("too many login attempts; wait a minute and retry")
+
+    monkeypatch.setattr(cli_main, "request_device_code", boom)
+    result = runner.invoke(app, ["login", "--api-url", "https://api.example.com"])
+    assert result.exit_code == 1
+    assert "Login failed" in result.output
+    assert not (tmp_path / "vulnadvisor" / "credentials").exists()
+
+
+def test_logout_removes_credentials(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    from vulnadvisor.output.credentials import Credentials, save_credentials
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    save_credentials(
+        Credentials(api_url="https://api.example.com", api_key="k", org_slug="acme"),
+        tmp_path / "vulnadvisor" / "credentials",
+    )
+
+    result = runner.invoke(app, ["logout"])
+    assert result.exit_code == 0
+    assert "Logged out" in result.stdout
+    assert not (tmp_path / "vulnadvisor" / "credentials").exists()
+
+    again = runner.invoke(app, ["logout"])
+    assert again.exit_code == 0
+    assert "nothing to do" in again.stdout
+
+
+def test_scan_upload_uses_stored_login_with_no_flags(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    """After `vulnadvisor login`, a bare `scan --upload` needs no flags or env vars."""
+    from vulnadvisor.output.credentials import Credentials, save_credentials
+    from vulnadvisor.output.upload import UploadResult
+
+    config_home = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    monkeypatch.delenv("API_URL", raising=False)
+    monkeypatch.delenv("VULNADVISOR_API_KEY", raising=False)
+    save_credentials(
+        Credentials(api_url="https://api.example.com", api_key="va_k.stored", org_slug="acme"),
+        config_home / "vulnadvisor" / "credentials",
+    )
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    captured: dict[str, object] = {}
+
+    def fake_upload(report, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return UploadResult(scan_id="scan-9", introduced=1, fixed=0, unchanged=0)
+
+    monkeypatch.setattr(cli_main, "upload_report", fake_upload)
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "requirements.txt").write_text("jinja2==2.10\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["scan", str(project), "--format", "json", "--upload"])
+
+    assert result.exit_code == 0
+    assert captured["api_key"] == "va_k.stored"
+    assert captured["api_url"] == "https://api.example.com"
+    assert "Uploaded" in result.stdout
+
+
+def test_scan_upload_explicit_flags_beat_stored_login(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    from vulnadvisor.output.credentials import Credentials, save_credentials
+    from vulnadvisor.output.upload import UploadResult
+
+    config_home = tmp_path / "config"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
+    save_credentials(
+        Credentials(api_url="https://stored.example.com", api_key="va_k.stored", org_slug="acme"),
+        config_home / "vulnadvisor" / "credentials",
+    )
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    captured: dict[str, object] = {}
+
+    def fake_upload(report, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return UploadResult(scan_id="scan-10", introduced=0, fixed=0, unchanged=1)
+
+    monkeypatch.setattr(cli_main, "upload_report", fake_upload)
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            str(_project(tmp_path)),
+            "--format",
+            "json",
+            "--upload",
+            "--api-url",
+            "https://flag.example.com",
+            "--api-key",
+            "va_k.flag",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["api_key"] == "va_k.flag"
+    assert captured["api_url"] == "https://flag.example.com"

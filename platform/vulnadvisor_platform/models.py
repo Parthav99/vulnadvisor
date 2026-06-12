@@ -165,6 +165,36 @@ class Scan(Base):
     created_at: Mapped[CreatedAt]
 
 
+class DeviceGrant(Base):
+    """A device-flow login grant (Task 14.1): ``vulnadvisor login`` without key copy-paste.
+
+    The CLI requests a grant and shows the short ``user_code``; the user approves it in the
+    dashboard (binding an org); the CLI polls with the high-entropy device code (only its SHA-256
+    ``device_code_hash`` is stored). The org-scoped API key is minted at poll time — the plaintext
+    secret is delivered once in the poll response and never stored — then the grant is consumed.
+    """
+
+    __tablename__ = "device_grants"
+    __table_args__ = (Index("ix_device_grants_ip_created", "requester_ip", "created_at"),)
+
+    id: Mapped[UuidPk]
+    user_code: Mapped[str] = mapped_column(String(16), unique=True)
+    device_code_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    client_name: Mapped[str | None] = mapped_column(String(200))
+    requester_ip: Mapped[str | None] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    org_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("orgs.id", ondelete="CASCADE"))
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    api_key_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("api_keys.id", ondelete="SET NULL")
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[CreatedAt]
+
+
 class Finding(Base):
     """A single scored finding; ``payload`` is the engine's JSON finding (the source of truth)."""
 

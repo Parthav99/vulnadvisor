@@ -250,6 +250,59 @@ class ResolutionResponse(BaseModel):
     bands: dict[str, ResolutionStats]
 
 
+# --- Device-flow login (Task 14.1) ----------------------------------------------------------------
+
+
+class DeviceCodeRequest(BaseModel):
+    """Body for ``POST /v1/device/code`` — the CLI requests a new login grant.
+
+    ``client_name`` (e.g. ``login@hostname``) is shown on the approval page and becomes part of
+    the minted API key's name, so users can recognize and revoke device keys later.
+    """
+
+    client_name: str | None = Field(default=None, max_length=200)
+
+
+class DeviceCodeResponse(BaseModel):
+    """A freshly minted device grant (RFC 8628-shaped)."""
+
+    device_code: str
+    user_code: str
+    verification_uri: str
+    verification_uri_complete: str
+    expires_in: int
+    interval: int
+
+
+class DeviceApproveRequest(BaseModel):
+    """Body for ``POST /v1/device/approve`` — a logged-in user approves a code for one org."""
+
+    user_code: str = Field(min_length=1, max_length=32)
+    org_slug: str = Field(min_length=1, max_length=64)
+
+
+class DeviceApproveResponse(BaseModel):
+    """Confirmation that a device grant was approved."""
+
+    user_code: str
+    org_slug: str
+    client_name: str | None
+
+
+class DeviceTokenRequest(BaseModel):
+    """Body for ``POST /v1/device/token`` — the CLI polls with its device code."""
+
+    device_code: str = Field(min_length=1, max_length=200)
+
+
+class DeviceTokenResponse(BaseModel):
+    """The minted org-scoped API key — returned exactly once, never stored in plaintext."""
+
+    access_token: str
+    token_type: str
+    org_slug: str
+
+
 # --- API keys (Task 11.5) -----------------------------------------------------------------------
 
 

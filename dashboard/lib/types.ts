@@ -153,6 +153,14 @@ export interface DiffResponse {
   unchanged: number;
 }
 
+// Device-flow activation (Task 14.1).
+
+export interface DeviceApproved {
+  user_code: string;
+  org_slug: string;
+  client_name: string | null;
+}
+
 export interface ApiKey {
   id: string;
   name: string;
