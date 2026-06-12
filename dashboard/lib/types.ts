@@ -20,6 +20,17 @@ export interface Repo {
   is_private: boolean;
   scan_count: number;
   last_scan_at: string | null;
+  // Onboarding (Task 14.2): "not-set-up" | "pr-open" | "pr-merged" | "receiving-scans".
+  github_linked: boolean;
+  setup_status: string;
+  setup_pr_url: string | null;
+}
+
+// Result of POST /v1/orgs/{org}/repos/{repo}/setup-pr (Task 14.2).
+export interface SetupPrResponse {
+  pr_number: number;
+  pr_url: string;
+  created: boolean;
 }
 
 export interface ScanSummary {

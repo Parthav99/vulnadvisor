@@ -1,4 +1,4 @@
-"""GitHub App client for posting PR comments (Task 11.6).
+"""GitHub App client for posting PR comments (Task 11.6) and opening setup PRs (Task 14.2).
 
 Exposed as a dependency so the webhook orchestration is testable with a fake. The comment upsert
 (find-our-comment-or-create) is implemented against the REST API given an installation token, which
@@ -7,8 +7,10 @@ credentials are not configured, token minting raises a clear error. Tests inject
 the webhook -> diff -> comment path is exercised without network or credentials.
 """
 
+import base64
 import time
-from typing import Annotated
+from dataclasses import dataclass
+from typing import Annotated, Any
 
 import httpx
 import jwt
@@ -16,6 +18,7 @@ from fastapi import Depends
 
 from vulnadvisor_platform.config import Settings, get_settings
 from vulnadvisor_platform.pr_comment import MARKER
+from vulnadvisor_platform.setup_pr import SETUP_BRANCH
 
 _API = "https://api.github.com"
 # A GitHub App JWT may live at most 10 minutes; we use a shorter window plus backdated iat for skew.
@@ -25,6 +28,25 @@ _JWT_SKEW_SECONDS = 60
 
 class GitHubAppError(RuntimeError):
     """Raised when the GitHub App is not configured or the API rejects a request."""
+
+
+@dataclass(frozen=True)
+class SetupPr:
+    """The setup PR that now exists for a repo — freshly created or updated in place."""
+
+    number: int
+    url: str
+    created: bool
+
+
+def _ok(response: httpx.Response, context: str) -> Any:
+    """Return the parsed JSON body, or raise a contextual :class:`GitHubAppError` on >= 400."""
+    if response.status_code >= 400:
+        raise GitHubAppError(f"{context}: GitHub returned {response.status_code}")
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise GitHubAppError(f"{context}: GitHub returned a non-JSON body") from exc
 
 
 class GitHubApp:
@@ -64,6 +86,134 @@ class GitHubApp:
                     json={"body": body},
                 )
             response.raise_for_status()
+
+    async def open_setup_pr(
+        self,
+        *,
+        installation_id: int | None,
+        repo_full_name: str,
+        base_branch: str,
+        file_path: str,
+        file_content: str,
+        commit_message: str,
+        pr_title: str,
+        pr_body: str,
+    ) -> SetupPr:
+        """Open the setup PR adding ``file_path``, or update the existing one — never a duplicate.
+
+        Idempotency comes from the fixed branch name (:data:`SETUP_BRANCH`): the branch is created
+        once from the base branch's head, the file commit is skipped when the branch already holds
+        identical content, and an already-open PR from that branch is updated in place instead of
+        opening a second one.
+        """
+        token = await self._installation_token(installation_id)
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        owner = repo_full_name.split("/", 1)[0]
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            base = await client.get(
+                f"{_API}/repos/{repo_full_name}/git/ref/heads/{base_branch}", headers=headers
+            )
+            if base.status_code == 404:
+                raise GitHubAppError(f"base branch {base_branch!r} not found in {repo_full_name}")
+            base_data = _ok(base, "resolving the base branch")
+            base_object = base_data.get("object") if isinstance(base_data, dict) else None
+            base_sha = base_object.get("sha") if isinstance(base_object, dict) else None
+            if not isinstance(base_sha, str) or not base_sha:
+                raise GitHubAppError("GitHub did not return the base branch sha")
+
+            branch_ref = await client.get(
+                f"{_API}/repos/{repo_full_name}/git/ref/heads/{SETUP_BRANCH}", headers=headers
+            )
+            if branch_ref.status_code == 404:
+                created_ref = await client.post(
+                    f"{_API}/repos/{repo_full_name}/git/refs",
+                    headers=headers,
+                    json={"ref": f"refs/heads/{SETUP_BRANCH}", "sha": base_sha},
+                )
+                _ok(created_ref, "creating the setup branch")
+            else:
+                _ok(branch_ref, "resolving the setup branch")
+
+            encoded = base64.b64encode(file_content.encode("utf-8")).decode("ascii")
+            existing_file = await client.get(
+                f"{_API}/repos/{repo_full_name}/contents/{file_path}",
+                params={"ref": SETUP_BRANCH},
+                headers=headers,
+            )
+            file_payload: dict[str, str] = {
+                "message": commit_message,
+                "content": encoded,
+                "branch": SETUP_BRANCH,
+            }
+            needs_commit = True
+            if existing_file.status_code == 200:
+                file_data = _ok(existing_file, "reading the existing workflow file")
+                if isinstance(file_data, dict):
+                    current = file_data.get("content")
+                    # GitHub wraps base64 with newlines; compare whitespace-stripped.
+                    if isinstance(current, str) and "".join(current.split()) == encoded:
+                        needs_commit = False
+                    sha = file_data.get("sha")
+                    if isinstance(sha, str):
+                        file_payload["sha"] = sha
+            elif existing_file.status_code != 404:
+                _ok(existing_file, "reading the existing workflow file")
+            if needs_commit:
+                put = await client.put(
+                    f"{_API}/repos/{repo_full_name}/contents/{file_path}",
+                    headers=headers,
+                    json=file_payload,
+                )
+                _ok(put, "committing the workflow file")
+
+            pulls = await client.get(
+                f"{_API}/repos/{repo_full_name}/pulls",
+                params={"head": f"{owner}:{SETUP_BRANCH}", "state": "open", "per_page": "1"},
+                headers=headers,
+            )
+            listing = _ok(pulls, "listing open setup PRs")
+            existing_pr = None
+            if isinstance(listing, list) and listing and isinstance(listing[0], dict):
+                existing_pr = listing[0]
+            if existing_pr is not None:
+                number = existing_pr.get("number")
+                if not isinstance(number, int):
+                    raise GitHubAppError("GitHub returned an open PR without a number")
+                patched = await client.patch(
+                    f"{_API}/repos/{repo_full_name}/pulls/{number}",
+                    headers=headers,
+                    json={"title": pr_title, "body": pr_body},
+                )
+                patched_data = _ok(patched, "updating the existing setup PR")
+                return SetupPr(
+                    number=number, url=self._html_url(patched_data, existing_pr), created=False
+                )
+
+            opened = await client.post(
+                f"{_API}/repos/{repo_full_name}/pulls",
+                headers=headers,
+                json={
+                    "title": pr_title,
+                    "body": pr_body,
+                    "head": SETUP_BRANCH,
+                    "base": base_branch,
+                },
+            )
+            opened_data = _ok(opened, "opening the setup PR")
+            number = opened_data.get("number") if isinstance(opened_data, dict) else None
+            if not isinstance(number, int):
+                raise GitHubAppError("GitHub did not return the new PR's number")
+            return SetupPr(number=number, url=self._html_url(opened_data), created=True)
+
+    @staticmethod
+    def _html_url(*candidates: Any) -> str:
+        """The first ``html_url`` found in the candidate PR objects ("" when GitHub omits it)."""
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                url = candidate.get("html_url")
+                if isinstance(url, str) and url:
+                    return url
+        return ""
 
     def _app_jwt(self) -> str:
         """Sign a short-lived RS256 JWT with the App private key (issuer = App id)."""

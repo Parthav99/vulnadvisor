@@ -101,7 +101,12 @@ class OrgDetailOut(OrgOut):
 
 
 class RepoOut(BaseModel):
-    """A repository with scan activity counts."""
+    """A repository with scan activity counts and its onboarding setup status.
+
+    ``setup_status`` is one of ``not-set-up`` / ``pr-open`` / ``pr-merged`` /
+    ``receiving-scans`` (derived; received scans always win). ``github_linked`` says whether the
+    repo came from a GitHub App installation — only those can receive a setup PR.
+    """
 
     id: uuid.UUID
     name: str
@@ -109,6 +114,9 @@ class RepoOut(BaseModel):
     is_private: bool
     scan_count: int
     last_scan_at: datetime | None
+    github_linked: bool
+    setup_status: str
+    setup_pr_url: str | None
 
 
 class ScanListItem(BaseModel):
@@ -248,6 +256,17 @@ class ResolutionResponse(BaseModel):
     org_id: uuid.UUID
     overall: ResolutionStats
     bands: dict[str, ResolutionStats]
+
+
+# --- Setup PR (Task 14.2) -------------------------------------------------------------------------
+
+
+class SetupPrResponse(BaseModel):
+    """Result of opening (or idempotently updating) a repo's setup PR."""
+
+    pr_number: int
+    pr_url: str
+    created: bool
 
 
 # --- Device-flow login (Task 14.1) ----------------------------------------------------------------

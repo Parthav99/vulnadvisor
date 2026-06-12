@@ -29,7 +29,11 @@ export default async function SettingsPage({ params }: { params: Promise<{ org: 
         </h2>
         <Card size="sm" className="flex-row items-center justify-between">
           <CardContent className="text-sm text-muted-foreground">
-            Install the VulnAdvisor GitHub App to get PR comments and repository sync.
+            Install the VulnAdvisor GitHub App to get PR comments and repository sync, then{" "}
+            <Link className="link" href="/setup">
+              set up scanning
+            </Link>{" "}
+            with one click per repo.
           </CardContent>
           <CardContent>
             <Button asChild variant="outline">

@@ -32,6 +32,7 @@ from vulnadvisor_platform.schemas import (
     TrendResponse,
 )
 from vulnadvisor_platform.security import CurrentUser
+from vulnadvisor_platform.setup_pr import setup_status
 from vulnadvisor_platform.trends import summarize_tiers
 
 router = APIRouter(tags=["read"])
@@ -54,6 +55,9 @@ async def _repo_out(session: AsyncSession, repo: Repository) -> RepoOut:
         is_private=repo.is_private,
         scan_count=scan_count,
         last_scan_at=last_scan_at,
+        github_linked=repo.github_repo_id is not None,
+        setup_status=setup_status(scan_count=scan_count, setup_pr_state=repo.setup_pr_state),
+        setup_pr_url=repo.setup_pr_url,
     )
 
 

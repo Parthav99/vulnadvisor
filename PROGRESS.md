@@ -4,6 +4,76 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 14.2 — One-click GitHub App install + auto-setup PR  (2026-06-12)
+
+**Status:** complete, Validation Gate passing. **New dev dep (approved at task start):
+`pyyaml==6.0.3`** — test-only (the gate's "valid YAML" check needs a parser); the published wheel
+stays at 3 runtime deps.
+
+From "Sign in with GitHub" to a scanning repo without leaving the browser:
+
+- **Pure content (`setup_pr.py`):** `render_workflow(default_branch, api_url)` — the proposed
+  `.github/workflows/vulnadvisor.yml` (checkout → setup-python 3.12 → `pip install vulnadvisor` →
+  `vulnadvisor scan . --upload` with `VULNADVISOR_API_KEY` from a repo secret and `API_URL` from
+  the new `public_api_url` setting; commit/ref auto-detected via the 12.2 `GITHUB_SHA`/`GITHUB_REF`
+  logic, so zero flags). Branch/URL interpolated via `json.dumps` (a strict subset of YAML
+  double-quoted scalars — any legal branch name stays valid YAML). The scan **never fails the
+  user's build by default** (`--fail-on` is suggested in the PR body for later).
+  `render_pr_body(...)` — what the workflow does, the **one manual step** (add the
+  `VULNADVISOR_API_KEY` secret, deep link to Settings → API keys, `vulnadvisor login` as the
+  alternative), the privacy facts ("only the JSON report leaves CI"), and the idempotency promise
+  in writing. `setup_status(scan_count, setup_pr_state)` — the chip rule (scans always win).
+- **GitHubApp.open_setup_pr** (REST, installation token from 11.6): fixed branch
+  `vulnadvisor/setup` = the idempotency key. Base-branch head → create the branch once → PUT the
+  workflow (skips the commit when the branch already holds identical content; passes the file
+  `sha` on updates) → if an open PR from that branch exists, **PATCH it in place**, else POST a
+  new one. Returns `SetupPr(number, url, created)`. All GitHub errors → contextual
+  `GitHubAppError` (route maps to 502).
+- **`POST /v1/orgs/{org}/repos/{repo}/setup-pr`** (session/Bearer auth): `require_org` +
+  `require_admin` + `require_repo`; 409 for CLI-only repos (no `github_repo_id`) and for orgs
+  with no App installation; persists `setup_pr_number/url/state` on the repository row.
+- **Webhook lifecycle sync:** `pull_request` events whose head is `vulnadvisor/setup` update the
+  stored state (opened/reopened → `open`; closed+merged → `merged`; closed unmerged → cleared =
+  honestly "Not set up" again) and are **never commented on** (no triage noise on our own
+  one-file PR). New columns `repositories.setup_pr_number/url/state` (Alembic `d4c8b6e2f1a9`).
+- **Status chips** (derived, never stored): `not-set-up` / `pr-open` / **`pr-merged`** ("Merged ·
+  awaiting first scan" — a 4th state beyond the task's three, because showing "Not set up" right
+  after a merge would be dishonest) / `receiving-scans` (any scan wins). `RepoOut` gains
+  `github_linked` + `setup_status` + `setup_pr_url` (additive).
+- **Dashboard:** new **`/setup`** page (the App's post-install Setup URL): per-org repo rows with
+  chips + **"Open setup PR"** (client POST through the same-origin proxy; flips to "Update setup
+  PR" + "View PR"; CLI-only repos say so and get no button); signed-out → GitHub sign-in card.
+  Onboarding CTAs: home empty-state gets an Install button, org page repo rows carry the chips +
+  a "Set up scanning" button, settings links `/setup`. `SetupChip` palette: teal only for
+  receiving-scans, amber for merged-unverified, blue for PR-awaiting-action, muted for not set up.
+
+**Validation:** ruff + format clean · `mypy --strict src platform` clean (86 files) · **pytest 509
+passed, 1 skipped** (+27: workflow exact snapshot + `yaml.safe_load` structure + awkward branch
+names; PR-body content; status table; `open_setup_pr` against a stateful MockTransport GitHub —
+create path / **re-click = 1 PR, 1 commit, PATCH not POST** / changed-content recommit with `sha` /
+missing base branch; route flow — webhook install → sync → setup PR → chip `pr-open`, re-click
+`created:false` never duplicates, merged/closed webhook transitions, receiving-scans wins,
+409 unlinked / 409 no-installation / 403 member / **404 cross-org** / 502 GitHub-down with no
+half-recorded state). Migration applied to **live Postgres** (docker compose): `alembic upgrade
+head` + `alembic check` no drift. Dashboard `npm run build` + `lint` + `npm test` (11/11) clean.
+**Live e2e** (seeded SQLite in `c:\tmp\va142`; uvicorn + `next start` + headless Edge; the only
+fake is GitHub itself — a local REST stand-in on :9999, with the platform signing a real RS256
+App JWT): **browser 20/20 PASS** — /setup lists both repos ("Not set up" ×2, CLI-only repo has no
+button), click → chip "Setup PR open" + working View PR link, fake GitHub holds exactly 1 PR with
+the workflow at the right path (decodes to the snapshot, runs `scan . --upload`, uses the secret),
+re-click → "Update setup PR", still 1 PR / 1 commit; signed merged webhook → "Merged · awaiting
+first scan"; then `vulnadvisor scan examples/quickstart --upload` with only env vars (exactly the
+workflow's CI step) → chip **"Receiving scans"** while local-only stays "Not set up". Screenshots
+eyeballed. **Remaining for the maintainer (credential-gated, 11.6 precedent):** provision the
+GitHub App (set `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY`/`GITHUB_WEBHOOK_SECRET`/`PUBLIC_API_URL`,
+point the App's **Setup URL** at `<dashboard>/setup`) and repeat install → PR → merge → Action on
+a scratch github.com repo — every platform-side step of that path is what the 20/20 run exercised.
+
+**Open questions:** none blocking. Next: 14.3 — product tour + teaching empty states + demo mode
+(new npm dep `driver.js` to approve at task start).
+
+---
+
 ## Task 14.1 — `vulnadvisor login` (device flow)  (2026-06-12)
 
 **Status:** complete, Validation Gate passing. First M14 task. No new dependencies (CLI side is

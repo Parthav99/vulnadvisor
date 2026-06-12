@@ -105,6 +105,11 @@ class Repository(Base):
     default_branch: Mapped[str] = mapped_column(String(200), default="main")
     github_repo_id: Mapped[int | None] = mapped_column(BigInteger, unique=True)
     is_private: Mapped[bool] = mapped_column(default=True)
+    # The onboarding setup PR (Task 14.2): last known number/url and lifecycle state
+    # ("open" / "merged" / null), kept current by the pull_request webhook.
+    setup_pr_number: Mapped[int | None] = mapped_column()
+    setup_pr_url: Mapped[str | None] = mapped_column(String(500))
+    setup_pr_state: Mapped[str | None] = mapped_column(String(16))
     created_at: Mapped[CreatedAt]
 
 

@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # Where to send the browser after a successful login.
     dashboard_url: str = "http://localhost:3000"
 
+    # Public base URL of this API as reachable from a customer's CI runner — interpolated into
+    # the workflow the setup PR proposes (Task 14.2).
+    public_api_url: str = "http://localhost:8000"
+
     # GitHub App (webhooks + PR comments). Empty in dev/tests.
     github_webhook_secret: str = ""
     github_app_slug: str = ""

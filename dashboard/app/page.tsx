@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { apiGetOrNull, loginUrl } from "@/lib/api";
+import { apiGetOrNull, installUrl, loginUrl } from "@/lib/api";
 import { EmptyState, PageHeader } from "@/components/blocks";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -30,7 +30,14 @@ export default async function Home() {
     <div>
       <PageHeader title="Your organizations" />
       {orgs.length === 0 ? (
-        <EmptyState>No organizations yet. Install the GitHub App to get started.</EmptyState>
+        <EmptyState>
+          <p>No organizations yet — connect GitHub and your repos sync in one click.</p>
+          <div className="mt-4">
+            <Button asChild variant="outline">
+              <a href={installUrl()}>Install the GitHub App</a>
+            </Button>
+          </div>
+        </EmptyState>
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
           {orgs.map((org) => (

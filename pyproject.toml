@@ -43,6 +43,7 @@ dev = [
     "pytest==8.4.2",
     "jsonschema==4.26.0",
     "pip-audit==2.10.0",
+    "pyyaml==6.0.3",
 ]
 platform = [
     "aiosqlite==0.22.1",

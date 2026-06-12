@@ -1,9 +1,13 @@
-"""GitHub App webhook + install entry point (Task 11.6).
+"""GitHub App webhook + install entry point (Task 11.6) and the setup PR (Task 14.2).
 
 ``POST /v1/github/webhook`` is HMAC-verified, then dispatched: ``installation`` /
 ``installation_repositories`` sync orgs/installations/repos; ``pull_request`` (opened/synchronize)
 posts or updates the reachability-triage comment built from the head vs base scan diff. Source code
 is never touched — the comment is built from already-uploaded reports.
+
+``POST /v1/orgs/{org}/repos/{repo}/setup-pr`` (Task 14.2) has the App open — or idempotently
+update — a PR adding the scan workflow to a synced repo; the same webhook tracks that PR's
+open/merged lifecycle so the dashboard's setup chips stay honest.
 """
 
 import json
@@ -15,9 +19,10 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from vulnadvisor_platform.access import require_admin, require_org, require_repo
 from vulnadvisor_platform.config import SettingsDep, get_settings
 from vulnadvisor_platform.db import SessionDep
-from vulnadvisor_platform.github_app import GitHubApp, GitHubAppDep
+from vulnadvisor_platform.github_app import GitHubApp, GitHubAppDep, GitHubAppError
 from vulnadvisor_platform.models import (
     Finding,
     Installation,
@@ -30,6 +35,18 @@ from vulnadvisor_platform.models import (
     User,
 )
 from vulnadvisor_platform.pr_comment import MARKER, render_pr_comment
+from vulnadvisor_platform.schemas import SetupPrResponse
+from vulnadvisor_platform.security import CurrentUser
+from vulnadvisor_platform.setup_pr import (
+    PR_STATE_MERGED,
+    PR_STATE_OPEN,
+    SETUP_BRANCH,
+    SETUP_PR_TITLE,
+    WORKFLOW_COMMIT_MESSAGE,
+    WORKFLOW_PATH,
+    render_pr_body,
+    render_workflow,
+)
 from vulnadvisor_platform.webhooks import verify_signature
 
 router = APIRouter(tags=["github"])
@@ -51,6 +68,68 @@ async def install() -> RedirectResponse:
         f"https://github.com/apps/{slug}/installations/new",
         status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
+
+
+@router.post("/v1/orgs/{org_slug}/repos/{repo_name}/setup-pr", response_model=SetupPrResponse)
+async def open_setup_pr(
+    org_slug: str,
+    repo_name: str,
+    user: CurrentUser,
+    session: SessionDep,
+    app: GitHubAppDep,
+    settings: SettingsDep,
+) -> SetupPrResponse:
+    """Open the setup PR adding the scan workflow to a synced repo (idempotent: re-runs update).
+
+    Requires owner/admin on the org, a GitHub App installation, and a GitHub-synced repo. The PR
+    adds ``.github/workflows/vulnadvisor.yml`` on a fixed branch; clicking again updates the same
+    branch and PR in place — it never opens a duplicate.
+    """
+    org, role = await require_org(session, user, org_slug)
+    require_admin(role)
+    repo = await require_repo(session, org, repo_name)
+    if repo.github_repo_id is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "this repository is not linked to GitHub (it only receives CLI/CI uploads)",
+        )
+    installation = (
+        await session.execute(
+            select(Installation)
+            .where(Installation.org_id == org.id)
+            .order_by(Installation.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if installation is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "install the VulnAdvisor GitHub App for this org first"
+        )
+
+    repo_full_name = f"{installation.account_login}/{repo.name}"
+    workflow = render_workflow(default_branch=repo.default_branch, api_url=settings.public_api_url)
+    pr_body = render_pr_body(
+        repo_full_name=repo_full_name, org_slug=org.slug, dashboard_url=settings.dashboard_url
+    )
+    try:
+        result = await app.open_setup_pr(
+            installation_id=installation.github_installation_id,
+            repo_full_name=repo_full_name,
+            base_branch=repo.default_branch,
+            file_path=WORKFLOW_PATH,
+            file_content=workflow,
+            commit_message=WORKFLOW_COMMIT_MESSAGE,
+            pr_title=SETUP_PR_TITLE,
+            pr_body=pr_body,
+        )
+    except GitHubAppError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"GitHub App error: {exc}") from exc
+
+    repo.setup_pr_number = result.number
+    repo.setup_pr_url = result.url or None
+    repo.setup_pr_state = PR_STATE_OPEN
+    await session.commit()
+    return SetupPrResponse(pr_number=result.number, pr_url=result.url, created=result.created)
 
 
 @router.post("/v1/github/webhook")
@@ -255,11 +334,36 @@ async def _finding_map(
     return {(package, advisory_id): payload for package, advisory_id, payload in rows}
 
 
+async def _sync_setup_pr_state(
+    session: AsyncSession, repo: Repository, action: Any, pull_request: dict[str, Any]
+) -> None:
+    """Track the setup PR's lifecycle from its own webhook deliveries.
+
+    Opened/reopened -> ``open`` (with number/url, in case the row predates the PR or the platform
+    was redeployed); closed -> ``merged`` when GitHub says so, else cleared (back to "not set up",
+    which is then the truth).
+    """
+    if action in {"opened", "reopened"}:
+        repo.setup_pr_state = PR_STATE_OPEN
+        number = pull_request.get("number")
+        if isinstance(number, int):
+            repo.setup_pr_number = number
+        html_url = pull_request.get("html_url")
+        if isinstance(html_url, str):
+            repo.setup_pr_url = html_url
+    elif action == "closed":
+        if pull_request.get("merged") is True:
+            repo.setup_pr_state = PR_STATE_MERGED
+        else:
+            repo.setup_pr_state = None
+            repo.setup_pr_number = None
+            repo.setup_pr_url = None
+    await session.commit()
+
+
 async def _handle_pull_request(
     session: AsyncSession, app: GitHubApp, payload: dict[str, Any]
 ) -> bool:
-    if payload.get("action") not in _PR_ACTIONS:
-        return False
     pull_request = payload.get("pull_request")
     repository = payload.get("repository")
     installation = payload.get("installation")
@@ -283,6 +387,15 @@ async def _handle_pull_request(
 
     head = _object(pull_request, "head")
     base = _object(pull_request, "base")
+
+    # Our own setup PR: keep its lifecycle state in sync and never comment on it (a triage
+    # comment on a one-file workflow PR would be noise).
+    if head.get("ref") == SETUP_BRANCH:
+        await _sync_setup_pr_state(session, repo, payload.get("action"), pull_request)
+        return False
+
+    if payload.get("action") not in _PR_ACTIONS:
+        return False
     head_sha = head.get("sha")
     head_ref = head.get("ref")
     base_ref = base.get("ref")

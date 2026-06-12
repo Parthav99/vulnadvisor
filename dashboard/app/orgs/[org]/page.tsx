@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { apiGetOrNull } from "@/lib/api";
+import { apiGetOrNull, installUrl } from "@/lib/api";
 import { EmptyState, PageHeader, Stat } from "@/components/blocks";
 import { PostureHero } from "@/components/posture-hero";
+import { SetupChip } from "@/components/setup-chip";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDate } from "@/lib/format";
 import { computePosture } from "@/lib/posture";
@@ -45,12 +47,21 @@ export default async function OrgPage({ params }: { params: Promise<{ org: strin
         <Stat label="Plan" value={org.plan} />
       </div>
 
-      <h2 className="mb-2 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
-        Repositories
-      </h2>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+          Repositories
+        </h2>
+        <Button asChild variant="outline" size="sm">
+          <Link href="/setup">Set up scanning</Link>
+        </Button>
+      </div>
       {repos.length === 0 ? (
         <EmptyState>
-          No repositories have reported scans yet. Install the GitHub App or upload a report with{" "}
+          No repositories have reported scans yet.{" "}
+          <a className="link" href={installUrl()}>
+            Install the GitHub App
+          </a>{" "}
+          or upload a report with{" "}
           <code className="mono text-foreground">vulnadvisor scan . --upload</code>.
         </EmptyState>
       ) : (
@@ -63,7 +74,10 @@ export default async function OrgPage({ params }: { params: Promise<{ org: strin
                   className="flex-row items-center justify-between transition-shadow hover:ring-ring/40"
                 >
                   <CardContent>
-                    <div className="mono font-semibold">{repo.name}</div>
+                    <div className="flex items-center gap-2">
+                      <span className="mono font-semibold">{repo.name}</span>
+                      <SetupChip status={repo.setup_status} />
+                    </div>
                     <div className="text-sm text-muted-foreground">
                       {repo.is_private ? "private" : "public"} · default {repo.default_branch}
                     </div>
