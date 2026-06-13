@@ -46,24 +46,33 @@ export function findingHref(scanId: string, advisoryId: string): string {
   return `/scans/${encodeURIComponent(scanId)}?finding=${encodeURIComponent(advisoryId)}`;
 }
 
-/** Does this finding match a `?finding=` focus token? Tolerant of id/alias/CVE/package. */
+/**
+ * Does this finding match a `?finding=` focus token? Tolerant of id/alias/CVE/package for a
+ * dependency finding, and of CWE / rule kind / `file:line` for a first-party code finding.
+ */
 export function matchesFocus(
   finding: {
-    dependency: { name: string };
-    advisory: { id: string; display_id?: string; aliases?: string[]; cve_ids?: string[] };
+    finding_type?: string;
+    dependency?: { name: string };
+    advisory?: { id: string; display_id?: string; aliases?: string[]; cve_ids?: string[] };
+    rule?: { cwe: string; kind: string };
+    location?: { file: string; line: number };
   },
   focus: string,
 ): boolean {
   const needle = focus.trim().toLowerCase();
   if (needle === "") return false;
-  const { advisory, dependency } = finding;
-  const candidates = [
-    advisory.id,
-    advisory.display_id,
-    dependency.name,
-    ...(advisory.aliases ?? []),
-    ...(advisory.cve_ids ?? []),
-  ];
+  const { advisory, dependency, rule, location } = finding;
+  const candidates: (string | undefined)[] =
+    finding.finding_type === "code" && rule && location
+      ? [rule.cwe, rule.kind, `${location.file}:${location.line}`]
+      : [
+          advisory?.id,
+          advisory?.display_id,
+          dependency?.name,
+          ...(advisory?.aliases ?? []),
+          ...(advisory?.cve_ids ?? []),
+        ];
   return candidates.some((c) => typeof c === "string" && c.toLowerCase() === needle);
 }
 

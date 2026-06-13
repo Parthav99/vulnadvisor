@@ -17,9 +17,11 @@ from vulnadvisor.callgraph.frameworks import FrameworkPlugin
 from vulnadvisor.callgraph.type_resolver import PyrightResolver, TypeResolver
 from vulnadvisor.cli.pipeline import ScanReport, scan_project
 from vulnadvisor.cli.render import render_report
+from vulnadvisor.engine.sast_scoring import order_unified
 from vulnadvisor.llm.client import build_anthropic_client
 from vulnadvisor.llm.explainer import Explainer
 from vulnadvisor.model.advisory import Advisory
+from vulnadvisor.model.score import ScoredFinding
 from vulnadvisor.output.credentials import (
     Credentials,
     default_credentials_path,
@@ -33,6 +35,7 @@ from vulnadvisor.output.gitmeta import detect_scan_metadata
 from vulnadvisor.output.json_report import build_report, to_json
 from vulnadvisor.output.sarif import to_sarif_json
 from vulnadvisor.output.upload import UploadError, upload_report
+from vulnadvisor.sast.model import ScoredSastFinding
 from vulnadvisor.store.analysis_cache import AnalysisCache, default_analysis_cache_path
 from vulnadvisor.store.cache import SqliteCache, default_cache_path
 from vulnadvisor.store.dataset import SymbolDataset, default_dataset_path
@@ -212,6 +215,20 @@ def scan(
             help="Disable the plain-English Card A attack story (terminal output only).",
         ),
     ] = False,
+    sca_only: Annotated[
+        bool,
+        typer.Option(
+            "--sca-only",
+            help="Only analyze dependency (SCA) reachability; skip the first-party SAST pass.",
+        ),
+    ] = False,
+    sast_only: Annotated[
+        bool,
+        typer.Option(
+            "--sast-only",
+            help="Only analyze first-party code (SAST); skip dependency matching (works offline).",
+        ),
+    ] = False,
     upload: Annotated[
         bool,
         typer.Option(
@@ -262,6 +279,11 @@ def scan(
     """
     _ = public  # reserved for later milestones; accepted now for a stable CLI surface
 
+    if sca_only and sast_only:
+        raise typer.BadParameter(
+            "--sca-only and --sast-only are mutually exclusive", param_hint="--sca-only/--sast-only"
+        )
+
     # Validate --fail-on before doing any work so bad input fails fast.
     threshold = None
     if fail_on is not None:
@@ -281,32 +303,49 @@ def scan(
             analysis_cache=analysis_cache,
             resolver=resolver,
             frameworks=frameworks,
+            run_sca=not sast_only,
+            run_sast=not sca_only,
         )
     finally:
         if analysis_cache is not None:
             analysis_cache.close()
 
-    # Findings are already ranked by priority (order_findings); --top is a pure display limit on
-    # the leading N. It never reorders and never affects --fail-on, which gates over every finding.
-    shown = report.findings if top is None else report.findings[:top]
+    # One ranked list across both finding types. --top is a pure display limit on the leading N
+    # (never reorders, never affects --fail-on which gates over every finding). Slice the merged
+    # ranking, then split back so each output renderer re-merges into the same order.
+    ranked = order_unified([*report.findings, *report.sast_findings])
+    shown = ranked if top is None else ranked[:top]
+    sca_shown = [f for f in shown if isinstance(f, ScoredFinding)]
+    sast_shown = [f for f in shown if isinstance(f, ScoredSastFinding)]
+    version = _resolve_version()
 
     if output_format is OutputFormat.JSON:
-        print(to_json(shown, report.degraded_sources, tool_version=_resolve_version()))
+        print(
+            to_json(
+                sca_shown, report.degraded_sources, tool_version=version, sast_findings=sast_shown
+            )
+        )
     elif output_format is OutputFormat.SARIF:
-        print(to_sarif_json(shown, report.degraded_sources, tool_version=_resolve_version()))
+        print(
+            to_sarif_json(
+                sca_shown, report.degraded_sources, tool_version=version, sast_findings=sast_shown
+            )
+        )
     else:
         explanations = None
         if not no_explain:
             explainer = build_explainer()
-            explanations = [explainer.explain(finding) for finding in shown]
-        render_report(shown, report.degraded_sources, Console(), explanations)
+            explanations = [explainer.explain(finding) for finding in sca_shown]
+        render_report(
+            sca_shown, report.degraded_sources, Console(), explanations, sast_findings=sast_shown
+        )
 
     if upload:
         _upload_report(
             report, path, api_url=api_url, api_key=api_key, repo=repo, dashboard_url=dashboard_url
         )
 
-    if threshold is not None and should_fail(report.findings, threshold):
+    if threshold is not None and should_fail([*report.findings, *report.sast_findings], threshold):
         raise typer.Exit(code=1)
 
 
@@ -335,7 +374,10 @@ def _upload_report(
             api_url = api_url or stored.api_url
 
     document = build_report(
-        report.findings, report.degraded_sources, tool_version=_resolve_version()
+        report.findings,
+        report.degraded_sources,
+        tool_version=_resolve_version(),
+        sast_findings=report.sast_findings,
     )
     repo_name = repo or (path if path.is_dir() else path.parent).resolve().name
     metadata = detect_scan_metadata(path)

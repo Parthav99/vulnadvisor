@@ -10,13 +10,20 @@ source->sink flow over the existing call graph (``taint``), escalating sinks tie
 to ``CONFIRMED_FLOW`` / ``DYNAMIC_UNKNOWN`` with an evidence path.
 """
 
-from vulnadvisor.sast.model import SastFinding, SastTier, SinkHit, tier_concern
+from vulnadvisor.sast.model import (
+    SastFinding,
+    SastTier,
+    ScoredSastFinding,
+    SinkHit,
+    tier_concern,
+)
 from vulnadvisor.sast.sinks import find_sinks, find_sinks_in_source
 from vulnadvisor.sast.taint import analyze_source, analyze_taint
 
 __all__ = [
     "SastFinding",
     "SastTier",
+    "ScoredSastFinding",
     "SinkHit",
     "analyze_source",
     "analyze_taint",

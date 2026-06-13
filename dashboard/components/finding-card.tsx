@@ -6,10 +6,18 @@ import { Check, ChevronDown, Copy } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { bandClass, displayId, tierClass, tierLabel } from "@/lib/format";
+import {
+  bandClass,
+  displayId,
+  isCodeFinding,
+  sastTierClass,
+  sastTierLabel,
+  tierClass,
+  tierLabel,
+} from "@/lib/format";
 import { EASE_AEGIS, FADE_DURATION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import type { Finding } from "@/lib/types";
+import type { AnyFinding, CodeFinding, Finding } from "@/lib/types";
 
 // Call paths arrive as the engine's rendered string: "a -> b -> vuln (file:line)"
 // (model/callpath.py CallPath.render). Split into steps for the chain UI.
@@ -181,6 +189,7 @@ function EvidenceDrawer({
 /**
  * One finding with progressive disclosure: a scannable collapsed row (identity, badges,
  * one-line verdict) that expands into the signature three cards plus an evidence drawer.
+ * Dispatches on the finding kind — dependency (SCA) or first-party code (SAST).
  *
  * The expanded panel is always in the DOM (SSR renders the full story); collapsing
  * animates height to 0 and marks the panel `inert`, so hidden content never traps
@@ -191,9 +200,24 @@ export function FindingCard({
   defaultOpen = false,
   focus = false,
 }: {
-  finding: Finding;
+  finding: AnyFinding;
   defaultOpen?: boolean;
   /** When the copilot deep-links here (?finding=…), scroll this card into view on mount. */
+  focus?: boolean;
+}) {
+  if (isCodeFinding(finding)) {
+    return <CodeFindingCard finding={finding} defaultOpen={defaultOpen} focus={focus} />;
+  }
+  return <DependencyFindingCard finding={finding} defaultOpen={defaultOpen} focus={focus} />;
+}
+
+function DependencyFindingCard({
+  finding,
+  defaultOpen = false,
+  focus = false,
+}: {
+  finding: Finding;
+  defaultOpen?: boolean;
   focus?: boolean;
 }) {
   const { dependency, advisory, score, reachability, fix, epss, in_kev } = finding;
@@ -330,6 +354,142 @@ export function FindingCard({
               callPaths={callPaths}
               evidence={evidence}
               defaultOpen={callPaths.length > 0}
+            />
+          ) : null}
+        </article>
+      </motion.div>
+    </Card>
+  );
+}
+
+/**
+ * A first-party (SAST) finding: same progressive-disclosure shape as the dependency card, but the
+ * identity is the CWE rule + sink location, the tier is the SAST confidence tier, Card C carries
+ * the *remediation direction* (the validated fix is M17), and the evidence drawer shows the
+ * source->sink taint path (the engine's `a -> b -> sink (file:line)` strings).
+ */
+function CodeFindingCard({
+  finding,
+  defaultOpen = false,
+  focus = false,
+}: {
+  finding: CodeFinding;
+  defaultOpen?: boolean;
+  focus?: boolean;
+}) {
+  const { rule, location, flow, score, fix } = finding;
+  const tier = flow.tier;
+  const sink = `${location.file}:${location.line}`;
+  const [open, setOpen] = useState(defaultOpen);
+  const panelId = useId();
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focus) cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focus]);
+  const reduceMotion = useReducedMotion() ?? false;
+  const story = flow.reason || rule.title;
+
+  return (
+    <Card ref={cardRef} size="sm" className="gap-0 py-0" data-tour="finding-card">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset focus-visible:outline-none"
+      >
+        <span className="min-w-0 flex-1">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+            <span className="mono font-semibold">{rule.cwe}</span>
+            <span aria-hidden className="text-muted-foreground">
+              ·
+            </span>
+            <span className="mono">{rule.title}</span>
+            <span aria-hidden className="text-muted-foreground">
+              ·
+            </span>
+            <span className="mono text-xs text-muted-foreground break-all">{sink}</span>
+          </span>
+          <span className="mt-0.5 block truncate text-xs text-muted-foreground">{story}</span>
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          <Badge variant="outline" className={bandClass(score.band)}>
+            {score.band} · {Math.round(score.value)}
+          </Badge>
+          <Badge
+            variant="outline"
+            data-tour="tier-badge"
+            className={cn("max-sm:hidden", sastTierClass(tier))}
+          >
+            {sastTierLabel(tier)}
+          </Badge>
+        </span>
+        <ChevronDown
+          aria-hidden
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform duration-200",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      <motion.div
+        id={panelId}
+        inert={!open}
+        initial={false}
+        animate={open ? { height: "auto", opacity: 1 } : { height: 0, opacity: 0 }}
+        transition={{ duration: reduceMotion ? 0 : FADE_DURATION, ease: EASE_AEGIS }}
+        className="overflow-hidden"
+      >
+        <article className="space-y-3 border-t px-3 py-3">
+          <Badge variant="outline" className={cn("sm:hidden", sastTierClass(tier))}>
+            {sastTierLabel(tier)}
+          </Badge>
+
+          <Card3 letter="A" title="Attack story">
+            <p className="leading-relaxed">{story}</p>
+            <p className="mt-2 text-muted-foreground">
+              {rule.title} ({rule.cwe}) at <span className="mono">{sink}</span>.
+            </p>
+            {score.rationale ? (
+              <p className="mt-2 text-muted-foreground">{score.rationale}</p>
+            ) : null}
+          </Card3>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <Card3 letter="B" title="Risk">
+              <ul className="space-y-0.5">
+                <li>
+                  Priority <span className="font-semibold">{Math.round(score.value)}</span> (
+                  {score.band})
+                </li>
+                <li>
+                  Confidence <span className="font-semibold">{sastTierLabel(tier)}</span>
+                </li>
+                <li>
+                  Weakness <span className="mono">{rule.cwe}</span>
+                </li>
+                {flow.source.kind ? (
+                  <li className="text-muted-foreground">Source: {flow.source.kind}</li>
+                ) : null}
+              </ul>
+            </Card3>
+
+            <Card3 letter="C" title="Action">
+              <p>{fix.direction}</p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Remediation direction — run <span className="mono">vulnadvisor fix</span> for a
+                validated patch.
+              </p>
+            </Card3>
+          </div>
+
+          {flow.reason || flow.path.length > 0 ? (
+            <EvidenceDrawer
+              reason={flow.reason ?? null}
+              callPaths={flow.path}
+              evidence={[]}
+              defaultOpen={flow.path.length > 0}
             />
           ) : null}
         </article>

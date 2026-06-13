@@ -26,13 +26,15 @@ SARIF_SCHEMA = Path(__file__).resolve().parent.parent / "fixtures" / "schemas" /
 
 def test_json_report_structure(sample_findings: list[ScoredFinding]) -> None:
     report = build_report(sample_findings, ("OSV",), tool_version="0.1.0")
-    assert report["schema_version"] == "1.1"
+    assert report["schema_version"] == "1.2"
     assert report["tool"] == {"name": "vulnadvisor", "version": "0.1.0"}
     assert report["degraded_sources"] == ["OSV"]
     assert report["summary"]["total"] == 2
     assert report["summary"]["by_band"]["critical"] == 1
     assert report["summary"]["by_band"]["low"] == 1
     first = report["findings"][0]
+    # 1.2 additive discriminator: present on every dependency finding.
+    assert first["finding_type"] == "dependency"
     assert first["dependency"]["name"] == "jinja2"
     assert first["advisory"]["cve_ids"] == ["CVE-2019-10906"]
     # 1.1 additive field: the canonical CVE-first display id; the raw id stays untouched.

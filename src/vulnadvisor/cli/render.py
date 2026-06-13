@@ -1,16 +1,17 @@
 """Render scored findings as the signature three-card terminal output (Rich).
 
-Each finding is shown as three stacked cards:
+Each finding — dependency (SCA) or first-party code (SAST) — is shown as three stacked cards:
 
-* **Card A — Attack summary**: a plain-English description of the vulnerability (templated for
-  now; an LLM "attack story" replaces this in M9).
-* **Card B — Risk**: a Red / Yellow / Green badge derived from the EPSS+KEV-driven priority band,
-  plus the deterministic scoring rationale.
-* **Card C — Action**: the verdict, the priority, and a copy-pasteable fix command (the exact
-  minimal-upgrade command arrives in Task 3.2; this is a templated upgrade for now).
+* **Card A — Attack story/summary**: plain-English description (templated, or the LLM story for
+  dependency findings when an explanation is supplied).
+* **Card B — Risk**: a Red / Yellow / Green badge derived from the priority band, plus the
+  deterministic scoring rationale.
+* **Card C — Action**: the verdict, the priority, and either a copy-pasteable fix command (SCA) or
+  the *remediation direction* (SAST — the validated fix is M17). For SAST the source->sink path is
+  shown as evidence.
 
-Rendering is deterministic and uses ASCII box art so output is stable for snapshot tests and safe
-on legacy Windows consoles.
+Dependency and code findings are merged into one priority-ranked list. Rendering is deterministic
+and uses ASCII box art so output is stable for snapshot tests and safe on legacy Windows consoles.
 """
 
 from collections.abc import Sequence
@@ -22,10 +23,13 @@ from rich.panel import Panel
 from rich.text import Text
 
 from vulnadvisor.engine.safe_fix import resolve_safe_fix
+from vulnadvisor.engine.sast_scoring import order_unified
 from vulnadvisor.model.display import display_title
 from vulnadvisor.model.explanation import Explanation, ExplanationSource
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
+from vulnadvisor.sast.model import ScoredSastFinding
+from vulnadvisor.sast.remediation import remediation_direction
 
 __all__ = ["badge_for_band", "render_report", "render_to_string"]
 
@@ -43,7 +47,7 @@ def badge_for_band(band: PriorityBand) -> str:
 
 
 def _attack_summary(finding: ScoredFinding) -> str:
-    """Build the templated Card A attack summary."""
+    """Build the templated Card A attack summary for a dependency finding."""
     advisory = finding.matched.advisory
     dependency = finding.matched.dependency
     name = dependency.raw_name or dependency.name
@@ -61,7 +65,7 @@ def _card(label: str, body: str) -> Panel:
 
 
 def _render_finding(finding: ScoredFinding, explanation: Explanation | None = None) -> Panel:
-    """Render a single scored finding as the outer panel wrapping three cards.
+    """Render a single scored dependency finding as the outer panel wrapping three cards.
 
     When an ``explanation`` is supplied, Card A shows the LLM/template attack story and Card C adds
     a one-line "Why" rationale. The priority shown always comes from the deterministic score - the
@@ -110,16 +114,57 @@ def _render_finding(finding: ScoredFinding, explanation: Explanation | None = No
     )
 
 
+def _render_sast_finding(scored: ScoredSastFinding) -> Panel:
+    """Render a single scored first-party (SAST) finding as the three-card panel.
+
+    Card C gives the *remediation direction* (the validated fix is M17) and shows the source->sink
+    path as evidence; the priority always comes from the deterministic score.
+    """
+    finding = scored.finding
+    score = scored.score
+    badge = badge_for_band(score.band)
+
+    location = f"{finding.file}:{finding.line}"
+    card_a = _card(
+        "A - Attack summary",
+        f"{finding.title} ({finding.cwe}) at {location} via {finding.callee}.\n{finding.reason}",
+    )
+    card_b = _card("B - Risk", f"Badge: {badge}\n{score.rationale}")
+
+    flow = finding.flow
+    flow_line = f"Flow: {flow.render()}" if flow is not None else f"Sink: {location}"
+    card_c = _card(
+        "C - Action",
+        f"Verdict: {score.verdict}  (priority {score.value:.1f}, {score.band.value})\n"
+        f"Fix direction: {remediation_direction(finding.cwe)}\n"
+        f"Tier: {finding.tier.value.upper()}\n"
+        f"{flow_line}",
+    )
+
+    header = f"{finding.cwe} {finding.title}  |  priority {score.value:.1f} ({score.band.value})"
+    return Panel(
+        Group(card_a, card_b, card_c),
+        title=header,
+        title_align="left",
+        box=box.ASCII,
+        padding=(0, 1),
+    )
+
+
 def render_report(
     findings: Sequence[ScoredFinding],
     degraded_sources: Sequence[str],
     console: Console,
     explanations: Sequence[Explanation | None] | None = None,
+    *,
+    sast_findings: Sequence[ScoredSastFinding] = (),
 ) -> None:
-    """Print the full ranked three-card report to ``console``.
+    """Print the full ranked three-card report to ``console`` (dependency + code findings).
 
-    ``explanations``, when given, is aligned by index with ``findings``; each supplies Card A's
-    attack story. When omitted, Card A falls back to the inline templated summary.
+    ``explanations``, when given, is aligned by index with ``findings`` (the dependency findings);
+    each supplies Card A's attack story. When omitted, Card A falls back to the inline templated
+    summary. ``sast_findings`` are merged into the same priority-ranked list; an explanation never
+    applies to a code finding (its Card A is always templated).
     """
     if degraded_sources:
         console.print(
@@ -128,13 +173,25 @@ def render_report(
                 "results may be incomplete; do not read as 'safe'."
             )
         )
-    if not findings:
+    unified = order_unified([*findings, *sast_findings])
+    if not unified:
         console.print(Text("No matching advisories found."))
         return
-    console.print(Text(f"{len(findings)} finding(s), highest priority first:"))
-    for index, finding in enumerate(findings):
-        explanation = explanations[index] if explanations is not None else None
-        console.print(_render_finding(finding, explanation))
+
+    # Pair each dependency finding with its explanation by object identity, so the merged ranking
+    # (which interleaves SCA and SAST) keeps the right story on the right card.
+    explanation_for = {
+        id(finding): explanations[index]
+        for index, finding in enumerate(findings)
+        if explanations is not None and index < len(explanations)
+    }
+
+    console.print(Text(f"{len(unified)} finding(s), highest priority first:"))
+    for finding in unified:
+        if isinstance(finding, ScoredFinding):
+            console.print(_render_finding(finding, explanation_for.get(id(finding))))
+        else:
+            console.print(_render_sast_finding(finding))
 
 
 def render_to_string(
@@ -143,6 +200,7 @@ def render_to_string(
     *,
     width: int = 100,
     explanations: Sequence[Explanation | None] | None = None,
+    sast_findings: Sequence[ScoredSastFinding] = (),
 ) -> str:
     """Render the report to a deterministic plain-text string (for snapshot tests)."""
     buffer = StringIO()
@@ -155,5 +213,5 @@ def render_to_string(
         markup=False,
         legacy_windows=False,
     )
-    render_report(findings, degraded_sources, console, explanations)
+    render_report(findings, degraded_sources, console, explanations, sast_findings=sast_findings)
     return buffer.getvalue()

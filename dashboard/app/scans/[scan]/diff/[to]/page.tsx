@@ -3,7 +3,7 @@ import { apiGetOrNull } from "@/lib/api";
 import { EmptyState, PageHeader, Stat } from "@/components/blocks";
 import { Card, CardContent } from "@/components/ui/card";
 import { FindingCard } from "@/components/finding-card";
-import { displayId } from "@/lib/format";
+import { displayId, findingKey, isCodeFinding } from "@/lib/format";
 import type { DiffResponse } from "@/lib/types";
 
 export const metadata = { title: "Scan diff" };
@@ -38,10 +38,7 @@ export default async function DiffPage({
         ) : (
           <div className="space-y-4">
             {diff.introduced.map((finding) => (
-              <FindingCard
-                key={`${finding.dependency.name}:${finding.advisory.id}`}
-                finding={finding}
-              />
+              <FindingCard key={findingKey(finding)} finding={finding} />
             ))}
           </div>
         )}
@@ -54,16 +51,18 @@ export default async function DiffPage({
         ) : (
           <ul className="grid gap-2">
             {diff.fixed.map((finding) => (
-              <li key={`${finding.dependency.name}:${finding.advisory.id}`}>
+              <li key={findingKey(finding)}>
                 <Card size="sm" className="flex-row items-center justify-between">
                   <CardContent>
                     <span className="mono">
-                      {finding.dependency.name} {finding.dependency.version || "(unpinned)"}
+                      {isCodeFinding(finding)
+                        ? `${finding.rule.title} (${finding.location.file}:${finding.location.line})`
+                        : `${finding.dependency.name} ${finding.dependency.version || "(unpinned)"}`}
                     </span>
                   </CardContent>
                   <CardContent>
                     <span className="mono text-xs text-muted-foreground">
-                      {displayId(finding.advisory)}
+                      {isCodeFinding(finding) ? finding.rule.cwe : displayId(finding.advisory)}
                     </span>
                   </CardContent>
                 </Card>

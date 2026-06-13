@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { FindingCard } from "@/components/finding-card";
 import { matchesFocus } from "@/lib/copilot-ui";
-import { bandClass, formatDate, shortRef, shortSha } from "@/lib/format";
+import { bandClass, findingKey, formatDate, shortRef, shortSha } from "@/lib/format";
 import type { FindingsResponse, ScanDetail } from "@/lib/types";
 
 const TIERS = ["imported-and-called", "imported", "dynamic-unknown", "not-imported"];
@@ -135,7 +135,7 @@ export default async function ScanPage({
             const focused = focus !== undefined && matchesFocus(finding, focus);
             return (
               <FindingCard
-                key={`${finding.dependency.name}:${finding.advisory.id}`}
+                key={findingKey(finding)}
                 finding={finding}
                 defaultOpen={focused}
                 focus={focused}

@@ -11,6 +11,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict
 
 from vulnadvisor.model.callpath import CallPath
+from vulnadvisor.model.score import Score
 
 
 class SastTier(str, Enum):
@@ -131,3 +132,18 @@ class SastFinding(BaseModel):
             tier=hit.tier,
             reason=hit.reason,
         )
+
+
+class ScoredSastFinding(BaseModel):
+    """A first-party :class:`SastFinding` paired with its deterministic priority score.
+
+    The SAST analogue of :class:`~vulnadvisor.model.score.ScoredFinding`: the engine assigns the
+    priority (CWE base severity discounted by the confidence tier — see
+    :mod:`vulnadvisor.engine.sast_scoring`), reproducibly and without the LLM. Findings of both
+    kinds are ranked together into the one ranked list the CLI, JSON, and SARIF emit (Task 16.4).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    finding: SastFinding
+    score: Score

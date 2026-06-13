@@ -1,0 +1,32 @@
+[
+  {
+    "type": "code",
+    "id": "command-injection@app.py:19",
+    "band": "critical",
+    "priority": 95.0
+  },
+  {
+    "type": "dependency",
+    "id": "CVE-2019-10906",
+    "band": "critical",
+    "priority": 91.9
+  },
+  {
+    "type": "code",
+    "id": "command-injection@app.py:31",
+    "band": "medium",
+    "priority": 57.0
+  },
+  {
+    "type": "dependency",
+    "id": "CVE-2018-1000656",
+    "band": "low",
+    "priority": 22.4
+  },
+  {
+    "type": "code",
+    "id": "command-injection@app.py:25",
+    "band": "info",
+    "priority": 4.8
+  }
+]

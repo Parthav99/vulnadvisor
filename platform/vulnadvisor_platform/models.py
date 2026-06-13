@@ -234,4 +234,9 @@ class Finding(Base):
     tier: Mapped[str] = mapped_column(String(32))
     band: Mapped[str] = mapped_column(String(16))
     priority: Mapped[float] = mapped_column(Float)
+    # "dependency" (SCA) or "code" (first-party SAST), schema 1.2. Defaults to "dependency" so
+    # pre-1.2 rows and reports are unambiguous (server_default for the additive migration).
+    finding_type: Mapped[str] = mapped_column(
+        String(16), default="dependency", server_default="dependency"
+    )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)

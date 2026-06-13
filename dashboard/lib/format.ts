@@ -5,6 +5,8 @@
 //   teal (--safe) = the ONE guarded accent, used solely for provably-safe states
 //   (not-imported is the only "confidently safe" tier).
 
+import type { AnyFinding, CodeFinding } from "@/lib/types";
+
 const BAND_CLASSES: Record<string, string> = {
   critical: "border-risk/50 text-risk bg-risk/10",
   high: "border-elevated/50 text-elevated bg-elevated/10",
@@ -30,8 +32,44 @@ const TIER_LABELS: Record<string, string> = {
   unknown: "UNKNOWN",
 };
 
+// First-party (SAST) confidence tiers. Same Aegis semantics as the reachability tiers: red for a
+// proven flow, amber (dashed) for uncertainty that is never styled as safe, teal only for SANITIZED.
+const SAST_TIER_CLASSES: Record<string, string> = {
+  "confirmed-flow": "border-risk/50 text-risk bg-risk/10",
+  "dynamic-unknown": "border-dashed border-warn/60 text-warn bg-warn/10",
+  "possible-flow": "border-warn/50 text-warn bg-warn/10",
+  sanitized: "border-safe/50 text-safe bg-safe/10",
+};
+
+const SAST_TIER_LABELS: Record<string, string> = {
+  "confirmed-flow": "CONFIRMED-FLOW",
+  "dynamic-unknown": "DYNAMIC-UNKNOWN",
+  "possible-flow": "POSSIBLE-FLOW",
+  sanitized: "SANITIZED",
+};
+
 export function bandClass(band: string): string {
   return BAND_CLASSES[band] ?? BAND_CLASSES.info;
+}
+
+export function sastTierClass(tier: string): string {
+  return SAST_TIER_CLASSES[tier] ?? TIER_CLASSES.unknown;
+}
+
+export function sastTierLabel(tier: string): string {
+  return SAST_TIER_LABELS[tier] ?? tier.toUpperCase();
+}
+
+/** Discriminate a first-party (SAST) code finding from a dependency finding. */
+export function isCodeFinding(finding: AnyFinding): finding is CodeFinding {
+  return (finding as CodeFinding).finding_type === "code";
+}
+
+/** A stable React key / identity for a finding of either kind. */
+export function findingKey(finding: AnyFinding): string {
+  return isCodeFinding(finding)
+    ? `code:${finding.rule.kind}:${finding.location.file}:${finding.location.line}`
+    : `${finding.dependency.name}:${finding.advisory.id}`;
 }
 
 export function tierClass(tier: string): string {

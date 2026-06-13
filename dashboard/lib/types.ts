@@ -70,6 +70,8 @@ export interface ScanDetail {
 }
 
 export interface Finding {
+  // Present on schema-1.2 reports; absent (treated as "dependency") on older ones.
+  finding_type?: "dependency";
   dependency: { name: string; version: string | null; source?: string; is_direct?: boolean };
   advisory: {
     id: string;
@@ -91,10 +93,32 @@ export interface Finding {
   fix: { command: string | null; fixed_version: string | null; has_fix: boolean };
 }
 
+// First-party (SAST) finding — schema 1.2 `finding_type: "code"`. Mirrors the JSON shape from
+// output/json_report.py: a rule (CWE), the sink location, the source->sink flow (the evidence),
+// the deterministic score, and a remediation direction (the validated fix is M17).
+export interface CodeFinding {
+  finding_type: "code";
+  rule: { cwe: string; kind: string; title: string };
+  location: { file: string; line: number; column: number };
+  flow: {
+    tier: string;
+    reason?: string;
+    source: { kind: string | null; file: string | null; line: number | null };
+    sink: { kind: string; file: string; line: number };
+    path: string[];
+    sanitizers: string[];
+  };
+  score: { value: number; band: string; verdict: string; rationale: string; cvss_known?: boolean };
+  fix: { direction: string; has_fix: boolean };
+}
+
+// A finding of either kind — the dashboard renders both from one ranked list.
+export type AnyFinding = Finding | CodeFinding;
+
 export interface FindingsResponse {
   scan_id: string;
   count: number;
-  findings: Finding[];
+  findings: AnyFinding[];
 }
 
 export interface TrendPoint {
@@ -159,8 +183,8 @@ export interface ResolutionResponse {
 export interface DiffResponse {
   from_scan_id: string;
   to_scan_id: string;
-  introduced: Finding[];
-  fixed: Finding[];
+  introduced: AnyFinding[];
+  fixed: AnyFinding[];
   unchanged: number;
 }
 

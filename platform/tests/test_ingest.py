@@ -125,26 +125,79 @@ async def test_ingest_cross_org_key_is_403(
     assert resp.status_code == 403
 
 
-async def test_ingest_accepts_schema_1_0_and_1_1(client: AsyncClient, seeded_key: str) -> None:
+async def test_ingest_accepts_schema_1_0_1_1_and_1_2(client: AsyncClient, seeded_key: str) -> None:
     headers = {_HDR: f"Bearer {seeded_key}"}
-    # The current CLI emits 1.1 (with advisory.display_id) — accepted.
+    # The current CLI emits 1.2 (finding_type discriminator + code findings) — accepted.
     current = build_report_doc([("jinja2", "GHSA-1")])
-    assert current["schema_version"] == "1.1"
+    assert current["schema_version"] == "1.2"
+    assert current["findings"][0]["finding_type"] == "dependency"
     resp = await client.post(
         "/v1/orgs/acme/repos/web/scans", headers=headers, json=_body(current, sha="c1")
     )
     assert resp.status_code == 201
 
+    # A 1.1 report (no finding_type) — still accepted; treated as all-dependency findings.
+    v11 = copy.deepcopy(current)
+    v11["schema_version"] = "1.1"
+    for finding in v11["findings"]:
+        finding.pop("finding_type", None)
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans", headers=headers, json=_body(v11, sha="c2")
+    )
+    assert resp.status_code == 201
+
     # A pre-12.1 CLI emits 1.0 (no display_id) — still accepted; old reports keep ingesting.
-    legacy = copy.deepcopy(current)
+    legacy = copy.deepcopy(v11)
     legacy["schema_version"] = "1.0"
     for finding in legacy["findings"]:
         finding["advisory"].pop("display_id", None)
     resp = await client.post(
-        "/v1/orgs/acme/repos/web/scans", headers=headers, json=_body(legacy, sha="c2")
+        "/v1/orgs/acme/repos/web/scans", headers=headers, json=_body(legacy, sha="c3")
     )
     assert resp.status_code == 201
     assert resp.json()["summary"]["total"] == 1
+
+
+async def test_ingest_accepts_code_finding(client: AsyncClient, seeded_key: str) -> None:
+    """A schema-1.2 first-party (SAST) finding ingests and denormalizes to file + rule id."""
+    code_finding = {
+        "finding_type": "code",
+        "rule": {"cwe": "CWE-78", "kind": "command-injection", "title": "OS command injection"},
+        "location": {"file": "app/run.py", "line": 12, "column": 4},
+        "flow": {
+            "tier": "confirmed-flow",
+            "reason": "tainted query parameter reaches os.system",
+            "source": {"kind": "http-parameter", "file": "app/run.py", "line": 8},
+            "sink": {"kind": "command-injection", "file": "app/run.py", "line": 12},
+            "path": ["run -> os.system (app/run.py:12)"],
+            "sanitizers": [],
+        },
+        "score": {
+            "value": 95.0,
+            "band": "critical",
+            "verdict": "Fix now",
+            "rationale": "CWE-78 base severity 9.5; CONFIRMED-FLOW",
+            "cvss_known": False,
+        },
+        "fix": {"direction": "Avoid shell=True; pass an argument list.", "has_fix": False},
+    }
+    report = {
+        "schema_version": "1.2",
+        "tool": {"name": "vulnadvisor", "version": "2.0.0"},
+        "degraded_sources": [],
+        "summary": {"total": 1, "by_band": {"critical": 1}},
+        "findings": [code_finding],
+    }
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans",
+        headers={_HDR: f"Bearer {seeded_key}"},
+        json=_body(report, sha="code1"),
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["summary"]["total"] == 1
+    # The code finding is introduced (no prior scan on this ref).
+    assert body["diff_summary"]["introduced"] == 1
 
 
 async def test_ingest_rejects_unsupported_schema(client: AsyncClient, seeded_key: str) -> None:

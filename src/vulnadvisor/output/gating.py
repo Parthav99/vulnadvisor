@@ -7,7 +7,8 @@ numeric score (0-100). A scan exits non-zero when **any** finding meets or excee
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from vulnadvisor.model.score import PriorityBand, ScoredFinding
+from vulnadvisor.engine.sast_scoring import UnifiedFinding
+from vulnadvisor.model.score import PriorityBand
 
 __all__ = ["EXIT_FINDINGS", "EXIT_OK", "FailOn", "parse_fail_on", "should_fail"]
 
@@ -59,8 +60,12 @@ def _band_rank(band: PriorityBand) -> int:
     return _BAND_ORDER.index(band)
 
 
-def should_fail(findings: Sequence[ScoredFinding], fail_on: FailOn) -> bool:
-    """Return ``True`` when any finding meets or exceeds the ``fail_on`` threshold."""
+def should_fail(findings: Sequence[UnifiedFinding], fail_on: FailOn) -> bool:
+    """Return ``True`` when any finding meets or exceeds the ``fail_on`` threshold.
+
+    Operates over the unified band/score, so a single threshold gates both dependency (SCA) and
+    first-party code (SAST) findings.
+    """
     if fail_on.score is not None:
         return any(finding.score.value >= fail_on.score for finding in findings)
     if fail_on.band is not None:

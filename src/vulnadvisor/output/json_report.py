@@ -1,31 +1,43 @@
 """Build the stable, documented JSON report for machine consumption.
 
-Schema (``schema_version`` 1.1) — top-level object::
+Schema (``schema_version`` 1.2) — top-level object::
 
     {
-      "schema_version": "1.1",
+      "schema_version": "1.2",
       "tool": {"name": "vulnadvisor", "version": "<x.y.z>"},
       "degraded_sources": ["OSV", ...],          # sources that failed; results incomplete
       "summary": {"total": <int>, "by_band": {"critical": n, "high": n, ...}},
       "findings": [
         {
+          "finding_type": "dependency",          # present on every finding (1.2)
           "dependency": {"name", "version"|null, "source", "is_direct"},
           "advisory":   {"id", "display_id", "aliases":[...], "cve_ids":[...], "summary"|null,
                           "cvss_base": <float>|null, "cvss_vector": <str>|null, "source"},
           "epss":       {"probability": <float>, "percentile": <float>} | null,
           "in_kev":     <bool>,
           "score":      {"value": <float>, "band", "verdict", "rationale", "cvss_known": <bool>},
-          "reachability": {"tier", "reason", "evidence": [{"file", "line"}]} | null,
+          "reachability": {"tier", "reason", "evidence":[...], "call_paths":[...]} | null,
           "fix":        {"command": <str>|null, "fixed_version": <str>|null, "has_fix": <bool>,
                           "is_major_jump": <bool>, "available_fixes": [...], "note": <str>}
+        },
+        {
+          "finding_type": "code",                # first-party (SAST) finding (1.2)
+          "rule":     {"cwe", "kind", "title"},
+          "location": {"file", "line", "column"},
+          "flow":     {"tier", "source": {"kind"|null, "file"|null, "line"|null},
+                        "sink": {"kind", "file", "line"}, "path": [...], "sanitizers": [...]},
+          "score":    {"value", "band", "verdict", "rationale", "cvss_known": false},
+          "fix":      {"direction": <str>, "has_fix": false}
         }
       ]
     }
 
-Findings are ordered by descending priority (the deterministic engine ordering).
+Findings are ordered by descending priority (the deterministic engine ordering), mixing dependency
+(SCA) and code (SAST) findings into one ranked list.
 
-Version history: 1.1 adds the additive ``advisory.display_id`` (the canonical CVE-first display
-identifier); everything in 1.0 is unchanged, so 1.0 consumers can read 1.1 reports.
+Version history: 1.2 adds the additive ``finding_type`` discriminator (set to ``"dependency"`` on
+the existing SCA shape) and the ``"code"`` finding sub-shape; everything in 1.1 (which added
+``advisory.display_id``) and 1.0 is unchanged, so 1.0/1.1 consumers can read 1.2 reports.
 """
 
 import json
@@ -33,17 +45,20 @@ from collections.abc import Sequence
 from typing import Any
 
 from vulnadvisor.engine.safe_fix import resolve_safe_fix
+from vulnadvisor.engine.sast_scoring import UnifiedFinding, order_unified
 from vulnadvisor.model.display import display_id
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
+from vulnadvisor.sast.model import ScoredSastFinding
+from vulnadvisor.sast.remediation import remediation_direction
 
 __all__ = ["SCHEMA_VERSION", "build_report", "to_json"]
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 
 def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
-    """Serialize one scored finding to the documented JSON shape."""
+    """Serialize one scored dependency (SCA) finding to the documented JSON shape."""
     dependency = finding.matched.dependency
     advisory = finding.matched.advisory
     epss = finding.matched.epss
@@ -51,6 +66,7 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
     reachability = finding.reachability
     safe_fix = resolve_safe_fix(dependency, advisory)
     return {
+        "finding_type": "dependency",
         "dependency": {
             "name": dependency.name,
             "version": dependency.version,
@@ -103,7 +119,50 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
     }
 
 
-def _count_bands(findings: Sequence[ScoredFinding]) -> dict[str, int]:
+def _sast_finding_dict(scored: ScoredSastFinding) -> dict[str, Any]:
+    """Serialize one scored first-party (SAST) finding to the ``finding_type: "code"`` shape."""
+    finding = scored.finding
+    score = scored.score
+    flow = finding.flow
+    if flow is not None and flow.steps:
+        first = flow.steps[0]
+        source = {"kind": finding.source_kind, "file": first.file, "line": first.line}
+        path = [flow.render()]
+    else:
+        # Intra-procedural or literal (CWE-798): source == sink, empty path.
+        source = {"kind": finding.source_kind, "file": finding.file, "line": finding.line}
+        path = []
+    return {
+        "finding_type": "code",
+        "rule": {"cwe": finding.cwe, "kind": finding.kind, "title": finding.title},
+        "location": {"file": finding.file, "line": finding.line, "column": finding.col},
+        "flow": {
+            "tier": finding.tier.value,
+            "reason": finding.reason,
+            "source": source,
+            "sink": {"kind": finding.kind, "file": finding.file, "line": finding.line},
+            "path": path,
+            "sanitizers": [],
+        },
+        "score": {
+            "value": score.value,
+            "band": score.band.value,
+            "verdict": score.verdict,
+            "rationale": score.rationale,
+            "cvss_known": score.cvss_known,
+        },
+        "fix": {"direction": remediation_direction(finding.cwe), "has_fix": False},
+    }
+
+
+def _serialize(finding: UnifiedFinding) -> dict[str, Any]:
+    """Dispatch a unified finding to its type-specific serializer."""
+    if isinstance(finding, ScoredFinding):
+        return _finding_dict(finding)
+    return _sast_finding_dict(finding)
+
+
+def _count_bands(findings: Sequence[UnifiedFinding]) -> dict[str, int]:
     """Count findings per band, with all bands present for a stable shape."""
     counts = {band.value: 0 for band in PriorityBand}
     for finding in findings:
@@ -116,14 +175,21 @@ def build_report(
     degraded_sources: Sequence[str],
     *,
     tool_version: str,
+    sast_findings: Sequence[ScoredSastFinding] = (),
 ) -> dict[str, Any]:
-    """Build the full JSON report object (schema_version 1.1)."""
+    """Build the full JSON report object (schema_version 1.2).
+
+    Dependency (``findings``) and first-party code (``sast_findings``) findings are merged into one
+    deterministically ranked list. ``sast_findings`` defaults to empty, so SCA-only callers are
+    unchanged.
+    """
+    unified = order_unified([*findings, *sast_findings])
     return {
         "schema_version": SCHEMA_VERSION,
         "tool": {"name": "vulnadvisor", "version": tool_version},
         "degraded_sources": list(degraded_sources),
-        "summary": {"total": len(findings), "by_band": _count_bands(findings)},
-        "findings": [_finding_dict(finding) for finding in findings],
+        "summary": {"total": len(unified), "by_band": _count_bands(unified)},
+        "findings": [_serialize(finding) for finding in unified],
     }
 
 
@@ -132,7 +198,10 @@ def to_json(
     degraded_sources: Sequence[str],
     *,
     tool_version: str,
+    sast_findings: Sequence[ScoredSastFinding] = (),
 ) -> str:
     """Render the JSON report as a deterministic, ASCII-safe string."""
-    report = build_report(findings, degraded_sources, tool_version=tool_version)
+    report = build_report(
+        findings, degraded_sources, tool_version=tool_version, sast_findings=sast_findings
+    )
     return json.dumps(report, indent=2, ensure_ascii=True)

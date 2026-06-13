@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FindingCard } from "@/components/finding-card";
 import { demoScanById } from "@/lib/demo-data";
-import { bandClass, formatDate, shortRef, shortSha } from "@/lib/format";
+import { bandClass, findingKey, formatDate, shortRef, shortSha } from "@/lib/format";
 
 const TIERS = ["imported-and-called", "imported", "dynamic-unknown", "not-imported"];
 const BANDS = ["critical", "high", "medium", "low", "info"];
@@ -107,10 +107,7 @@ export default async function DemoScanPage({
       ) : (
         <div className="space-y-4">
           {items.map((finding) => (
-            <FindingCard
-              key={`${finding.dependency.name}:${finding.advisory.id}`}
-              finding={finding}
-            />
+            <FindingCard key={findingKey(finding)} finding={finding} />
           ))}
         </div>
       )}

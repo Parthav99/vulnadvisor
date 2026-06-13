@@ -121,6 +121,7 @@ async def _store_scan(
                 tier=row.tier,
                 band=row.band,
                 priority=row.priority,
+                finding_type=row.finding_type,
                 payload=row.payload,
             )
         )

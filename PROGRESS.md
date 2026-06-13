@@ -4,6 +4,81 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 16.4 — Engine + output integration  (2026-06-13)
+
+**Status:** complete, full automated gate passing. No new dependencies. The pivot lands in the
+output: `vulnadvisor scan` now triages **your code and your deps in one ranked list**, scored by the
+same deterministic engine, reported with the same tiers-and-evidence, across terminal / JSON 1.2 /
+SARIF, gated by one `--fail-on`, ingested by the platform, and rendered on the dashboard.
+
+**Scoring (`engine/sast_scoring.py`) — CWE→severity through the existing scorer.** First-party code
+has no CVSS/EPSS/KEV, so severity comes from the published **CWE base-severity table** (§5: CWE-78/94/95
+9.5 · CWE-89/502 9.0 · CWE-22/918 7.5 · CWE-798 7.0; unknown CWE → 5.0, never zeroed) fed into the
+*same* `compute_score` (EPSS/KEV absent). The confidence tier then discounts it the way reachability
+discounts SCA: **CONFIRMED-FLOW** full · **DYNAMIC-UNKNOWN** full (uncertainty is *not* a discount —
+soundness; rationale records the block) · **POSSIBLE-FLOW** ×**0.6** (the reviewer-deferred constant,
+pinned here with a table-driven cross-type test) · **SANITIZED** ×0.05 capped to 5.0 (INFO), relabeled
+"Sanitized on every path" — mirrors `NOT_IMPORTED`. Reuses `compute_score` for the discounted value
+too (feed it a scaled severity) so there is **one** band table, no drift. `ScoredSastFinding` (=
+`SastFinding` + `Score`) and `order_unified` (the single ranked list; for SCA-only input it reproduces
+`order_findings` exactly, so no snapshot drift) live here.
+
+**One pipeline, two analyses (`cli/pipeline.py`, `cli/main.py`).** `scan_project(run_sca, run_sast)`
+runs both by default; `ScanReport` gained `sast_findings`. New flags **`--sca-only`** / **`--sast-only`**
+(mutually exclusive → exit 2; `--sast-only` skips all network, fully offline). `--top` slices the
+*merged* ranking, then splits back so each renderer re-merges into the identical order. `--fail-on`
+gates over **both** types (a CONFIRMED CWE-78 is critical → exit 1, verified).
+
+**Output (all additive).** JSON **`schema_version` 1.2**: a `finding_type` discriminator on *every*
+finding (`"dependency"` set on the existing shape too) + the `"code"` sub-shape (`rule`/`location`/
+`flow{tier,source,sink,path,sanitizers}`/`score{cvss_known:false}`/`fix{direction,has_fix:false}` —
+remediation *direction*, the validated fix is M17). SARIF 2.1.0: code rules get the namespaced
+`ruleId` **`vulnadvisor/<kind>`**, a **CWE taxonomy** (`taxonomies` + rule `relationships`), the
+sink's real `file:line`, and the source→sink path as a **`codeFlow`/`threadFlow`**; SCA `ruleId`
+unchanged. The 3-card terminal renderer (`cli/render.py`) renders code findings (Card A story, Card B
+risk, Card C remediation direction + the flow) interleaved by priority with SCA cards; explanations
+are paired by object identity so interleaving never mismatches a story. `sast/remediation.py` =
+CWE→one-sentence direction (pure data).
+
+**Platform ingest (`reports.py`, +`finding_type` column, Alembic `a1f6c0d4e2b7`).** `parse_report`
+accepts **1.0/1.1/1.2**; a code finding denormalizes to `package`=sink file, `advisory_id`=
+`vulnadvisor/<kind>` (≤64), `tier`=SAST tier, `band`/`priority` from the score, `finding_type="code"`
+(new column, `server_default "dependency"` so every existing row backfills). Migration applied to
+**live Postgres** (docker compose): `alembic upgrade head` + **`alembic check` → no drift**.
+
+**Dashboard.** `Finding` gained an optional `finding_type`; new `CodeFinding` + `AnyFinding` union;
+`isCodeFinding`/`findingKey`/`sastTierClass`/`sastTierLabel` (Aegis semantics: confirmed=risk,
+dynamic=dashed amber, sanitized=teal — uncertainty never styled safe). `FindingCard` dispatches to a
+new **`CodeFindingCard`** (collapsed CWE·title·`file:line` + band/tier badges; expanded 3 cards;
+**evidence drawer shows the source→sink taint path** via the existing `CallPathChain`). `matchesFocus`
+made tolerant of code findings (CWE / kind / `file:line`); scan / demo-scan / diff pages key by
+`findingKey` and the diff "fixed" list renders code findings.
+
+**Validation:** ruff + format clean · `mypy --strict src platform` clean (102 files) · **pytest 643
+passed, 1 skipped** (+19 `tests/test_sast_scoring.py`: CWE table incl. unknown→5.0; the 4 tier
+discounts incl. DYNAMIC-not-discounted + the pinned 0.6× POSSIBLE factor + SANITIZED→INFO; order_unified
+== order_findings for SCA-only; **POSSIBLE code never outranks a proven KEV dep**; determinism; JSON 1.2
+merge + code shape + empty-path-when-no-flow; **SARIF code finding validates against the 2.1.0 schema**
+with CWE taxonomy + codeFlow; the **mixed-fixture one-ranked-list snapshot** `fixtures/snapshots/
+mixed_ranking.json` — code-CONFIRMED 95 > dep-KEV 91.9 > code-POSSIBLE 57 > dep-flask 22.4 >
+code-SANITIZED 4.8, priority monotonically non-increasing) · platform `+2` ingest tests (1.0/1.1/1.2
+accepted; a 1.2 **code finding ingests**, introduced=1) · existing 1.1→1.2 / finding_type assertions
+updated · `report.json` snapshot regenerated (additive `finding_type`). **Dashboard:** `npm run lint`
++ `next build` clean · **`npm test` 64/64** (+4 `lib/finding.test.ts`). **CLI smoke** (mixed fixture,
+`--sast-only`): terminal renders the 3 ranked CWE-78 cards (CONFIRMED 95 / POSSIBLE 57 / SANITIZED 4.8
+with the flow shown); JSON is `1.2` with 3 `"code"` findings; `--fail-on high/critical` → exit 1;
+`--sca-only --sast-only` → exit 2.
+
+**Remaining live checks (maintainer, credential/stack-gated, prior-task precedent):** (1) seeded
+platform + browser **e2e rendering a SAST finding card** end-to-end (structural path proven by the
+component build + unit tests + the ingest test; not yet driven through a live browser this task);
+(2) **GitHub code-scanning** accepts the SARIF with code findings (it validates against the 2.1.0
+schema locally). **CLI v2.0 tag (v2.0.0) deferred** until those two live checks + 16.5 benchmark land.
+
+**Open questions:** none blocking. **Next:** Task 16.5 (SAST benchmark vs Bandit).
+
+---
+
 ## Task 16.3 — Taint propagation on the existing call graph  (2026-06-13)
 
 **Status:** complete, Validation Gate passing. No new dependencies (stdlib `ast` + the existing
