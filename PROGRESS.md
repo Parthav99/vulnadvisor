@@ -83,6 +83,26 @@ auth/quota errors instead of a stack dump. This diverges from the instructions-f
 ("Anthropic API for the plain-English layer") — recorded here as an explicit maintainer call.
 Lint/build clean; `npm test` 43/43.
 
+**Follow-up (2026-06-13): Task 15.1b — BYOM personal-key pass-through (maintainer-requested,
+now in task.md).** Anyone can use the copilot at zero platform cost by bringing their own
+key: `/api/copilot` accepts `X-Copilot-User-Key` (+ optional `X-Copilot-Provider` /
+`X-Copilot-Model`), used for that single request and never stored or logged — the key lives
+in the user's browser (localStorage UI = Task 15.1c, ships with the 15.2 panel) and transits
+per request over TLS. Providers: **OpenRouter** (`sk-or-`, OpenAI-compatible
+chat-completions via `createOpenAI({baseURL}).chat()`, default `openrouter/auto` — free
+models work), OpenAI, Anthropic. Personal-key requests **skip the grant and the daily cap**
+(no platform spend to protect) but still verify org membership with the caller's own session
+before any model call. Key precedence: personal → org BYO (encrypted, capped) → deployment
+fallback. Chose pass-through over the browser-direct variant deliberately: OpenAI's API
+blocks browser CORS, browser-direct would punch per-provider holes in the strict CSP, and
+the injection-hardened tool loop would need a client-side duplicate; local **Ollama** is the
+one case that genuinely needs browser-direct (server can't reach a user's localhost) —
+recorded as an explicit deferred non-goal in task.md 15.1b. Validation: `npm test` 47/47
+(+4: `sk-or-` detection, per-provider defaults, key/model/provider format rules), lint +
+build clean; live: malformed key/provider → 400, intruder + personal key → 404, fake
+OpenRouter key reaches the provider with the key absent from the stream, and `used_today`
+stays 0 across personal-key requests.
+
 **Open questions / blocked:**
 - **Red-team live run still blocked — now on quota, not key type.** The provided OpenAI key
   authenticates (models list 200) but the account has **zero credits**: every inference call,

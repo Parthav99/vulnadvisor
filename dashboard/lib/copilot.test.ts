@@ -6,7 +6,11 @@ import { test } from "node:test";
 
 import {
   COPILOT_SYSTEM_PROMPT,
+  defaultModelFor,
+  isValidModelId,
   isValidOrgSlug,
+  isValidProvider,
+  isValidUserKey,
   makeBoundary,
   MAX_MESSAGES,
   MAX_STEPS,
@@ -117,12 +121,41 @@ test("non-serializable payloads degrade to null, never crash", () => {
   assert.ok(wrapToolResult(undefined).includes("\nnull\n"));
 });
 
-// --- provider detection ---------------------------------------------------------------------------
+// --- provider detection + BYOM header validation (15.1b) ------------------------------------------
 
 test("provider follows the key's vendor prefix", () => {
   assert.equal(providerForKey("sk-ant-api03-xyz"), "anthropic");
+  assert.equal(providerForKey("sk-or-v1-abc"), "openrouter");
   assert.equal(providerForKey("sk-proj-abc"), "openai");
   assert.equal(providerForKey("sk-legacy"), "openai");
+});
+
+test("each provider has a default model", () => {
+  assert.equal(defaultModelFor("anthropic"), "claude-opus-4-8");
+  assert.equal(defaultModelFor("openai"), "gpt-5.2");
+  assert.equal(defaultModelFor("openrouter"), "openrouter/auto");
+});
+
+test("personal-key format: printable ASCII, bounded, no whitespace", () => {
+  assert.ok(isValidUserKey("sk-or-v1-0123456789abcdef"));
+  for (const bad of ["", "short", "key with space", "key\nnewline", "k".repeat(513), 42, null]) {
+    assert.ok(!isValidUserKey(bad), String(bad));
+  }
+});
+
+test("model ids: provider-qualified and suffixed forms pass, junk fails", () => {
+  for (const ok of ["gpt-5.2", "claude-opus-4-8", "anthropic/claude-opus-4.8", "deepseek/deepseek-chat-v3.1:free", "openrouter/auto"]) {
+    assert.ok(isValidModelId(ok), ok);
+  }
+  for (const bad of ["", "a b", "model?x=1", "m".repeat(101), "<script>", 7]) {
+    assert.ok(!isValidModelId(bad), String(bad));
+  }
+});
+
+test("provider names are a closed set", () => {
+  assert.ok(isValidProvider("openrouter"));
+  assert.ok(!isValidProvider("ollama")); // deferred — needs browser-direct mode (task.md 15.1b)
+  assert.ok(!isValidProvider(""));
 });
 
 // --- route limits exist --------------------------------------------------------------------------

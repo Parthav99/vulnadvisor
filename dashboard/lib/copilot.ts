@@ -6,19 +6,63 @@
 
 import { randomUUID } from "node:crypto";
 
-/** Default models per provider; override with COPILOT_MODEL. */
+/** Default models per provider; deployment override via COPILOT_MODEL. */
 export const DEFAULT_COPILOT_MODEL = "claude-opus-4-8";
 export const DEFAULT_OPENAI_MODEL = "gpt-5.2";
+// OpenRouter's routing meta-model — works on every account, including free tiers.
+export const DEFAULT_OPENROUTER_MODEL = "openrouter/auto";
+
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+export type CopilotProvider = "anthropic" | "openai" | "openrouter";
+
+export const COPILOT_PROVIDERS: readonly CopilotProvider[] = [
+  "anthropic",
+  "openai",
+  "openrouter",
+];
+
+export function isValidProvider(value: unknown): value is CopilotProvider {
+  return COPILOT_PROVIDERS.includes(value as CopilotProvider);
+}
 
 /**
  * Which provider a key belongs to, by its vendor prefix.
  *
- * Org BYO keys are Anthropic-only (the platform validates `sk-ant-` at save time); this
- * exists for the deployment-level fallback key, which the operator may provision from
- * either vendor (maintainer decision, 2026-06-13 — see PROGRESS.md Task 15.1 follow-up).
+ * Used for the deployment fallback key and as the default for BYOM personal keys (15.1b,
+ * overridable via X-Copilot-Provider). Org BYO keys are Anthropic-only (the platform
+ * validates `sk-ant-` at save time). Maintainer decision 2026-06-13 — see PROGRESS.md.
  */
-export function providerForKey(apiKey: string): "anthropic" | "openai" {
-  return apiKey.startsWith("sk-ant-") ? "anthropic" : "openai";
+export function providerForKey(apiKey: string): CopilotProvider {
+  if (apiKey.startsWith("sk-ant-")) return "anthropic";
+  if (apiKey.startsWith("sk-or-")) return "openrouter";
+  return "openai";
+}
+
+export function defaultModelFor(provider: CopilotProvider): string {
+  switch (provider) {
+    case "anthropic":
+      return DEFAULT_COPILOT_MODEL;
+    case "openai":
+      return DEFAULT_OPENAI_MODEL;
+    case "openrouter":
+      return DEFAULT_OPENROUTER_MODEL;
+  }
+}
+
+/** A BYOM personal key as it appears in the X-Copilot-User-Key header (15.1b). */
+export function isValidUserKey(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 8 &&
+    value.length <= 512 &&
+    /^[\x21-\x7e]+$/.test(value) // printable ASCII, no whitespace
+  );
+}
+
+/** Model ids across providers: `gpt-5.2`, `anthropic/claude-opus-4.8`, `foo:free`, … */
+export function isValidModelId(value: unknown): value is string {
+  return typeof value === "string" && /^[\w.:/-]{1,100}$/.test(value);
 }
 
 /** Keep conversations bounded: only the most recent messages reach the model. */

@@ -235,6 +235,43 @@ red-team cases are part of the gate.
 - [ ] Full gate green
 **Done when:** the copilot is provably scoped and grounded.
 
+### Task 15.1b — BYOM: personal-key pass-through (zero platform model spend)
+**Goal:** anyone can use the copilot at $0 cost to us by bringing their own model key.
+**Build:** `/api/copilot` accepts a per-request personal key in headers
+(`X-Copilot-User-Key`, optional `X-Copilot-Provider` + `X-Copilot-Model`), used for that one
+request and **never stored or logged** — the key lives only in the user's browser
+(localStorage, see 15.1c) and transits per request over TLS. Providers: **OpenRouter**
+(`sk-or-`, OpenAI-compatible `/api/v1` via `createOpenAI({baseURL}).chat()`, default
+`openrouter/auto`, free models usable), **OpenAI**, **Anthropic** — detected from the key
+prefix, overridable. Personal-key requests **skip the platform grant and the daily cap**
+(no platform spend to protect) but still verify org membership with the caller's own session
+before any model call. Key-source precedence: personal key → org BYO key (encrypted,
+server-side) → platform fallback. Same system prompt, same wrapped tool results, same
+session-scoped tools — one hardened code path.
+**Why pass-through, not browser-direct:** OpenAI's API blocks browser CORS; browser-direct
+would also require CSP holes per provider and a duplicated client-side tool loop. Deferred
+(explicit non-goal here): **local Ollama** — our server cannot reach a user's localhost, so
+Ollama needs a browser-direct mode with its own CSP/CORS story; revisit after 15.3.
+**Validate:**
+- [ ] Personal key request: no grant consumed (cap untouched), correct provider/model chosen, org membership still enforced (401/404 paths tested)
+- [ ] Key never stored/logged: code inspection + tests assert it appears in no response and no platform table
+- [ ] Header validation: malformed provider/model/key rejected
+- [ ] Full gate green
+**Done when:** a user with only a free OpenRouter key gets a working copilot, at zero cost to the platform.
+
+### Task 15.1c — BYOM: key-configuration UI (localStorage, never our server)
+**Goal:** the settings surface for 15.1b — paste a key once, use the copilot everywhere.
+**Build:** a small "AI provider" config modal (shadcn Dialog) reachable from the copilot
+panel (15.2) and the org settings page: provider picker (OpenRouter / OpenAI / Anthropic),
+key field (masked, validated by prefix), optional model override, "stored only in this
+browser" copy, test-connection button (one cheap request through `/api/copilot`), clear
+button. Persisted in `localStorage` only; the copilot UI sends it via the 15.1b headers.
+**Validate:**
+- [ ] Key persists in localStorage only (no cookie, no network call on save — verified)
+- [ ] Test-connection works against a real free OpenRouter key; clear removes it
+- [ ] a11y: modal focus-trapped, labelled, keyboard-operable
+**Done when:** paste key → copilot answers, and our infra never saw the key except in transit.
+
 ### Task 15.2 — Copilot UI
 **Goal:** help that is present everywhere and in the way nowhere.
 **Build:** floating "How can I help?" button → slide-over panel (shadcn `Sheet`): streaming

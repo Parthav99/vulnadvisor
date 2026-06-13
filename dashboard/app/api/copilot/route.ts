@@ -5,9 +5,10 @@
 // Security shape:
 // - Every tool call is a GET against the existing read/analytics API carrying the caller's
 //   own session cookie — tenant isolation is inherited, there is no service account.
-// - The Anthropic key comes from the platform's grant endpoint (org BYO key, decrypted only
-//   behind the COPILOT_SERVICE_TOKEN) with the dashboard's ANTHROPIC_API_KEY as the platform
-//   fallback; the grant also consumes one slot of the org's daily cap (429 when spent).
+// - Key precedence (15.1b BYOM): a personal key from the X-Copilot-User-Key header (used
+//   once, never stored/logged, no cap — the user pays their own provider) → the org BYO key
+//   via the platform's grant endpoint (decrypted only behind COPILOT_SERVICE_TOKEN, daily
+//   cap enforced) → the deployment fallback key (ANTHROPIC_API_KEY / OPENAI_API_KEY).
 // - Tool results are wrapped as delimited untrusted data (lib/copilot.ts) because advisory
 //   summaries are attacker-influenceable text; the red-team suite covers this.
 
@@ -27,23 +28,53 @@ import {
 
 import {
   COPILOT_SYSTEM_PROMPT,
-  DEFAULT_COPILOT_MODEL,
-  DEFAULT_OPENAI_MODEL,
+  type CopilotProvider,
+  defaultModelFor,
+  isValidModelId,
   isValidOrgSlug,
+  isValidProvider,
+  isValidUserKey,
   MAX_MESSAGES,
   MAX_STEPS,
+  OPENROUTER_BASE_URL,
   providerForKey,
   TOOL_SPECS,
   wrapToolResult,
 } from "@/lib/copilot";
 
-/** Model for the given key's vendor: org BYO keys are Anthropic; the fallback key may be either. */
-function modelForKey(apiKey: string): LanguageModel {
-  const override = process.env.COPILOT_MODEL;
-  if (providerForKey(apiKey) === "anthropic") {
-    return createAnthropic({ apiKey })(override ?? DEFAULT_COPILOT_MODEL);
+/** Build the language model for a key/provider/model triple. */
+function buildModel(apiKey: string, provider: CopilotProvider, modelId: string): LanguageModel {
+  switch (provider) {
+    case "anthropic":
+      return createAnthropic({ apiKey })(modelId);
+    case "openrouter":
+      // OpenAI-compatible chat-completions endpoint (OpenRouter has no Responses API).
+      return createOpenAI({ apiKey, baseURL: OPENROUTER_BASE_URL }).chat(modelId);
+    case "openai":
+      return createOpenAI({ apiKey })(modelId);
   }
-  return createOpenAI({ apiKey })(override ?? DEFAULT_OPENAI_MODEL);
+}
+
+/**
+ * The BYOM personal key (Task 15.1b), read from headers and used for this request only —
+ * never stored, never logged. Returns null when absent; a Response when malformed.
+ */
+function personalKey(
+  req: Request,
+): { apiKey: string; provider: CopilotProvider; modelId: string } | Response | null {
+  const apiKey = req.headers.get("x-copilot-user-key");
+  if (apiKey === null) return null;
+  if (!isValidUserKey(apiKey)) return jsonError(400, "Invalid API key format.");
+  const providerHeader = req.headers.get("x-copilot-provider");
+  if (providerHeader !== null && !isValidProvider(providerHeader)) {
+    return jsonError(400, "Unknown provider.");
+  }
+  const provider = providerHeader ?? providerForKey(apiKey);
+  const modelHeader = req.headers.get("x-copilot-model");
+  if (modelHeader !== null && !isValidModelId(modelHeader)) {
+    return jsonError(400, "Invalid model id.");
+  }
+  return { apiKey, provider, modelId: modelHeader ?? defaultModelFor(provider) };
 }
 
 // Streaming responses on the Vercel free tier; tool loops can take a while.
@@ -172,18 +203,37 @@ export async function POST(req: Request): Promise<Response> {
     .slice(-MAX_MESSAGES);
   if (messages.length === 0) return jsonError(400, "No messages.");
 
-  const grantResult = await obtainGrant(req, orgSlug);
-  if ("failure" in grantResult) return grantResult.failure;
+  // Key-source precedence: BYOM personal key (no grant, no cap — the user pays their own
+  // provider) → org BYO key / platform fallback via the grant endpoint (cap enforced).
+  const personal = personalKey(req);
+  if (personal instanceof Response) return personal;
 
-  const apiKey =
-    grantResult.grant.api_key ??
-    process.env.ANTHROPIC_API_KEY ??
-    process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return jsonError(
-      503,
-      "No model API key available — add your organization's key in Settings.",
-    );
+  let model: LanguageModel;
+  if (personal !== null) {
+    // Still the caller's own tenancy: verify membership before any model call.
+    const orgCheck = await fetch(`${API_BASE}/v1/orgs/${encodeURIComponent(orgSlug)}`, {
+      headers: callerHeaders(req),
+      cache: "no-store",
+    });
+    if (orgCheck.status === 401) return jsonError(401, "Sign in to use the copilot.");
+    if (orgCheck.status === 404) return jsonError(404, "Organization not found.");
+    if (!orgCheck.ok) return jsonError(502, "The platform API is unavailable.");
+    model = buildModel(personal.apiKey, personal.provider, personal.modelId);
+  } else {
+    const grantResult = await obtainGrant(req, orgSlug);
+    if ("failure" in grantResult) return grantResult.failure;
+    const apiKey =
+      grantResult.grant.api_key ??
+      process.env.ANTHROPIC_API_KEY ??
+      process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return jsonError(
+        503,
+        "No model API key available — add a personal key in the copilot settings, or your organization's key in Settings.",
+      );
+    }
+    const provider = providerForKey(apiKey);
+    model = buildModel(apiKey, provider, process.env.COPILOT_MODEL ?? defaultModelFor(provider));
   }
 
   // The page context is user-controlled display state: include it as data, single line, capped.
@@ -196,7 +246,7 @@ export async function POST(req: Request): Promise<Response> {
     : COPILOT_SYSTEM_PROMPT;
 
   const result = streamText({
-    model: modelForKey(apiKey),
+    model,
     system,
     messages: await convertToModelMessages(messages),
     tools: buildTools(req, orgSlug),
