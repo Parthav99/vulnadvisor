@@ -4,6 +4,75 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 16.1 — SAST v1 design doc (approval gate)  (2026-06-13)
+
+**Status:** **APPROVED by the maintainer 2026-06-13** — Validation Gate passing (doc coverage +
+recorded approval). No code in this task, per the gate. First M16 task. Proceeding to 16.2.
+
+**Maintainer decisions on the §13 open questions** (folded into the doc's status banner + §13):
+(1) `POSSIBLE-FLOW` discount factor — **fix in 16.4 with a table-driven test** (no constant pinned
+now); (2) **CWE-798 stays in v1** (literal-pattern finding, `source == sink`, empty path);
+(3) **stdin/argv/env are untrusted by default** (over-report per soundness; trusted-operator
+opt-out is a later non-default, if ever).
+
+Wrote **`docs/sast-design.md`** — the architecture agreement that precedes any M16 code. It pins
+the contract Tasks 16.2–16.6 implement; a later deviation requires amending the doc first. House
+style follows `docs/platform-design.md` (status/approval banner, numbered sections).
+
+Coverage against the Validation Gate checklist (every required item present):
+
+- **Rule schema** (§3) — sources/sinks/sanitizers **as data, pure matching**: `SinkRule` /
+  `SourceRule` / `SanitizerRule` shapes, callee resolved through the **existing** import-graph
+  binding logic (`call_paths._bindings`) so aliases (`import yaml as y`, `from os import system`)
+  match; CWE-scoped sanitizers; `guard` for conditional sinks (`shell=True`); `safe_args` mirroring
+  the existing `guarded_apis`. Initial CWE set table: **CWE-89, 78, 94/95, 502, 22, 918, 798** with
+  representative resolved sinks + v1 sanitizers. CWE-798 documented as a literal-pattern finding
+  outside the taint graph.
+- **Tier semantics + soundness proof obligations** (§4) — four tiers **`CONFIRMED-FLOW` /
+  `POSSIBLE-FLOW` / `DYNAMIC-UNKNOWN` / `SANITIZED`** (own enum, *not* reused from
+  `ReachabilityTier` — import-centric vocab doesn't fit), each with an explicit proof obligation;
+  five release-blocking invariants (no silent clear; `SANITIZED` needs total path coverage; dynamic
+  never downgrades; entry-point completeness is sacred; FFI escalates) — the SAST analogue of the
+  SCA "zero missed reachable findings" gate. Concern ordering fixed.
+- **Scoring** (§5) — **CWE→base-severity table** fed into the *same* `engine/scoring.compute_score`
+  with **EPSS and KEV absent** (the formula already handles `epss=None`); tier discounts mirror
+  `apply_reachability` (`SANITIZED` → INFO band like `NOT_IMPORTED`, `DYNAMIC-UNKNOWN` keeps full
+  severity — uncertainty is not a discount). Constants live in `engine/`, unit-tested, published,
+  LLM-untouched. **No EPSS for first-party — documented.**
+- **Output schema** (§7) — **JSON `schema_version` 1.2, additive**: a `finding_type`
+  discriminator (`"dependency"` set on existing findings too) + a `"code"` finding sub-shape
+  (`rule`/`location`/`flow`/`score`/`fix`); 1.0/1.1/1.2 all ingest. **SARIF mapping** (§8):
+  `ruleId` namespaced `vulnadvisor/<kind>`, **CWE taxonomy via `taxa`/`relationships`**,
+  source→sink as a SARIF **`codeFlow`**, `--fail-on` over both types.
+- **FFI boundary policy** (§9) — a taint path crossing into a C/Rust native extension
+  **escalates to `DYNAMIC-UNKNOWN`** (named boundary), never terminates as clean, never counts as a
+  sanitizer.
+- **Test/fixture strategy** (§12) — table-driven per rule (positive/negative/adversarial); ≥12
+  taint fixtures incl. framework-routed FastAPI+Django and partial-sanitization; soundness
+  regression tests encoding the §4 invariants; <10 s perf budget; Bandit benchmark.
+- **Explicit non-goals** (§10) — **no cross-language call graphs**, **no dataflow through I/O**
+  (write-to-file/DB then read-back is a fresh untainted read unless itself a modeled source), no
+  inter-file global aliasing, no taint through eval/exec-constructed code, no auto-fix (M17), **no
+  new runtime dependency** (stdlib `ast` + existing call graph; core-wheel dep count guarded by a
+  metadata test as in 15.3).
+- **Package layout** (§11) — `src/vulnadvisor/sast/` (`rules.py`/`sinks.py`/`taint.py`/`model.py`)
+  + additive touch points in `engine/`/`model/`/`output/`/`cli/`. **Reuse table** (§2) maps each
+  existing component (`call_paths.py` BFS, framework plugins, `type_resolver`, `model/callpath.py`,
+  `engine/scoring.py`, `output/`) to its SAST role — the differentiator already exists for deps.
+
+Three open questions for the reviewer recorded in §13 (POSSIBLE-FLOW discount constant; CWE-798
+placement in v1; treating stdin/argv/env as untrusted by default).
+
+**Validation:**
+- [x] Doc covers rule schema, tier semantics + soundness obligations, scoring, output schema,
+  test/fixture strategy, FFI policy, explicit non-goals — all present (mapped above).
+- [x] **Maintainer approval recorded in PROGRESS.md** (2026-06-13, decisions above). No global gate
+  (ruff/mypy/pytest) applies — this task adds no code.
+
+**Open questions:** none — §13 resolved. **Next:** Task 16.2 (sink detection + rule pack).
+
+---
+
 ## Task 15.3 — VulnAdvisor MCP server (agent-native triage)  (2026-06-13)
 
 **Status:** complete, Validation Gate passing. **New dependency (approved at task start):
