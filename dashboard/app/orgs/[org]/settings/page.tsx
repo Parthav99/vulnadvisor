@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { apiGetOrNull, installUrl } from "@/lib/api";
+import { ByomConfigDialog } from "@/components/copilot/byom-config";
 import { EmptyState, PageHeader } from "@/components/blocks";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -79,6 +80,21 @@ export default async function SettingsPage({ params }: { params: Promise<{ org: 
             ))}
           </ul>
         )}
+      </section>
+
+      <section className="mb-6">
+        <h2 className="mb-2 text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+          AI copilot
+        </h2>
+        <Card size="sm" className="flex-row items-center justify-between">
+          <CardContent className="text-sm text-muted-foreground">
+            Use your own model key for the triage copilot — stored only in your browser,
+            never on our servers. A free OpenRouter key works.
+          </CardContent>
+          <CardContent>
+            <ByomConfigDialog orgSlug={org.slug} />
+          </CardContent>
+        </Card>
       </section>
 
       <section>

@@ -103,6 +103,18 @@ build clean; live: malformed key/provider → 400, intruder + personal key → 4
 OpenRouter key reaches the provider with the key absent from the stream, and `used_today`
 stays 0 across personal-key requests.
 
+**Follow-up (2026-06-13): Task 15.1c — BYOM key-configuration UI.** `lib/byom.ts` (pure,
+storage-injectable): defensive parse/serialize of the localStorage config (anything malformed
+degrades to null), the 15.1b header mapping, masking (`sk-or-…cdef`), private-mode-safe loads.
+`components/copilot/byom-config.tsx`: shadcn Dialog from the org settings page ("AI copilot"
+section) — provider radiogroup (OpenRouter/OpenAI/Anthropic), masked key field with live
+validation, optional model override (placeholder = provider default), test-connection (one
+trivial request through `/api/copilot` with the 15.1b headers; stream errors surface as
+"provider rejected the key"), clear button, `aria-live` status, labelled fields. Save writes
+localStorage only — no network call. Validation: `npm test` 54/54 (+7 byom), lint + build
+clean. In-browser e2e (focus trap, real free-OpenRouter-key test-connection) rides with the
+Task 15.2 live pass — grab a free key at openrouter.ai when we get there.
+
 **Open questions / blocked:**
 - **Red-team live run still blocked — now on quota, not key type.** The provided OpenAI key
   authenticates (models list 200) but the account has **zero credits**: every inference call,
