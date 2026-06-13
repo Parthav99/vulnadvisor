@@ -7,9 +7,11 @@ from vulnadvisor.callgraph.call_paths import (
 )
 from vulnadvisor.callgraph.frameworks import (
     DEFAULT_PLUGINS,
+    CeleryPlugin,
     DjangoPlugin,
     EntryPoint,
     FastAPIPlugin,
+    FlaskPlugin,
     FrameworkPlugin,
     collect_entry_points,
     entry_point_names,
@@ -27,9 +29,11 @@ from vulnadvisor.callgraph.type_resolver import (
 __all__ = [
     "DEFAULT_PLUGINS",
     "CallGraphResult",
+    "CeleryPlugin",
     "DjangoPlugin",
     "EntryPoint",
     "FastAPIPlugin",
+    "FlaskPlugin",
     "FrameworkPlugin",
     "NullResolver",
     "PackageReflection",

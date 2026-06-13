@@ -4,6 +4,67 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 16.3 — Taint propagation on the existing call graph  (2026-06-13)
+
+**Status:** complete, Validation Gate passing. No new dependencies (stdlib `ast` + the existing
+call-graph infra). The differentiator: a first-party finding now proves a flow from a *real entry
+point* to a sink, with the source→sink path shown.
+
+Two pieces — entry-point **breadth** (sources) and the **taint engine** (the flow):
+
+- **Entry-point breadth expansion** (`callgraph/frameworks/`, benefits SCA reachability too): two
+  new plugins — **`FlaskPlugin`** (`@app.route` + the Flask-2 verb shortcuts `@app.get/post/...`,
+  on `app` or a blueprint) and **`CeleryPlugin`** (`@app.task`/`@shared_task`/`@task(...)`) — added
+  to `DEFAULT_PLUGINS` alongside the existing FastAPI + Django (URLconf views, CBVs, `@receiver`).
+  A missed entry point is a catastrophic false negative, so over-rooting is the safe direction. The
+  SCA pipeline picks these up for free (more BFS roots, never fewer).
+- **`sast/taint.py`** — demand-driven taint over the **same per-file call graph the SCA engine
+  uses**, escalating the 16.2 intra-procedural baseline (which stays the floor):
+  - **Sources** seed taint: framework entry-point **parameters** (FastAPI/Flask/Django/Celery —
+    every param of a routed handler, `self`/`cls` excluded), the Flask **`request`** global
+    (`request.args.get(...)` etc.), and **`stdin`/`argv`/the environment** (`sys.argv`,
+    `os.environ`/`os.getenv`/`environ.get`, `input()`) — untrusted by default per design §13.3.
+  - **Propagation** (`_Taint = (source, cleared-CWEs, dynamic)`): assignments, aug/ann/walrus,
+    `for`/`with` targets, f-strings/`%`/`+`, containers, ternaries, comprehensions, and
+    **inter-procedural** flow — a tainted argument taints the callee parameter (riding the same
+    bare-name→top-level-function edges the SCA call graph walks) and a tainted `return` taints the
+    call site (memoized return summaries). Flow-insensitive with a monotone fixpoint; **sanitizer
+    state merges by intersection**, so a *partially* sanitized value stays dangerous (release-
+    blocking invariant §4.2). Conservatism is always *toward* taint (an unknown transform drops the
+    cleared set; an unsure value stays tainted).
+  - **Sinks** are the 16.2 rule pack (reused matcher: aliased imports, guards, `safe_args`). A
+    tainted, unsanitized value at a dangerous arg → **`CONFIRMED_FLOW`** with the source→sink
+    **`CallPath`** as evidence (`r -> sink -> os.system (m.py:5)`, byte-for-byte the SCA shape). A
+    value whose provenance crossed a dynamic construct (`eval`/`exec`/`getattr` dispatch, a computed
+    callee) → **`DYNAMIC_UNKNOWN`** — escalated above POSSIBLE, never dropped. Sanitizers are
+    **CWE-scoped** (`shlex.quote` clears CWE-78, not CWE-89; `secure_filename` clears CWE-22).
+  - **Cross-file rooting:** entry-point *names* are collected project-wide (exactly like the SCA
+    search), so a Django view defined in `views.py` but routed in `urls.py` is still a source.
+  - **Merge:** `analyze_taint` takes every `find_sinks` hit and raises only the tier the engine can
+    *prove* (concern order `CONFIRMED > DYNAMIC > POSSIBLE > SANITIZED`); a sink it can't tie to a
+    source keeps its intra-procedural tier (so a non-reachable helper stays `POSSIBLE_FLOW`, **never**
+    `CONFIRMED`). New model `sast/model.SastFinding` carries `source_kind` + `flow`.
+
+**Validation:** ruff + format clean · `mypy --strict src platform` clean (100 files) · **pytest 623
+passed, 1 skipped** (+35: `tests/test_sast_taint.py` — the full design §12 set: direct flow per
+source kind, cross-function (helper-return + sink-in-callee, path asserted), sanitized (no
+escalation) / **partial-sanitization → CONFIRMED** / CWE-scoped-sanitizer / dynamic-blocked
+(`getattr` dispatch + `eval`-built arg) / FastAPI+Flask+Celery routing + Flask request global / SQLi
+/ code-injection / deserialization / SSRF (`url=`) / path-traversal confirmed flows / not-reachable
++ local-non-source → no escalation; the `taint_mixed` + cross-file `taint_django` project fixtures;
+whole-`src/` determinism + no-crash + malformed→`()`; **perf budget**; plus 5 in `test_frameworks.py`
+for the Flask/Celery plugins + `DEFAULT_PLUGINS` coverage). **Perf:** `analyze_taint(src/)` =
+**0.52 s over 72 files** (budget 10 s); `fixtures/` 0.02 s. **Real-code check:** the engine finds one
+`CONFIRMED_FLOW` in our own `output/credentials.py` — `os.environ.get("XDG_CONFIG_HOME")` traced
+across `default_credentials_path` → through `Path()` → into `os.open` — a correct cross-function,
+env-source, through-unknown-call trace (env untrusted by design, not a bug).
+
+**Open questions:** none blocking. **Next:** Task 16.4 (engine + output integration — CWE→severity
+through the deterministic scorer, JSON `1.2` `finding_type`, SARIF `codeFlows`/CWE taxa, `--fail-on`
+over both types, dashboard rendering; pins the `POSSIBLE-FLOW` discount constant).
+
+---
+
 ## Task 16.2 — Sink detection + rule pack (intra-procedural)  (2026-06-13)
 
 **Status:** complete, Validation Gate passing. No new dependencies (stdlib `ast` + `re` + the

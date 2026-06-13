@@ -4,8 +4,11 @@ from pathlib import Path
 
 from vulnadvisor.advisories import AdvisoryMatcher
 from vulnadvisor.callgraph import (
+    DEFAULT_PLUGINS,
+    CeleryPlugin,
     DjangoPlugin,
     FastAPIPlugin,
+    FlaskPlugin,
     build_import_graph,
     collect_entry_points,
     entry_point_names,
@@ -69,6 +72,43 @@ def test_django_plugin_detects_class_based_view() -> None:
         "urlpatterns = [path('x/', views.ConfigView.as_view())]\n"
     )
     assert {ep.name for ep in DjangoPlugin().entry_points(tree, "urls.py")} == {"ConfigView"}
+
+
+def test_flask_plugin_detects_route_and_verb_decorators() -> None:
+    tree = ast.parse(
+        "from flask import Flask\napp = Flask(__name__)\n"
+        "@app.route('/a')\ndef a():\n    pass\n"
+        "@app.post('/b')\ndef b():\n    pass\n"
+        "@bp.route('/c')\ndef c():\n    pass\n"
+    )
+    eps = FlaskPlugin().entry_points(tree, "views.py")
+    assert {ep.name for ep in eps} == {"a", "b", "c"}
+    assert all(ep.framework == "flask" for ep in eps)
+
+
+def test_flask_plugin_ignores_plain_functions() -> None:
+    assert FlaskPlugin().entry_points(ast.parse("def helper():\n    return 1\n"), "x.py") == []
+
+
+def test_celery_plugin_detects_task_decorators() -> None:
+    tree = ast.parse(
+        "from celery import shared_task\n"
+        "@app.task\ndef a(x):\n    pass\n"
+        "@shared_task\ndef b(x):\n    pass\n"
+        "@app.task(bind=True)\ndef c(self, x):\n    pass\n"
+    )
+    eps = CeleryPlugin().entry_points(tree, "tasks.py")
+    assert {ep.name for ep in eps} == {"a", "b", "c"}
+    assert all(ep.framework == "celery" for ep in eps)
+
+
+def test_default_plugins_cover_the_four_frameworks() -> None:
+    assert {type(p) for p in DEFAULT_PLUGINS} == {
+        FastAPIPlugin,
+        FlaskPlugin,
+        DjangoPlugin,
+        CeleryPlugin,
+    }
 
 
 # --- collection + plugin isolation ---------------------------------------------------------------

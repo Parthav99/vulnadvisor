@@ -10,6 +10,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
 
+from vulnadvisor.model.callpath import CallPath
+
 
 class SastTier(str, Enum):
     """Confidence tier for a first-party (SAST) finding.
@@ -65,3 +67,67 @@ class SinkHit(BaseModel):
     callee: str
     tier: SastTier
     reason: str
+
+
+# Concern ordering (most -> least), per docs/sast-design.md §4: a CONFIRMED flow outranks a dynamic
+# block, which outranks an unproven-source sink, which outranks a sanitized one. Used to pick the
+# highest-concern tier when the taint engine (16.3) escalates an intra-procedural baseline hit.
+_TIER_CONCERN: dict[SastTier, int] = {
+    SastTier.CONFIRMED_FLOW: 3,
+    SastTier.DYNAMIC_UNKNOWN: 2,
+    SastTier.POSSIBLE_FLOW: 1,
+    SastTier.SANITIZED: 0,
+}
+
+
+def tier_concern(tier: SastTier) -> int:
+    """Return the concern rank of ``tier`` (higher == more alarming) for ranking/escalation."""
+    return _TIER_CONCERN[tier]
+
+
+class SastFinding(BaseModel):
+    """A first-party finding with its proven (or refined) confidence tier and evidence path.
+
+    Task 16.3 produces these by taking the intra-procedural :class:`SinkHit`s from Task 16.2 as a
+    floor and *escalating* the ones it can tie to a real taint source: a sink reached by a value
+    that flows from a recognized source (a framework entry-point parameter, ``stdin``/``argv``/the
+    environment, or a Flask request global) with no sanitizer on the path becomes
+    ``CONFIRMED_FLOW`` and carries the source->sink :class:`~vulnadvisor.model.callpath.CallPath` as
+    evidence; a path crossing a dynamic construct becomes ``DYNAMIC_UNKNOWN``. Sinks the engine
+    cannot tie to a source keep their intra-procedural tier and have ``flow is None``.
+
+    Attributes:
+        cwe / kind / title / file / line / col / callee / tier / reason: as :class:`SinkHit`.
+        source_kind: The taint source kind for an escalated finding (e.g. ``"http-parameter"``,
+            ``"argv"``, ``"environment"``, ``"flask-request"``), or ``None`` when not flow-proven.
+        flow: The source->sink call path (same shape as SCA reachability evidence), or ``None``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cwe: str
+    kind: str
+    title: str
+    file: str
+    line: int
+    col: int
+    callee: str
+    tier: SastTier
+    reason: str
+    source_kind: str | None = None
+    flow: CallPath | None = None
+
+    @classmethod
+    def from_sink_hit(cls, hit: SinkHit) -> "SastFinding":
+        """Lift an intra-procedural :class:`SinkHit` into a finding with no proven flow."""
+        return cls(
+            cwe=hit.cwe,
+            kind=hit.kind,
+            title=hit.title,
+            file=hit.file,
+            line=hit.line,
+            col=hit.col,
+            callee=hit.callee,
+            tier=hit.tier,
+            reason=hit.reason,
+        )
