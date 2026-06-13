@@ -332,7 +332,7 @@ def parse_manifest_file(path: Path) -> list[Dependency]:
     parser, source = entry
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ManifestParseError(source, f"cannot read {path}: {exc}") from exc
     result: list[Dependency] = parser(text)
     return result

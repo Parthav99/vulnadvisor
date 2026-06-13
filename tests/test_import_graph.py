@@ -155,3 +155,17 @@ def test_map_imports_to_distributions() -> None:
     assert "numpy" in mapping
     # Evidence: each mapped distribution points at real import sites.
     assert all(len(sites) >= 1 for sites in mapping.values())
+
+
+def test_non_utf8_python_file_does_not_crash_scan(tmp_path: Path) -> None:
+    # A .py file with invalid UTF-8 bytes (e.g. a binary/gzip test fixture some repos ship) must
+    # be recorded as unreadable, not crash the whole scan (regression: UnicodeDecodeError).
+    (tmp_path / "good.py").write_text("import os\n", encoding="utf-8")
+    (tmp_path / "binary.py").write_bytes(b"\x1f\x8b\x08\x00bogus binary content")
+
+    graph = build_import_graph(tmp_path)
+
+    assert "os" in graph.import_roots()  # the readable file is still analyzed
+    assert any(err.file == "binary.py" for err in graph.parse_errors)
+    # parse_errors present keeps reachability cautious (never a silent "not imported").
+    assert graph.parse_errors

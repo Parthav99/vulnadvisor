@@ -340,7 +340,9 @@ def build_import_graph(
         rel = path.relative_to(root).as_posix() if root.is_dir() else path.name
         try:
             text = path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
+            # A non-UTF-8 / binary file with a .py suffix (some repos ship such test fixtures) must
+            # not crash the scan — record it as an unreadable file and stay cautious.
             errors.append(ImportParseError(file=rel, message=f"cannot read: {exc}"))
             continue
         analyzed += 1

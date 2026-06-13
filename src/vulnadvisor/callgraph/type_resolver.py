@@ -284,7 +284,10 @@ def _inject_reveals(workdir: Path, probes: tuple[Probe, ...]) -> dict[int, Probe
 
     for rel, file_probes in by_file.items():
         target = workdir / rel
-        lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+        try:
+            lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+        except (OSError, UnicodeDecodeError):
+            continue  # a non-UTF-8/unreadable file can't carry probes — skip it, never crash
         offset = 0
         for probe in sorted(file_probes, key=lambda p: p.lineno):
             anchor_idx = (probe.lineno - 1) + offset
