@@ -11,6 +11,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict
 
 from vulnadvisor.model.callpath import CallPath
+from vulnadvisor.model.runtime import RuntimeEvidence
 from vulnadvisor.model.score import Score
 
 
@@ -147,3 +148,5 @@ class ScoredSastFinding(BaseModel):
 
     finding: SastFinding
     score: Score
+    # Optional dynamic-coverage annotation (Task 16.6); escalation-only, never changes the tier.
+    runtime: RuntimeEvidence | None = None

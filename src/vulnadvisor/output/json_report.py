@@ -18,7 +18,9 @@ Schema (``schema_version`` 1.2) — top-level object::
           "score":      {"value": <float>, "band", "verdict", "rationale", "cvss_known": <bool>},
           "reachability": {"tier", "reason", "evidence":[...], "call_paths":[...]} | null,
           "fix":        {"command": <str>|null, "fixed_version": <str>|null, "has_fix": <bool>,
-                          "is_major_jump": <bool>, "available_fixes": [...], "note": <str>}
+                          "is_major_jump": <bool>, "available_fixes": [...], "note": <str>},
+          "runtime":    {"status": "runtime-confirmed"|"not-observed", "reason": <str>,
+                          "observed": [{"file", "line"}]}   # only when --coverage annotated it
         },
         {
           "finding_type": "code",                # first-party (SAST) finding (1.2)
@@ -27,7 +29,8 @@ Schema (``schema_version`` 1.2) — top-level object::
           "flow":     {"tier", "source": {"kind"|null, "file"|null, "line"|null},
                         "sink": {"kind", "file", "line"}, "path": [...], "sanitizers": [...]},
           "score":    {"value", "band", "verdict", "rationale", "cvss_known": false},
-          "fix":      {"direction": <str>, "has_fix": false}
+          "fix":      {"direction": <str>, "has_fix": false},
+          "runtime":  {"status", "reason", "observed": [...]}   # only when --coverage annotated it
         }
       ]
     }
@@ -37,7 +40,10 @@ Findings are ordered by descending priority (the deterministic engine ordering),
 
 Version history: 1.2 adds the additive ``finding_type`` discriminator (set to ``"dependency"`` on
 the existing SCA shape) and the ``"code"`` finding sub-shape; everything in 1.1 (which added
-``advisory.display_id``) and 1.0 is unchanged, so 1.0/1.1 consumers can read 1.2 reports.
+``advisory.display_id``) and 1.0 is unchanged, so 1.0/1.1 consumers can read 1.2 reports. The
+optional ``runtime`` annotation (Task 16.6, present only under ``--coverage``) is additive within
+1.2 — absent unless a coverage overlay confirmed/observed the finding, so reports without coverage
+are byte-for-byte unchanged.
 """
 
 import json
@@ -47,6 +53,7 @@ from typing import Any
 from vulnadvisor.engine.safe_fix import resolve_safe_fix
 from vulnadvisor.engine.sast_scoring import UnifiedFinding, order_unified
 from vulnadvisor.model.display import display_id
+from vulnadvisor.model.runtime import RuntimeEvidence
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
 from vulnadvisor.sast.model import ScoredSastFinding
@@ -57,6 +64,22 @@ __all__ = ["SCHEMA_VERSION", "build_report", "to_json"]
 SCHEMA_VERSION = "1.2"
 
 
+def _add_runtime(target: dict[str, Any], runtime: RuntimeEvidence | None) -> None:
+    """Add the optional dynamic-coverage annotation (Task 16.6) to ``target`` in place.
+
+    Additive within schema 1.2: the ``runtime`` key appears only when a ``--coverage`` overlay
+    annotated the finding, so reports without coverage are byte-for-byte unchanged and consumers
+    that ignore the key keep reading every report.
+    """
+    if runtime is None:
+        return
+    target["runtime"] = {
+        "status": runtime.status.value,
+        "reason": runtime.reason,
+        "observed": [{"file": line.file, "line": line.line} for line in runtime.observed],
+    }
+
+
 def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
     """Serialize one scored dependency (SCA) finding to the documented JSON shape."""
     dependency = finding.matched.dependency
@@ -65,7 +88,7 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
     score = finding.score
     reachability = finding.reachability
     safe_fix = resolve_safe_fix(dependency, advisory)
-    return {
+    result: dict[str, Any] = {
         "finding_type": "dependency",
         "dependency": {
             "name": dependency.name,
@@ -117,6 +140,8 @@ def _finding_dict(finding: ScoredFinding) -> dict[str, Any]:
             "note": safe_fix.note,
         },
     }
+    _add_runtime(result, finding.runtime)
+    return result
 
 
 def _sast_finding_dict(scored: ScoredSastFinding) -> dict[str, Any]:
@@ -132,7 +157,7 @@ def _sast_finding_dict(scored: ScoredSastFinding) -> dict[str, Any]:
         # Intra-procedural or literal (CWE-798): source == sink, empty path.
         source = {"kind": finding.source_kind, "file": finding.file, "line": finding.line}
         path = []
-    return {
+    result: dict[str, Any] = {
         "finding_type": "code",
         "rule": {"cwe": finding.cwe, "kind": finding.kind, "title": finding.title},
         "location": {"file": finding.file, "line": finding.line, "column": finding.col},
@@ -153,6 +178,8 @@ def _sast_finding_dict(scored: ScoredSastFinding) -> dict[str, Any]:
         },
         "fix": {"direction": remediation_direction(finding.cwe), "has_fix": False},
     }
+    _add_runtime(result, scored.runtime)
+    return result
 
 
 def _serialize(finding: UnifiedFinding) -> dict[str, Any]:

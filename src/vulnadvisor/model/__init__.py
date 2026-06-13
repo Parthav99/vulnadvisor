@@ -27,6 +27,7 @@ from vulnadvisor.model.imports import (
     ImportSite,
 )
 from vulnadvisor.model.reachability import Reachability, ReachabilityTier
+from vulnadvisor.model.runtime import ObservedLine, RuntimeEvidence, RuntimeStatus
 from vulnadvisor.model.safe_fix import SafeFix
 from vulnadvisor.model.score import PriorityBand, Score, ScoredFinding
 from vulnadvisor.model.symbols import (
@@ -59,9 +60,12 @@ __all__ = [
     "MappingSource",
     "MatchResult",
     "MatchedAdvisory",
+    "ObservedLine",
     "PriorityBand",
     "Reachability",
     "ReachabilityTier",
+    "RuntimeEvidence",
+    "RuntimeStatus",
     "SafeFix",
     "Score",
     "ScoredFinding",

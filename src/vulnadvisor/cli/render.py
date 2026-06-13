@@ -26,6 +26,7 @@ from vulnadvisor.engine.safe_fix import resolve_safe_fix
 from vulnadvisor.engine.sast_scoring import order_unified
 from vulnadvisor.model.display import display_title
 from vulnadvisor.model.explanation import Explanation, ExplanationSource
+from vulnadvisor.model.runtime import RuntimeEvidence
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
 from vulnadvisor.sast.model import ScoredSastFinding
@@ -35,6 +36,17 @@ __all__ = ["badge_for_band", "render_report", "render_to_string"]
 
 _RED_BANDS = (PriorityBand.CRITICAL, PriorityBand.HIGH)
 _MAX_SUMMARY_CHARS = 320
+
+
+def _runtime_line(runtime: RuntimeEvidence | None) -> str:
+    """A one-line runtime-coverage annotation for Card C, or empty when not analyzed.
+
+    The annotation is shown *alongside* the static tier - it never replaces it (the tier and the
+    priority are unchanged by coverage; this only adds runtime proof or an advisory note).
+    """
+    if runtime is None:
+        return ""
+    return f"\nRuntime: {runtime.status.value.upper()} - {runtime.reason}"
 
 
 def badge_for_band(band: PriorityBand) -> str:
@@ -101,6 +113,7 @@ def _render_finding(finding: ScoredFinding, explanation: Explanation | None = No
         f"{fix_line}\n"
         f"{safe_fix.note}\n"
         f"{reach_line}"
+        f"{_runtime_line(finding.runtime)}"
         f"{why_line}",
     )
 
@@ -138,7 +151,8 @@ def _render_sast_finding(scored: ScoredSastFinding) -> Panel:
         f"Verdict: {score.verdict}  (priority {score.value:.1f}, {score.band.value})\n"
         f"Fix direction: {remediation_direction(finding.cwe)}\n"
         f"Tier: {finding.tier.value.upper()}\n"
-        f"{flow_line}",
+        f"{flow_line}"
+        f"{_runtime_line(scored.runtime)}",
     )
 
     header = f"{finding.cwe} {finding.title}  |  priority {score.value:.1f} ({score.band.value})"

@@ -19,6 +19,7 @@ from vulnadvisor.engine.safe_fix import resolve_safe_fix
 from vulnadvisor.engine.sast_scoring import cwe_base_severity, order_unified
 from vulnadvisor.model.dependency import DependencySource
 from vulnadvisor.model.display import display_id
+from vulnadvisor.model.runtime import RuntimeEvidence
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
 from vulnadvisor.sast.model import ScoredSastFinding
@@ -61,6 +62,20 @@ _CWE_NAMES: dict[str, tuple[str, str]] = {
 }
 
 
+def _add_runtime_property(properties: dict[str, Any], runtime: RuntimeEvidence | None) -> None:
+    """Add the optional dynamic-coverage annotation (Task 16.6) to a result's properties in place.
+
+    Additive: the ``runtime`` property bag appears only when a ``--coverage`` overlay annotated the
+    finding, so SARIF for scans without coverage is unchanged.
+    """
+    if runtime is None:
+        return
+    properties["runtime"] = {
+        "status": runtime.status.value,
+        "observed": [f"{line.file}:{line.line}" for line in runtime.observed],
+    }
+
+
 def _security_severity(finding: ScoredFinding) -> str:
     """0-10 severity string GitHub reads: the CVSS base if known, else priority/10."""
     score = finding.score
@@ -96,7 +111,7 @@ def _result(finding: ScoredFinding) -> dict[str, Any]:
     uri = _MANIFEST_FILENAMES.get(dependency.source, "environment")
     safe_fix = resolve_safe_fix(dependency, advisory)
     reachability = finding.reachability
-    return {
+    result: dict[str, Any] = {
         "ruleId": advisory.id,
         "level": _LEVELS[score.band],
         "message": {"text": f"{name} {version}: {summary} ({score.verdict}.)"},
@@ -112,6 +127,8 @@ def _result(finding: ScoredFinding) -> dict[str, Any]:
             "fix_command": fix_command(dependency, safe_fix),
         },
     }
+    _add_runtime_property(result["properties"], finding.runtime)
+    return result
 
 
 def _sast_rule_id(kind: str) -> str:
@@ -184,6 +201,7 @@ def _sast_result(scored: ScoredSastFinding) -> dict[str, Any]:
             "remediation": remediation_direction(finding.cwe),
         },
     }
+    _add_runtime_property(result["properties"], scored.runtime)
     code_flows = _code_flows(scored)
     if code_flows:
         result["codeFlows"] = code_flows

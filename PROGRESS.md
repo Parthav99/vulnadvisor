@@ -4,6 +4,73 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 16.6 — Dynamic coverage overlay (resolve DYNAMIC-UNKNOWN with runtime truth)  (2026-06-14)
+
+**Status:** complete, full automated gate passing. **No new runtime/dev dependency** — the parser
+reads coverage.py's JSON (stdlib `json`); the live e2e produced the report with an *ephemeral*
+`uv run --with coverage --with pytest` (never added to the lockfile, published wheel still 3 runtime
+deps). Marries the static structure (reachability tiers, taint flows) with runtime evidence from a
+real test run, shrinking the ambiguous tiers **with proof, never with optimism**.
+
+**The soundness shape (decided up front):** the overlay is a **pure annotation** — it only ever
+*sets* a finding's new `runtime` field; it **never touches the tier, the score, or the ranking**.
+So no coverage input can downgrade a finding (the release-blocking rule), and ranking stays
+deterministic. `RUNTIME-CONFIRMED` is escalation-only (KEV-style); `not-observed` is advisory only
+(a test suite is not production). I kept JSON at `schema_version` **1.2** with an **additive
+`runtime` key present only when `--coverage` annotated the finding** — reports without coverage are
+byte-for-byte unchanged (no platform/migration churn; the existing `report.json`/`mixed_ranking`
+snapshots stayed green untouched).
+
+**Pieces:**
+- **`model/runtime.py`** — `RuntimeStatus` (`RUNTIME_CONFIRMED` / `NOT_OBSERVED`), `ObservedLine`,
+  `RuntimeEvidence` (status + reason + observed `file:line`s). Optional `runtime` field added to
+  **`ScoredFinding`** and **`ScoredSastFinding`** (frozen, additive, default `None`).
+- **`coverage/parse.py`** — defensive coverage.py-JSON → `CoverageData` (project-relative POSIX →
+  executed-line set). Reads **only `executed_lines`**, which is present in *both* line and branch
+  mode, so one code path handles both. Malformed input (not JSON / wrong top-level / missing
+  `files`) → `CoverageParseError`; individual bad file entries skipped; non-int/bool/non-positive
+  line values coerced out; **paths resolved against the project root and dropped if outside it**
+  (Windows backslash keys normalize to the same posix paths findings use).
+- **`coverage/overlay.py`** — pure `apply_coverage_overlay` + per-finding annotators. A finding's
+  *evidence lines* = the first-party `file:line`s that prove its usage (SCA: import sites, dynamic
+  sites, call-path steps; SAST: the sink + every flow step). If coverage includes those files and
+  >=1 executed → `RUNTIME_CONFIRMED`; if it includes them but none executed → `NOT_OBSERVED`; if it
+  doesn't include them → no annotation (we say nothing rather than guess). Confidently-safe tiers
+  (`NOT_IMPORTED` / SAST `SANITIZED`) are never annotated.
+- **CLI** — `vulnadvisor scan --coverage <coverage.json>` (Typer `exists=True` validation;
+  malformed content → clean `BadParameter`/exit 2, never a traceback). Coverage paths normalized
+  against the scan root (dir, or the file's parent). Overlay runs before ranking, so terminal /
+  JSON / SARIF / `--upload` all carry it.
+- **Output** — terminal Card C gains a `Runtime: RUNTIME-CONFIRMED - ...` line *alongside* the tier;
+  JSON gains the additive `runtime` object; SARIF result `properties.runtime` (status + observed).
+  All three additive-only-when-present.
+
+**Live e2e (real pytest + branch coverage, documented):** fixture `c:\tmp\va166` — `myapp/runner.py`
+with two CWE-78 sinks, a test that calls only `run_command`. `coverage run --branch -m pytest` +
+`coverage json` → `executed_lines` for `runner.py` = `[1,4,6,9]` (the exercised `os.system` is
+line 6; the orphan sink line 11 never runs). `vulnadvisor scan . --sast-only --coverage coverage.json`
+→ the **executed sink (runner.py:6) is `RUNTIME-CONFIRMED`** with `observed=[runner.py:6]`, the
+**unexercised sibling (runner.py:11) is `not-observed`** — and both stay `POSSIBLE-FLOW` (the param
+isn't a modeled entry-point source, so the tier is unchanged: exactly the soundness contract). This
+also proves cross-platform path handling (Windows `myapp\runner.py` coverage keys vs posix finding
+paths) and branch-mode parsing.
+
+**Validation:** ruff + format clean (114 files) · `mypy --strict src` clean (78) · **pytest 689
+passed, 1 skipped** (+28: `tests/test_coverage_overlay.py` 23 — parse line/branch/absolute-path/
+outside-project-ignored/garbage-coerced/4x malformed-rejected/skip-bad-entry/dup-path-union; SCA
+import-site + call-path-step + dynamic-evidence confirmation, covered-but-unexecuted not-observed,
+uncovered→no-annotation, NOT_IMPORTED never annotated; SAST sink + flow-step confirmation,
+not-observed, SANITIZED never annotated; order-preserving + inputs-not-mutated; **exhaustive
+soundness sweep** — every tier x 5 coverage inputs, tier+score unchanged; `tests/test_cli.py` +5:
+`--coverage` confirmed/not-observed/terminal-RUNTIME-CONFIRMED/malformed→exit 2/missing-file→exit 2).
+Existing JSON/SARIF snapshots untouched (additive-only-when-present verified).
+
+**Open questions:** none blocking. M16 SAST v1 complete (16.1–16.6). **Next:** the deferred CLI v2.0
+tag (v2.0.0) + 16.4/16.5 live checks (GitHub code-scanning SARIF upload; seeded-platform SAST card
+e2e; full SCA+SAST warm/cold + pyscan perf), or M17 (Task 17.1 `vulnadvisor fix`).
+
+---
+
 ## Task 16.5 — SAST benchmark vs Bandit  (2026-06-14)
 
 **Status:** complete, full automated gate passing. **New dev/benchmark dependency (approved at task

@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 
 from vulnadvisor.model.advisory import MatchedAdvisory
 from vulnadvisor.model.reachability import Reachability
+from vulnadvisor.model.runtime import RuntimeEvidence
 
 
 class PriorityBand(str, Enum):
@@ -47,10 +48,17 @@ class Score(BaseModel):
 
 
 class ScoredFinding(BaseModel):
-    """A matched advisory paired with its deterministic score and reachability tier."""
+    """A matched advisory paired with its deterministic score and reachability tier.
+
+    ``runtime`` is an optional dynamic-coverage annotation (Task 16.6): runtime evidence that the
+    finding's code did (or did not) execute under a test suite. It is set only by the coverage
+    overlay and never changes ``score`` or ``reachability.tier`` — escalation-only, advisory at
+    most (see :class:`~vulnadvisor.model.runtime.RuntimeEvidence`).
+    """
 
     model_config = ConfigDict(frozen=True)
 
     matched: MatchedAdvisory
     score: Score
     reachability: Reachability | None = None
+    runtime: RuntimeEvidence | None = None

@@ -119,6 +119,33 @@ Bands → verdicts:
 | 15–39.9 | LOW      | Monitor          |
 | < 15    | INFO     | Deprioritize     |
 
+## Runtime coverage overlay (`--coverage`)
+
+Static analysis tells you a finding is *reachable*; a test run can tell you its code *actually
+executes*. Feed VulnAdvisor a [coverage.py](https://coverage.readthedocs.io/) JSON report and it
+marries the two — shrinking the ambiguous tiers with proof instead of optimism:
+
+```bash
+coverage run --branch -m pytest          # your existing test suite
+coverage json -o coverage.json           # line OR branch coverage both work
+vulnadvisor scan . --coverage coverage.json
+```
+
+For each finding, VulnAdvisor adds a **runtime annotation shown alongside the static tier** (it
+never replaces it):
+
+- **`RUNTIME-CONFIRMED`** — coverage proves a line tied to the finding (an import site, a call-path
+  step, or a taint sink/flow location) executed. An ambiguous `IMPORTED` / `DYNAMIC-UNKNOWN` /
+  `POSSIBLE-FLOW` finding now carries runtime proof.
+- **`not-observed`** — the suite covered the finding's files but ran none of its lines. This is
+  **advisory only**: a test suite is not production, so it **never downgrades a tier** (the
+  soundness rule holds — false "you're safe" is release-blocking).
+
+The overlay is **escalation-only and deterministic**: it adds evidence but never changes a tier,
+a priority score, or the ranking. Coverage of files outside the scanned project is ignored, and a
+malformed coverage report is a clean usage error, never a crash. The annotation appears in the
+terminal Card C, in the JSON report (additive `runtime` object), and in SARIF result properties.
+
 ## Output formats & CI gating
 
 `vulnadvisor scan PATH --format {terminal,json,sarif}`:

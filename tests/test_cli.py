@@ -470,3 +470,70 @@ def test_scan_upload_explicit_flags_beat_stored_login(
     assert result.exit_code == 0
     assert captured["api_key"] == "va_k.flag"
     assert captured["api_url"] == "https://flag.example.com"
+
+
+def _tainted_project(tmp_path: Path) -> Path:
+    """A first-party project with a confirmed command-injection flow (input() -> os.system)."""
+    (tmp_path / "app.py").write_text(
+        "import os\n\n\ndef run():\n    cmd = input()\n    os.system(cmd)\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_scan_coverage_confirms_executed_finding(tmp_path: Path) -> None:
+    # --sast-only keeps the scan offline (no matcher/network). The os.system sink is on line 6.
+    project = _tainted_project(tmp_path)
+    cov = tmp_path / "coverage.json"
+    cov.write_text(json.dumps({"files": {"app.py": {"executed_lines": [6]}}}), encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["scan", str(project), "--sast-only", "--coverage", str(cov), "--format", "json"]
+    )
+    assert result.exit_code == 0
+    findings = json.loads(result.stdout)["findings"]
+    code = [f for f in findings if f["finding_type"] == "code"]
+    assert code, "expected a SAST finding"
+    assert code[0]["runtime"]["status"] == "runtime-confirmed"
+    assert {"file": "app.py", "line": 6} in code[0]["runtime"]["observed"]
+
+
+def test_scan_coverage_not_observed_when_line_unexecuted(tmp_path: Path) -> None:
+    project = _tainted_project(tmp_path)
+    cov = tmp_path / "coverage.json"
+    # The file is covered but none of the finding's lines ran -> advisory not-observed, tier kept.
+    cov.write_text(json.dumps({"files": {"app.py": {"executed_lines": [1]}}}), encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["scan", str(project), "--sast-only", "--coverage", str(cov), "--format", "json"]
+    )
+    assert result.exit_code == 0
+    code = [f for f in json.loads(result.stdout)["findings"] if f["finding_type"] == "code"]
+    assert code and code[0]["runtime"]["status"] == "not-observed"
+
+
+def test_scan_coverage_terminal_shows_runtime_line(tmp_path: Path) -> None:
+    project = _tainted_project(tmp_path)
+    cov = tmp_path / "coverage.json"
+    cov.write_text(json.dumps({"files": {"app.py": {"executed_lines": [6]}}}), encoding="utf-8")
+
+    result = runner.invoke(app, ["scan", str(project), "--sast-only", "--coverage", str(cov)])
+    assert result.exit_code == 0
+    assert "RUNTIME-CONFIRMED" in result.stdout
+
+
+def test_scan_coverage_malformed_is_usage_error(tmp_path: Path) -> None:
+    project = _tainted_project(tmp_path)
+    cov = tmp_path / "coverage.json"
+    cov.write_text("this is not coverage json", encoding="utf-8")
+
+    result = runner.invoke(app, ["scan", str(project), "--sast-only", "--coverage", str(cov)])
+    assert result.exit_code == 2  # Typer usage error, not a traceback
+
+
+def test_scan_coverage_missing_file_is_usage_error(tmp_path: Path) -> None:
+    project = _tainted_project(tmp_path)
+    result = runner.invoke(
+        app, ["scan", str(project), "--sast-only", "--coverage", str(tmp_path / "nope.json")]
+    )
+    assert result.exit_code == 2  # Typer's exists=True validation rejects it

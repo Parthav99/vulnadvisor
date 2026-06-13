@@ -17,6 +17,7 @@ from vulnadvisor.callgraph.frameworks import FrameworkPlugin
 from vulnadvisor.callgraph.type_resolver import PyrightResolver, TypeResolver
 from vulnadvisor.cli.pipeline import ScanReport, scan_project
 from vulnadvisor.cli.render import render_report
+from vulnadvisor.coverage import CoverageParseError, apply_coverage_overlay, parse_coverage
 from vulnadvisor.engine.sast_scoring import order_unified
 from vulnadvisor.llm.client import build_anthropic_client
 from vulnadvisor.llm.explainer import Explainer
@@ -229,6 +230,17 @@ def scan(
             help="Only analyze first-party code (SAST); skip dependency matching (works offline).",
         ),
     ] = False,
+    coverage: Annotated[
+        Path | None,
+        typer.Option(
+            "--coverage",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="coverage.py JSON report; confirms ambiguous findings whose code ran at runtime.",
+        ),
+    ] = None,
     upload: Annotated[
         bool,
         typer.Option(
@@ -276,6 +288,11 @@ def scan(
     ``--top N`` limits the *output* to the N highest-priority findings (ranking is unchanged;
     the exit-code gate still considers every finding). ``--public/--internal`` is reserved for
     reachability (M4+).
+
+    ``--coverage <coverage.json>`` overlays a coverage.py JSON report: a finding whose code is
+    proven to execute at runtime is annotated ``RUNTIME-CONFIRMED`` (shown alongside its static
+    tier), while a finding whose covered files ran none of its lines is marked ``not-observed``
+    (advisory only). The overlay is escalation-only: it never changes a tier, score, or ranking.
     """
     _ = public  # reserved for later milestones; accepted now for a stable CLI surface
 
@@ -309,6 +326,9 @@ def scan(
     finally:
         if analysis_cache is not None:
             analysis_cache.close()
+
+    if coverage is not None:
+        report = _overlay_coverage(report, coverage, path)
 
     # One ranked list across both finding types. --top is a pure display limit on the leading N
     # (never reorders, never affects --fail-on which gates over every finding). Slice the merged
@@ -347,6 +367,24 @@ def scan(
 
     if threshold is not None and should_fail([*report.findings, *report.sast_findings], threshold):
         raise typer.Exit(code=1)
+
+
+def _overlay_coverage(report: ScanReport, coverage: Path, scan_path: Path) -> ScanReport:
+    """Annotate ``report``'s findings with runtime evidence from a coverage.py JSON report.
+
+    The coverage paths are normalized against the scanned project root (the scan path, or its parent
+    when a single file was scanned), matching the project-relative paths findings already use.
+    Malformed coverage input fails fast and cleanly (no traceback) per the defensive-parsing rule.
+    """
+    project_root = scan_path if scan_path.is_dir() else scan_path.parent
+    try:
+        data = parse_coverage(coverage.read_text(encoding="utf-8"), project_root)
+    except (OSError, ValueError, CoverageParseError) as exc:
+        raise typer.BadParameter(
+            f"could not read coverage report: {exc}", param_hint="--coverage"
+        ) from exc
+    findings, sast_findings = apply_coverage_overlay(report.findings, report.sast_findings, data)
+    return ScanReport(findings, report.degraded_sources, sast_findings)
 
 
 def _upload_report(
