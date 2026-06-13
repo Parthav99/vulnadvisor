@@ -4,6 +4,80 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 17.1 — `vulnadvisor fix` (local, validated)  (2026-06-14)
+
+**Status:** complete, full automated gate passing. **No new dependency** (stdlib `ast`/`shutil`/
+`subprocess`/`tempfile` + the existing SAST engine + the existing dependency-free Anthropic client).
+First M17 task — the pivot from "here's the direction" (16.4 Card C) to a **machine-proven patch**.
+
+**Scope decisions (maintainer, at task start):** (1) **SAST findings only** — SCA findings already
+carry a deterministic, by-construction-valid safe-fix (version bump from `engine/safe_fix.py`); the
+LLM-validated loop is built around first-party code, exactly what the "re-scan proves the finding is
+gone" gate and the >=8-fixture harness test. (2) **Temp-copy + `git apply`** — the patch is proven
+on a throwaway copy of the project; the user's working tree is never touched until `--apply`.
+
+**The soundness shape:** the model only *proposes*; a deterministic loop *proves*. A patch is
+surfaced **only** when it passed every check — an unvalidated patch is never emitted (the release
+rule). The single network call is the model request through the user's own key; **every** validation
+step is local (subprocess + filesystem only), so code never leaves the machine otherwise.
+
+**Pieces:**
+- **`model/fix.py`** — pure, frozen pydantic: `FixSuggestion` (unified diff + rationale +
+  self-reported `FixConfidence` — advisory only, never gates), `ValidationStep`/`StepStatus`/
+  `ValidationReport` (with `first_failure()` + `failure_feedback()`), `FixAttempt`, `FixOutcome`,
+  `FixResult`.
+- **`llm/fix.py`** (pure half) — finding identity (`sast_finding_id` = `<file>:<line>:<kind>`,
+  matches scan output; `sast_signature` = `(file, cwe, kind)`, **line-independent** since a patch
+  shifts lines; `is_alarming` = tier != SANITIZED), `resolve_sast_finding` (full id / `file:line` /
+  bare `file`/`kind`/`cwe`, ambiguous → error listing exact ids), `extract_code_context` (only the
+  **flow's functions** — the enclosing `def` of the sink and every flow step, decorators included so
+  framework routes/sources are visible; module-scope sinks get a small window; injectable
+  `source_for` keeps it pure), the prompt (`FIX_SYSTEM_PROMPT` + `build_fix_messages` with retry
+  feedback), defensive `parse_fix_suggestion` (fence/prose-tolerant, requires non-empty diff +
+  rationale, coerces unknown confidence → MEDIUM, adds the trailing newline `git apply` needs), and
+  the **`generate_fix` loop** (validator *injected* → unit-testable with no subprocess).
+- **`llm/fix_validate.py`** (impure half) — `validate_fix`: copytree (ignoring vcs/venv/caches) →
+  `git apply -p1 --recount` → **syntax** (`ast.parse` every changed `.py`, *always* run — closes the
+  hole where a broken file would silently drop out of the re-scan) → **ruff** (skipped if absent) →
+  **mypy** (only if the project configures it) → **tests** (only if a suite is present; pytest exit
+  5 "no tests" treated as pass) → **rescan** (re-run `analyze_taint`+`score_sast_findings` on the
+  copy; **the target signature must no longer be alarming AND no new alarming signature may appear**
+  — the regression guard). Stops at the first failed step and feeds its diagnostic back. Plus
+  `build_validator` (binds it to a project/target) and `apply_patch_to_tree` (`--apply`, `git apply
+  --check` first so a bad patch leaves the tree untouched).
+- **CLI `vulnadvisor fix <finding-id> [--apply] [--path .] [--max-attempts 3]`** — SAST-only scan
+  (offline, `run_sca=False`) → resolve → require own model key (clean exit 2 + message if absent;
+  named as the only network call) → `generate_fix` → print the validated diff + rationale (or an
+  honest "No safe fix found after N attempt(s)" with per-attempt reasons, exit 1) → `--apply`
+  writes it. `build_fix_client` is module-level for test substitution.
+
+**Validation:** ruff + format clean (180 files) · `mypy --strict src` clean (81) /
+`src platform` clean (109) · **pytest 726 passed, 1 skipped** (+37). New `tests/test_fix.py` (33):
+**harness over 8 fixture vulns across all 7 CWE classes** (CWE-78 sanitize *and* argv-list, CWE-89
+parameterize, CWE-94 literal_eval, CWE-502 yaml-safe *and* pickle→json, CWE-22 secure_filename,
+CWE-798 secret→env) — each canonical (git-authored) fix passes the **full** apply→syntax→ruff→rescan
+loop; **deliberately-ineffective patch → NO_SAFE_FIX** (rescan "still present", 3 attempts, no patch
+returned); **`--apply` round-trip** (git repo: apply → file == intended fix → clean re-scan);
+**network audit** (recording transport proves the only outbound URL is `api.anthropic.com`);
+parse matrix (valid/fenced/missing-diff/non-json/bad-confidence); resolution (id/file:line/bare/
+not-found/ambiguous); context (enclosing fn + cross-function step / unreadable file / module-scope
+secret window); loop (first-try / retry-with-feedback / all-fail / parse-failure / model-error
+attempts recorded) with a fake validator; validator integration (non-applying / syntax-breaking /
+**regression-introducing → rescan "introduced new finding"** / sanitizing-accepted / bad-patch
+raises). `tests/test_cli.py` (+4): no-key → exit 2, unknown id → exit 2, validated diff printed
+without touching the tree, `--apply` writes the patch.
+
+**Open questions / deferred (prior-task precedent, tool/credential-gated):** the **live LLM run**
+(`vulnadvisor fix` against a real Anthropic key generating a real diff end-to-end) — the loop,
+prompt, parsing, and every validation step are proven hermetically with a scripted client and real
+subprocess/rescan; only the model's own patch authorship needs a funded key (same blocker as the
+15.x red-team). **Known limitation (documented):** the rescan signature is `(file, cwe, kind)`, so a
+file with two same-class sinks where only one is fixed reports "still present" — conservative
+(soundness-safe), refine later if needed. **Next:** Task 17.2 (PR review agent — in-line
+`suggestion` comments from CI-validated fixes) or the deferred CLI v2.0/v2.1 live checks + tags.
+
+---
+
 ## Task 16.6 — Dynamic coverage overlay (resolve DYNAMIC-UNKNOWN with runtime truth)  (2026-06-14)
 
 **Status:** complete, full automated gate passing. **No new runtime/dev dependency** — the parser

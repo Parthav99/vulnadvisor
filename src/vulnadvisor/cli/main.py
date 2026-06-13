@@ -19,9 +19,18 @@ from vulnadvisor.cli.pipeline import ScanReport, scan_project
 from vulnadvisor.cli.render import render_report
 from vulnadvisor.coverage import CoverageParseError, apply_coverage_overlay, parse_coverage
 from vulnadvisor.engine.sast_scoring import order_unified
-from vulnadvisor.llm.client import build_anthropic_client
+from vulnadvisor.llm.client import LLMClient, build_anthropic_client
 from vulnadvisor.llm.explainer import Explainer
+from vulnadvisor.llm.fix import (
+    FixError,
+    extract_code_context,
+    generate_fix,
+    resolve_sast_finding,
+    sast_finding_id,
+)
+from vulnadvisor.llm.fix_validate import PatchApplyError, apply_patch_to_tree, build_validator
 from vulnadvisor.model.advisory import Advisory
+from vulnadvisor.model.fix import FixOutcome
 from vulnadvisor.model.score import ScoredFinding
 from vulnadvisor.output.credentials import (
     Credentials,
@@ -96,6 +105,15 @@ def build_explainer() -> Explainer:
     """
     client = build_anthropic_client()
     return Explainer(client=client, cache=SqliteCache(default_cache_path()))
+
+
+def build_fix_client() -> LLMClient | None:
+    """Build the LLM client for ``vulnadvisor fix``: Anthropic from the user's own key, or ``None``.
+
+    Defined as a module-level function so tests can substitute a scripted client. The fix loop's
+    only network call goes through this client (the user's own key); every validation step is local.
+    """
+    return build_anthropic_client()
 
 
 def build_symbol_names_for() -> Callable[[Advisory], frozenset[str]] | None:
@@ -559,6 +577,119 @@ def mcp() -> None:
         )
         raise typer.Exit(code=1) from exc
     run_stdio()
+
+
+@app.command()
+def fix(
+    finding_id: Annotated[
+        str,
+        typer.Argument(
+            help="Id of the first-party finding to fix (e.g. 'app/views.py:42:command-injection')."
+        ),
+    ],
+    path: Annotated[
+        Path,
+        typer.Option(
+            "--path",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Path to the Python project to fix (default: current directory).",
+        ),
+    ] = Path("."),
+    apply: Annotated[
+        bool,
+        typer.Option(
+            "--apply",
+            help="Write the validated patch to the working tree (default: print it only).",
+        ),
+    ] = False,
+    max_attempts: Annotated[
+        int,
+        typer.Option(
+            "--max-attempts",
+            min=1,
+            max=5,
+            help="How many times to retry the model with validation feedback (default: 3).",
+        ),
+    ] = 3,
+) -> None:
+    """Generate and machine-validate a patch for a first-party (SAST) finding.
+
+    Scans PATH for first-party vulnerabilities (offline), then asks your own LLM for the smallest
+    safe patch for FINDING-ID and *proves* it on a throwaway copy of the project: the patch must
+    apply cleanly, keep the code parsing/linting/type-checking, pass the project's tests, and — the
+    soundness gate — make the finding disappear from a fresh scan without introducing a new one.
+    Only a fully validated patch is shown; otherwise you get an honest "no safe fix found". The
+    working tree is never touched unless you pass ``--apply``. The only network call is to your own
+    model key; your code never leaves the machine otherwise.
+    """
+    report = scan_project(path, build_matcher(), run_sca=False, run_sast=True)
+    try:
+        target = resolve_sast_finding(report.sast_findings, finding_id)
+    except FixError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+
+    client = build_fix_client()
+    if client is None:
+        typer.secho(
+            "vulnadvisor fix needs a language model. Set ANTHROPIC_API_KEY (your own key); "
+            "it is the only network call fix makes - your code stays on this machine.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    def source_for(rel: str) -> str | None:
+        try:
+            return (path / rel).read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    typer.echo(f"Fixing {sast_finding_id(target)} ({target.finding.cwe})...")
+    context = extract_code_context(target.finding, source_for)
+    validate = build_validator(project_root=path, target=target, baseline=report.sast_findings)
+    result = generate_fix(
+        finding=target.finding,
+        code_context=context,
+        client=client,
+        validate=validate,
+        max_attempts=max_attempts,
+    )
+
+    if result.outcome is not FixOutcome.VALIDATED or result.suggestion is None:
+        typer.secho(
+            f"No safe fix found after {len(result.attempts)} attempt(s).",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        for index, attempt in enumerate(result.attempts, start=1):
+            if attempt.report is not None:
+                reason = attempt.report.failure_feedback() or "validation failed"
+            else:
+                reason = attempt.note or "no patch produced"
+            typer.echo(f"  Attempt {index}: {reason}", err=True)
+        raise typer.Exit(code=1)
+
+    suggestion = result.suggestion
+    typer.secho(
+        f"Validated patch found (model confidence: {suggestion.confidence.value}).",
+        fg=typer.colors.GREEN,
+    )
+    typer.echo(f"Rationale: {suggestion.rationale}\n")
+    typer.echo(suggestion.diff)
+
+    if apply:
+        try:
+            apply_patch_to_tree(suggestion.diff, path)
+        except PatchApplyError as exc:
+            typer.secho(f"Failed to apply patch: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1) from exc
+        typer.secho("Applied the validated patch to your working tree.", fg=typer.colors.GREEN)
+    else:
+        typer.echo("Re-run with --apply to write this patch to your working tree.")
 
 
 @app.command(name="backfill")

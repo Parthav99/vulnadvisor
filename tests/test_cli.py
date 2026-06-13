@@ -537,3 +537,105 @@ def test_scan_coverage_missing_file_is_usage_error(tmp_path: Path) -> None:
         app, ["scan", str(project), "--sast-only", "--coverage", str(tmp_path / "nope.json")]
     )
     assert result.exit_code == 2  # Typer's exists=True validation rejects it
+
+
+# --- vulnadvisor fix (Task 17.1) ---------------------------------------------------------------
+
+_FIX_VULN = "import os\n\n\ndef run():\n    cmd = input()\n    os.system(cmd)\n"
+_FIX_FIXED = (
+    "import os\nimport shlex\n\n\ndef run():\n    cmd = input()\n    os.system(shlex.quote(cmd))\n"
+)
+
+
+class _ScriptedFixClient:
+    """An LLMClient returning a canned fix-suggestion JSON (no network)."""
+
+    model = "scripted"
+
+    def __init__(self, diff: str) -> None:
+        self._diff = diff
+
+    def complete(self, *, system: str, user: str) -> str:
+        payload = {"diff": self._diff, "rationale": "Quote the argument.", "confidence": "high"}
+        return json.dumps(payload)
+
+
+def _fix_diff(rel: str, before: str, after: str) -> str:
+    import subprocess
+    import tempfile
+
+    repo = Path(tempfile.mkdtemp(prefix="va-clidiff-"))
+    (repo / rel).write_text(before, encoding="utf-8")
+    env = ["-c", "user.email=t@t.t", "-c", "user.name=t"]
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", *env, "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", *env, "commit", "-qm", "b"], cwd=repo, check=True)
+    (repo / rel).write_text(after, encoding="utf-8")
+    return subprocess.run(
+        ["git", *env, "diff"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _fix_project(tmp_path: Path) -> Path:
+    (tmp_path / "app.py").write_text(_FIX_VULN, encoding="utf-8")
+    return tmp_path
+
+
+def test_fix_requires_model_key(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda: None)
+    project = _fix_project(tmp_path)
+    result = runner.invoke(app, ["fix", "app.py", "--path", str(project)])
+    assert result.exit_code == 2
+    assert "ANTHROPIC_API_KEY" in result.output
+
+
+def test_fix_unknown_finding_id_is_usage_error(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(""))
+    project = _fix_project(tmp_path)
+    result = runner.invoke(app, ["fix", "nope.py", "--path", str(project)])
+    assert result.exit_code == 2
+    assert "no first-party finding matches" in result.output
+
+
+def test_fix_prints_validated_diff_without_applying(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(diff))
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(app, ["fix", "app.py", "--path", str(project)])
+    assert result.exit_code == 0, result.output
+    assert "Validated patch found" in result.output
+    assert "shlex.quote" in result.output
+    # Without --apply the working tree is untouched.
+    assert (project / "app.py").read_text(encoding="utf-8") == _FIX_VULN
+
+
+def test_fix_apply_writes_the_patch(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(diff))
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(app, ["fix", "app.py", "--path", str(project), "--apply"])
+    assert result.exit_code == 0, result.output
+    assert "Applied the validated patch" in result.output
+    assert (project / "app.py").read_text(encoding="utf-8") == _FIX_FIXED
