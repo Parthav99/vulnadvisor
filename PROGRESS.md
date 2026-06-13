@@ -4,6 +4,56 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 16.2 — Sink detection + rule pack (intra-procedural)  (2026-06-13)
+
+**Status:** complete, Validation Gate passing. No new dependencies (stdlib `ast` + `re` + the
+existing import-graph file walker). New package `src/vulnadvisor/sast/` — the first M16 code,
+implementing exactly the §3 rule schema from the approved design doc.
+
+Find every sink, classify locally, never crash on weird code:
+
+- **`sast/model.py`** — `SastTier` (the four design-doc tiers: `CONFIRMED_FLOW` / `DYNAMIC_UNKNOWN`
+  / `POSSIBLE_FLOW` / `SANITIZED`, its own enum — *not* the import-centric `ReachabilityTier`) and
+  `SinkHit` (frozen pydantic: cwe/kind/title/file/line/col/callee/tier/reason). Task 16.2 fills
+  `tier` as a **local** guess; 16.3 proves the source→sink flow and refines it.
+- **`sast/rules.py`** — the rule pack **as pure data** (frozen dataclasses, like `public_api.py`):
+  `SinkRule(callee_kind, callees, tainted_positions/keywords, guard, safe_args, sanitizers)` over
+  three `CalleeKind`s — `MODULE` (`os.system`, `subprocess.*`, `yaml.load`, `pickle.loads`,
+  `requests.*`, `urllib.request.urlopen`, …), `BUILTIN` (`eval`/`exec`/`compile`, `open`),
+  `METHOD` (`cursor.execute`, unresolved receiver → heuristic). All 7 CWEs from the design:
+  **78** (with a `shell=True` `Guard` for `subprocess.run/call/Popen/...`; `os.system`/`getoutput`
+  always shell; `shlex.quote` sanitizer), **89**, **94/95**, **502** (`yaml.load` cleared by a
+  `SafeLoader` safe-arg; `yaml.safe_load` isn't a sink at all), **22** (`secure_filename`
+  sanitizer), **918** (positional + `url=` keyword), **798** (literal `SecretPattern` regexes —
+  AWS/private-key/GitHub/Slack — plus secret-named literal assignments with a placeholder/length
+  denylist).
+- **`sast/sinks.py`** — the single **pure** matcher. `find_sinks_in_source(source, rel)` (pure, no
+  I/O) and `find_sinks(project_dir)` (defensive file walk, reuses `_iter_python_files`). Callees are
+  resolved through per-file import bindings, so **aliased imports match the same rule**:
+  `import yaml as y; y.load(...)`, `from os import system as run; run(...)`, and the 3-segment
+  attribute chain `urllib.request.urlopen` all resolve to their canonical FQN (the `callee` display
+  is the FQN regardless of import style). Local tier guess: literal/`SafeLoader`/sanitizer-wrapped
+  dangerous arg → `SANITIZED`; non-literal → `POSSIBLE_FLOW` (pending 16.3); CWE-798 literal →
+  `CONFIRMED_FLOW` (the literal *is* the vuln). **Soundness direction is always toward a hit:**
+  `*args` splats, non-literal `shell=` values, and unresolved receivers classify
+  `POSSIBLE_FLOW`/stay-a-sink, never clear; `shell=False`/`shell` absent → the safe argv form is
+  *not* reported; an unparseable file is skipped, never raised.
+
+**Validation:** ruff + format clean · `mypy --strict src` clean (69 files; fixed an `ast.walk`
+narrowing) · **pytest 588 passed, 1 skipped** (+41 in `tests/test_sast_sinks.py`: table-driven
+positive/negative/**adversarial** per rule — aliased `import yaml as y`, `from os import system as
+run`, chained-receiver `conn.cursor().execute`, 3-segment `urllib.request.urlopen`; the
+`shell=True`/`False`/`<expr>`/absent matrix; `yaml.safe_load`/`SafeLoader`/`shlex.quote`/
+`secure_filename` clearing; secret patterns + placeholder/short-value rejection + no double-count;
+`*args` stays cautious; `re.compile` ≠ builtin `compile`; deterministic sort; unparseable → `()`).
+**Runs over `fixtures/` and the repo's own `src/` without crashing, output deterministic** (asserted
+in the gate).
+
+**Open questions:** none blocking. **Next:** Task 16.3 (taint propagation on the existing call
+graph — sources, entry-point breadth expansion, `CONFIRMED-FLOW` with a provable source→sink path).
+
+---
+
 ## Task 16.1 — SAST v1 design doc (approval gate)  (2026-06-13)
 
 **Status:** **APPROVED by the maintainer 2026-06-13** — Validation Gate passing (doc coverage +
