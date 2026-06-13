@@ -36,6 +36,11 @@ Repository = "https://github.com/Parthav99/vulnadvisor"
 Issues = "https://github.com/Parthav99/vulnadvisor/issues"
 Changelog = "https://github.com/Parthav99/vulnadvisor/blob/main/CHANGELOG.md"
 
+[project.optional-dependencies]
+mcp = [
+    "mcp==1.27.2",
+]
+
 [dependency-groups]
 dev = [
     "ruff==0.14.4",
@@ -44,6 +49,10 @@ dev = [
     "jsonschema==4.26.0",
     "pip-audit==2.10.0",
     "pyyaml==6.0.3",
+    # Mirror of the user-facing `[mcp]` extra (same pin) so a default `uv sync` gives contributors
+    # an env where `uv run mypy/pytest` can type-check and exercise the MCP server. Dev groups never
+    # ship in the wheel, and the extra (not this) is what end users install via `vulnadvisor[mcp]`.
+    "mcp==1.27.2",
 ]
 platform = [
     "aiosqlite==0.22.1",

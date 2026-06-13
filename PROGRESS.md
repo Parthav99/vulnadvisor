@@ -4,6 +4,61 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 15.3 — VulnAdvisor MCP server (agent-native triage)  (2026-06-13)
+
+**Status:** complete, Validation Gate passing. **New dependency (approved at task start):
+`mcp==1.27.2`** added as a *user-facing optional extra* `[mcp]` (`pip install 'vulnadvisor[mcp]'`)
+— the published core wheel still has **exactly 3 runtime deps** (packaging/pydantic/typer), proven
+by a metadata test. The same pin is mirrored into the `dev` dependency-group (uv 0.11.19 has no
+`default-extras`) so a default `uv sync` gives contributors an env where `mypy`/`pytest` can
+type-check and exercise the server.
+
+An editor agent (Claude Code / Cursor / any MCP client) can now ask "what's reachable here and
+why" and get engine truth, fully offline beyond the public vuln APIs a scan already uses:
+
+- **`vulnadvisor mcp`** (new Typer command, `cli/main.py`) serves a **stdio** MCP server. The
+  third-party `mcp` SDK is imported **lazily** inside the command, so a user without the extra
+  gets a clean install hint (`pip install 'vulnadvisor[mcp]'`, exit 1) instead of a traceback.
+- **New `src/vulnadvisor/mcp/` package, split pure ↔ wired** (the codebase's "pure and testable"
+  rule): `tools.py` (filter/lookup/explain over a plain report dict — **no MCP import**, no
+  network, no filesystem; fully unit-tested), `state.py` (`ReportStore` — single-row SQLite
+  "last report", defensive load → `None` on corrupt/missing, never raises into a tool call),
+  `session.py` (`McpSession` — holds the current report in memory after a scan, falls back to the
+  persisted last scan; the scan fn is **injected** so the whole session runs offline in tests),
+  and `server.py` (the **only** module importing `mcp.server.fastmcp`; registers the four tools,
+  reports VulnAdvisor's own version as the server version — FastMCP otherwise advertises the SDK's).
+- **Four tools, all deterministic engine truth:** `scan(path)` runs the same engine the CLI uses
+  (incremental cache + type resolver + framework plugins; **no LLM** — wording is the client's
+  job), persists the report, returns counts + compact rows; `list_findings(tier/band/package/
+  min_score/in_kev/limit)` filters that report (unknown tier/band → a helpful tool error listing
+  the valid vocabulary, never a silent empty match); `get_finding(id)` returns full evidence —
+  advisory, score, reachability tier with import sites **and the concrete call path**, fix;
+  `explain_finding(id)` returns the engine's deterministic **facts** (priority + rationale, tier +
+  its CLAUDE.md meaning, KEV/EPSS/CVSS signals, fix) plus a plain-statement list for the client to
+  narrate. Findings are referenced by `finding_id` (`<pkg>:<advisory-id>`), CVE/display id, alias,
+  **or bare package name** (ambiguous → an error listing the exact finding_ids — helpful, never
+  lossy). Soundness held: no tool re-ranks, invents a verdict, or emits an unfounded all-clear
+  (the `actionable` count is a tally of non-`not-imported` tiers, explicitly *not* a safety verdict).
+
+**Validation:** ruff + format clean · `mypy --strict src platform` clean (93 files) · **pytest
+547 passed, 1 skipped** (+24: pure-tool filter/lookup/ambiguity/explain-facts/tier-meaning matrix;
+`scan_summary` tier+actionable counts; **MCP protocol round-trip** over the in-memory client↔server
+transport — 4 tools advertised with JSON-Schema inputs, scan→list→get→explain against a seeded
+jinja2 project incl. the call-path evidence; list-before-scan and unknown-tier surface as tool
+errors; **last-report persists across two SQLite-backed sessions** without re-scanning; corrupt row
+→ no-scan; **core-wheel runtime deps == {packaging,pydantic,typer}** with mcp extra-only). **Live
+check** (real `uv run vulnadvisor mcp` over an actual **stdio** transport, driven by the `mcp`
+stdio client against `examples/quickstart`, network live): server `vulnadvisor 1.0.4`, 4 tools,
+`scan` → 9 findings (2 imported-and-called, 7 not-imported, 0 degraded), top =
+**pyyaml CVE-2020-14343 imported-and-called**, `get_finding` returns 1 import site + 1 call path,
+`explain_finding` returns the tier meaning + facts ("CVE-2020-14343 affects pyyaml 5.3.1."), a bad
+id is a tool error. This is exactly the round-trip an editor agent drives.
+
+**Open questions:** none blocking. M15 complete (copilot + MCP). Next: M16 — Task 16.1 SAST
+design doc (approval gate, no code).
+
+---
+
 ## Task 15.2 — Copilot UI  (2026-06-13)
 
 **Status:** built + gated; the only outstanding item is the live **LLM chat round-trip**

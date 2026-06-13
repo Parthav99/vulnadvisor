@@ -457,6 +457,30 @@ def logout() -> None:
         typer.echo("No stored credentials found; nothing to do.")
 
 
+@app.command()
+def mcp() -> None:
+    """Run the VulnAdvisor MCP server over stdio (agent-native local triage).
+
+    Serves the local scan engine to any Model Context Protocol client (Claude Code, Cursor, ...):
+    tools to scan a project and triage its findings - reachability, evidence, call paths, and the
+    deterministic priority - without leaving the editor. Fully offline beyond the public vuln APIs
+    a scan already uses; results are persisted locally so a fresh session can read the last scan.
+
+    Requires the optional ``mcp`` extra: ``pip install 'vulnadvisor[mcp]'``.
+    """
+    try:
+        from vulnadvisor.mcp.server import run_stdio
+    except ImportError as exc:
+        typer.secho(
+            "The MCP server needs the optional 'mcp' extra. Install it with:\n"
+            "    pip install 'vulnadvisor[mcp]'",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    run_stdio()
+
+
 @app.command(name="backfill")
 def backfill_command(
     packages: Annotated[
