@@ -4,6 +4,62 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 15.2 — Copilot UI  (2026-06-13)
+
+**Status:** built + gated; the only outstanding item is the live **LLM chat round-trip**
+(ask → cites top finding → click deep link), blocked on a working model key (the OpenAI key
+was revoked mid-session; paste a free OpenRouter key to close it). **New npm deps (pinned
+exact, dashboard-only): `@ai-sdk/react@3.0.206`, `react-markdown@10.1.0`, `remark-gfm@4.0.1`.**
+
+Help that is present everywhere and in the way nowhere:
+
+- **Floating launcher → slide-over panel** (`components/copilot/copilot-panel.tsx`, mounted
+  once in the app shell): a fixed "How can I help?" button opens a right-side **Sheet**
+  (`components/ui/sheet.tsx`, a slide-over built on the same Radix Dialog primitive the app's
+  modals already use — focus trap, Esc, scroll-lock, sibling `aria-hidden` SR-modality all
+  inherited). Streams from `/api/copilot` via the AI SDK's `useChat` +
+  `DefaultChatTransport`; the transport's `prepareSendMessagesRequest` is built per send so it
+  always carries the current `orgSlug`, page-context label, and — if present in this browser —
+  the BYOM personal-key headers (15.1b), picked up fresh even if the key was saved mid-session.
+- **Org-scoped, privacy-first:** the launcher only renders where an org slug is derivable from
+  the path (`/orgs/{org}/**`); on home/setup/demo it returns null. The conversation lives only
+  in React state — never persisted to localStorage, never sent anywhere but the request itself
+  (we don't store chats). "Clear" wipes it; closing keeps it for the session.
+- **Markdown + deep links:** assistant turns render through `react-markdown` + `remark-gfm`
+  (minimal `prose-copilot` styles, no typography plugin). The system prompt now instructs the
+  model to cite a finding as `[<pkg> <advisory_id>](/scans/<scan_id>?finding=<advisory_id>)`
+  using verbatim tool-result strings; the panel routes such in-app links client-side and
+  closes on click. The scan page reads `?finding=` and **expands + scrolls the matching card**
+  (`matchesFocus` in `lib/copilot-ui.ts` pairs exactly with the link builder; `FindingCard`
+  gained `focus`/`defaultOpen` props). Context chip shows the current page; three suggested
+  prompts seed an empty conversation ("What should I fix first?", "Why is this deprioritized?",
+  "Explain this call path").
+- **15.1c follow-up bundled here:** the BYOM config modal's mount-time localStorage hydration
+  was a setState-in-effect (a stricter lint rule flagged it). Refactored to
+  `useSyncExternalStore` over a tiny `lib/byom.ts` snapshot store (subscribe + raw-string
+  snapshot; same-tab writes notify, cross-tab via the `storage` event) — lint-clean, SSR-safe,
+  and the trigger label now reflects a saved key reactively.
+
+**Validation:** `npm test` **60/60** (+6 copilot-ui: org/context derivation, the deep-link
+build↔match contract, internal-vs-external href, suggested prompts) · lint + `next build`
+clean · **SSR e2e** (seeded `c:\tmp\va151`): launcher present on `/orgs/acme`, absent on `/`;
+`?finding=PYSEC-2019-217` expands exactly the jinja2 card (0 finding-cards open at baseline →
+1 on match → 0 on a non-matching token) · **headless-Edge panel e2e 13/13**: opens from the
+launcher (after hydration), named dialog (role + "Triage copilot" title), rest of document
+hidden from SR while open, input focused on open, three suggested prompts, `aria-live` polite
+conversation log, focus trap holds across 12 Tabs, Escape closes, launcher absent off-org.
+
+**Open / blocked:**
+- **LLM chat round-trip e2e pending a working key.** Everything structural is verified; the
+  one thing needing a live model is the ask→answer→cited-deep-link flow. With a free
+  OpenRouter key: open the panel on a seeded org, set the key in Settings → AI copilot, ask
+  "what should I fix first?" → it should cite the top finding and the link should open its
+  expanded card. (Same key unblocks red-team 5–6.)
+- `react-markdown`/`remark-gfm` pull a few transitive deps; `npm audit` unchanged in severity
+  (the pre-existing Next/postcss moderates).
+
+---
+
 ## Task 15.1 — Copilot backend: grounded, org-scoped, injection-hardened  (2026-06-13)
 
 **Status:** implementation complete; full gate green **except the live red-team run, which is

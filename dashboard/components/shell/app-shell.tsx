@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Brand } from "@/components/shell/brand";
+import { CopilotPanel } from "@/components/copilot/copilot-panel";
 import { PaletteProvider, usePalette } from "@/components/shell/palette-context";
 import { TourProvider, useTour } from "@/components/shell/tour-context";
 import { EASE_AEGIS, FADE_DURATION } from "@/lib/motion";
@@ -111,6 +112,7 @@ export function AppShell({
           </div>
           {palette}
           {tour}
+          <CopilotPanel />
         </TourProvider>
       </PaletteProvider>
     </MotionConfig>

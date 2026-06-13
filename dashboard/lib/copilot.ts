@@ -89,7 +89,8 @@ export const COPILOT_SYSTEM_PROMPT = `You are the VulnAdvisor triage copilot —
 
 ## Style
 - Be concise and direct. Lead with the answer, then the evidence.
-- Use markdown. Keep lists short; this renders in a slide-over panel.`;
+- Use markdown. Keep lists short; this renders in a slide-over panel.
+- When you cite a specific finding, link it so the user can jump to its card: use the markdown link \`[<package> <advisory_id>](/scans/<scan_id>?finding=<advisory_id>)\`, taking \`scan_id\` and \`advisory_id\` verbatim from the tool results. Only link findings you actually retrieved.`;
 
 /** Marker pair wrapping every tool result; the boundary token is unguessable per call. */
 export function makeBoundary(): string {

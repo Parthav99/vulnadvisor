@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { FindingCard } from "@/components/finding-card";
+import { matchesFocus } from "@/lib/copilot-ui";
 import { bandClass, formatDate, shortRef, shortSha } from "@/lib/format";
 import type { FindingsResponse, ScanDetail } from "@/lib/types";
 
@@ -22,10 +23,10 @@ export default async function ScanPage({
   searchParams,
 }: {
   params: Promise<{ scan: string }>;
-  searchParams: Promise<{ tier?: string; band?: string }>;
+  searchParams: Promise<{ tier?: string; band?: string; finding?: string }>;
 }) {
   const { scan: scanId } = await params;
-  const { tier, band } = await searchParams;
+  const { tier, band, finding: focus } = await searchParams;
 
   const scan = await apiGetOrNull<ScanDetail>(`/v1/scans/${scanId}`);
   if (scan === null) notFound();
@@ -130,9 +131,17 @@ export default async function ScanPage({
         </EmptyState>
       ) : (
         <div className="space-y-4">
-          {items.map((finding) => (
-            <FindingCard key={`${finding.dependency.name}:${finding.advisory.id}`} finding={finding} />
-          ))}
+          {items.map((finding) => {
+            const focused = focus !== undefined && matchesFocus(finding, focus);
+            return (
+              <FindingCard
+                key={`${finding.dependency.name}:${finding.advisory.id}`}
+                finding={finding}
+                defaultOpen={focused}
+                focus={focused}
+              />
+            );
+          })}
         </div>
       )}
     </div>

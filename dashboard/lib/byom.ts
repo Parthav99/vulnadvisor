@@ -63,10 +63,42 @@ export function loadByomConfig(storage: StorageLike): ByomConfig | null {
 
 export function saveByomConfig(storage: StorageLike, config: ByomConfig): void {
   storage.setItem(BYOM_STORAGE_KEY, serializeByomConfig(config));
+  emitByomChange();
 }
 
 export function clearByomConfig(storage: StorageLike): void {
   storage.removeItem(BYOM_STORAGE_KEY);
+  emitByomChange();
+}
+
+// --- reactive snapshot (for useSyncExternalStore) ----------------------------------------------
+// localStorage isn't a React store, so the UI subscribes to it via these. Same-tab writes go
+// through save/clear above (which notify); cross-tab writes arrive via the `storage` event. The
+// snapshot is the raw string (a stable primitive, so React's getSnapshot cache check is happy).
+
+const byomListeners = new Set<() => void>();
+
+function emitByomChange(): void {
+  for (const listener of byomListeners) listener();
+}
+
+export function subscribeByomStorage(callback: () => void): () => void {
+  byomListeners.add(callback);
+  if (typeof window !== "undefined") window.addEventListener("storage", callback);
+  return () => {
+    byomListeners.delete(callback);
+    if (typeof window !== "undefined") window.removeEventListener("storage", callback);
+  };
+}
+
+/** The raw stored string (client) or null (SSR / absent / blocked). */
+export function byomRawSnapshot(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(BYOM_STORAGE_KEY);
+  } catch {
+    return null;
+  }
 }
 
 /** The Task 15.1b request headers for a stored config. */

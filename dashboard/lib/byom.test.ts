@@ -45,7 +45,7 @@ test("save/load roundtrip via storage, clear removes", () => {
 });
 
 test("model is optional", () => {
-  const { model: _model, ...noModel } = CONFIG;
+  const noModel = { provider: CONFIG.provider, apiKey: CONFIG.apiKey };
   assert.deepEqual(parseByomConfig(serializeByomConfig(noModel)), noModel);
 });
 
@@ -75,7 +75,7 @@ test("headers carry exactly the 15.1b contract", () => {
     "X-Copilot-Provider": "openrouter",
     "X-Copilot-Model": CONFIG.model,
   });
-  const { model: _model, ...noModel } = CONFIG;
+  const noModel = { provider: CONFIG.provider, apiKey: CONFIG.apiKey };
   assert.equal("X-Copilot-Model" in byomHeaders(noModel), false);
 });
 

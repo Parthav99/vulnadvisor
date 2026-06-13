@@ -4,7 +4,7 @@
 // or stored on our servers (the test-connection request transits it over TLS, nothing more).
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useId, useMemo, useState, useSyncExternalStore } from "react";
 
 import {
   Dialog,
@@ -19,10 +19,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   byomHeaders,
+  byomRawSnapshot,
   clearByomConfig,
-  loadByomConfig,
   maskKey,
+  parseByomConfig,
   saveByomConfig,
+  subscribeByomStorage,
   type ByomConfig,
 } from "@/lib/byom";
 import {
@@ -80,22 +82,26 @@ async function testConnection(orgSlug: string, config: ByomConfig): Promise<Test
 export function ByomConfigDialog({ orgSlug }: { orgSlug: string }) {
   const fieldId = useId();
   const [open, setOpen] = useState(false);
-  const [stored, setStored] = useState<ByomConfig | null>(null);
   const [provider, setProvider] = useState<CopilotProvider>("openrouter");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [test, setTest] = useState<TestState>({ kind: "idle" });
 
-  // localStorage exists only client-side; hydrate after mount.
-  useEffect(() => {
-    const config = loadByomConfig(window.localStorage);
-    setStored(config);
-    if (config) {
-      setProvider(config.provider);
-      setApiKey(config.apiKey);
-      setModel(config.model ?? "");
+  // The stored config tracks localStorage reactively (same-tab writes + cross-tab `storage`),
+  // without a setState-in-effect — so the trigger label reflects a saved key immediately.
+  const rawStored = useSyncExternalStore(subscribeByomStorage, byomRawSnapshot, () => null);
+  const stored = useMemo(() => parseByomConfig(rawStored), [rawStored]);
+
+  // Seed the form from the stored config each time the dialog opens (event-time, not an effect).
+  function handleOpenChange(next: boolean) {
+    if (next) {
+      setProvider(stored?.provider ?? "openrouter");
+      setApiKey(stored?.apiKey ?? "");
+      setModel(stored?.model ?? "");
+      setTest({ kind: "idle" });
     }
-  }, [open]);
+    setOpen(next);
+  }
 
   const keyOk = isValidUserKey(apiKey.trim());
   const modelOk = model.trim() === "" || isValidModelId(model.trim());
@@ -110,15 +116,13 @@ export function ByomConfigDialog({ orgSlug }: { orgSlug: string }) {
   }
 
   function save() {
-    saveByomConfig(window.localStorage, currentConfig());
-    setStored(currentConfig());
+    saveByomConfig(window.localStorage, currentConfig()); // notifies the snapshot store
     setTest({ kind: "idle" });
     setOpen(false);
   }
 
   function clear() {
-    clearByomConfig(window.localStorage);
-    setStored(null);
+    clearByomConfig(window.localStorage); // notifies the snapshot store → stored becomes null
     setApiKey("");
     setModel("");
     setTest({ kind: "idle" });
@@ -130,7 +134,7 @@ export function ByomConfigDialog({ orgSlug }: { orgSlug: string }) {
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm" data-tour="byom-config">
           {stored ? `Personal key ${maskKey(stored.apiKey)}` : "Use your own AI key"}

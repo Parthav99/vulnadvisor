@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -189,22 +189,29 @@ function EvidenceDrawer({
 export function FindingCard({
   finding,
   defaultOpen = false,
+  focus = false,
 }: {
   finding: Finding;
   defaultOpen?: boolean;
+  /** When the copilot deep-links here (?finding=…), scroll this card into view on mount. */
+  focus?: boolean;
 }) {
   const { dependency, advisory, score, reachability, fix, epss, in_kev } = finding;
   const tier = reachability?.tier ?? "unknown";
   const version = dependency.version || "(unpinned)";
   const [open, setOpen] = useState(defaultOpen);
   const panelId = useId();
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (focus) cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focus]);
   const reduceMotion = useReducedMotion() ?? false;
   const callPaths = reachability?.call_paths ?? [];
   const evidence = reachability?.evidence ?? [];
   const story = score.verdict || advisory.summary || "No summary available.";
 
   return (
-    <Card size="sm" className="gap-0 py-0" data-tour="finding-card">
+    <Card ref={cardRef} size="sm" className="gap-0 py-0" data-tour="finding-card">
       <button
         type="button"
         aria-expanded={open}
