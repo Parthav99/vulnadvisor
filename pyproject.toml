@@ -53,6 +53,7 @@ dev = [
     # an env where `uv run mypy/pytest` can type-check and exercise the MCP server. Dev groups never
     # ship in the wheel, and the extra (not this) is what end users install via `vulnadvisor[mcp]`.
     "mcp==1.27.2",
+    "bandit==1.8.6",
 ]
 platform = [
     "aiosqlite==0.22.1",

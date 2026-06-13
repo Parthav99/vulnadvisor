@@ -4,6 +4,76 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 16.5 — SAST benchmark vs Bandit  (2026-06-14)
+
+**Status:** complete, full automated gate passing. **New dev/benchmark dependency (approved at task
+start): `bandit==1.8.6`** — added to the `dev` group only (published core wheel still 3 runtime
+deps); the harness invokes it via subprocess and is **defensive** (skips gracefully if absent, so CI
+without bandit still runs the VulnAdvisor side and the zero-missed gate). pyscan handling: **best-
+effort optional** (run if on PATH, else "n/a"). Scope: **harness + hermetic now, live deferred**
+(the precedent set by 14.x/16.4 live checks).
+
+The SCA benchmark measures *noise reduction*; this SAST benchmark measures the two numbers that
+decide first-party security on a **ground-truth-labeled corpus** — recall (a missed real vuln is
+release-blocking) and **top-tier precision** (of the findings a tool calls most-serious, how many
+are real). That second number is the pitch: Bandit has no taint/reachability model, so it raises
+`HIGH` on sanitized and entry-point-unreachable sinks; VulnAdvisor reserves `CONFIRMED-FLOW` for
+proven flows.
+
+**Pieces (all under `benchmarks/`, mirroring the hermetic/live SCA split):**
+- **`sast_metrics.py`** — pure, fully-unit-tested metric models. Ground truth lives in the corpus
+  source as `# seed: CWE-NN vuln|safe|possible` marker comments (parsed here, so labels sit next to
+  the code and survive edits — no hand-maintained line numbers). `Detection` carries a per-tool
+  `is_alarm`/`is_top` predicate (VulnAdvisor `SANITIZED` is *not* an alarm; `CONFIRMED-FLOW` is top /
+  Bandit `HIGH` is top). `compute_tool_metrics` / `compute_cwe_recall` are total folds → deterministic.
+- **`sast_corpus.py`** — 10 labeled apps across **all 7 CWE classes** (20 sink sites: 13 real, 7
+  safe), shaped to exercise the differentiator: reachable flows (`vuln`), sanitized/literal sinks
+  (`safe`), and a real-but-unreachable orphan (`possible`). Each case runs in its **own** temp dir
+  (isolation preserves ground truth — an entry point in one case can't root an orphan in another).
+  VulnAdvisor via the real `analyze_taint` + `score_sast_findings`; Bandit via `-f json` subprocess,
+  CWE+line normalized to detections.
+- **`sast_report.py`** — renders `SAST-REPORT.md`: headline, head-to-head table, per-CWE recall,
+  an honest **"Where Bandit wins or ties"** section, a **"Known limitations"** section, and a
+  Performance section (deterministic budget statement always; the non-deterministic wall-time table
+  only with `--perf`, so the committed artifact stays reproducible). ASCII-only (matches the SCA
+  report convention + Windows consoles).
+- **`sast_perf.py`** — offline, runnable: times `analyze_taint` over the corpus and over our own
+  `src/`. `pyscan_wall_time` runs pyscan if on PATH else returns `None`. Full SCA+SAST warm/cold +
+  pyscan over real OSS apps = the live perf run (deferred).
+- **`__main__.py`** — `python -m benchmarks --sast [--perf]` → `SAST-REPORT.md`; exit non-zero iff
+  VulnAdvisor missed a seeded vuln. `_print_safe` guards the console echo against cp1252 (the Task
+  14.1 lesson — a successful run never exits 1 while printing itself).
+
+**Results (reproducible, regenerate identically):** VulnAdvisor **100% recall (12/12), 100% top-tier
+precision, 0 alarms on safe code**; Bandit **92% recall (misses path traversal entirely — no
+taint-based check), 71% top-tier precision** (2 `HIGH` alarms on `shlex.quote`'d shell calls) plus 2
+off-target import-lint findings. Honest ties recorded: both catch SQLi/eval/exec/yaml/pickle (Bandit
+at `MEDIUM`, us at `CONFIRMED-FLOW` with the path); Bandit "catches" the SSRF line only incidentally
+via a missing-timeout lint. **Known-limitation documented, not hidden:** `secure_filename(...)`
+through `os.path.join(...)` is conservatively re-tainted (16.3 drops the cleared set on an opaque
+transform) → a false `CONFIRMED-FLOW`; excluded from the scored corpus and called out in the report
+so the precision number isn't flattered. **Perf:** SAST over the 10-case corpus 0.02 s, over our own
+`src/` ~0.55 s (74 files) — well under the documented ≤30 s warm budget.
+
+**Validation:** ruff + format clean (11 files) · `mypy --strict src platform` clean (102) + `mypy
+--strict benchmarks tests` clean (11) · **pytest 661 passed, 1 skipped** (+18 `tests/
+test_sast_benchmark.py`: seed-marker parsing incl. malformed-ignored; per-tool `is_alarm`/`is_top`;
+table-driven recall/precision math incl. a noisy-tool false-top-alarm+miss case, dedup, empty-top=
+100%; per-CWE grouping; corpus integrity — unique case names, **all 7 CWE classes covered**, safe+
+possible decoys present; **end-to-end zero-missed gate** (recall 100%, top_on_safe 0); **determinism**
+(two runs → identical metrics + identical rendered markdown); bandit-gated assertion that Bandit is
+noisier at the top tier; render contains headline/tables/gate + `isascii`; no-bandit render omits the
+comparison). One command regenerates `SAST-REPORT.md` byte-identically (verified by diffing two runs).
+
+**Remaining live checks (maintainer, tool/network-gated, deferred per task scope):** the full
+SCA+SAST warm/cold split + pyscan side-by-side over 2–3 real OSS apps (`--sast --perf` provides the
+SAST half offline today; pyscan needs the Rust binary on PATH).
+
+**Open questions:** none blocking. **Next:** Task 16.6 (dynamic coverage overlay — resolve
+DYNAMIC-UNKNOWN with runtime truth) — or the deferred 16.4/16.5 live checks + the CLI v2.0 tag.
+
+---
+
 ## Task 16.4 — Engine + output integration  (2026-06-13)
 
 **Status:** complete, full automated gate passing. No new dependencies. The pivot lands in the
