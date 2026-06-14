@@ -76,6 +76,16 @@ gated; the posting choreography, anchoring, idempotency, and event parsing are a
 hermetically. (3) **`v2.1.0` tag** holds until Part 3 + the live e2e land (mirrors the v2.0 tag
 deferral). **Next:** Task 17.4 Part 3 (OAuth setup-PR), then the deferred live e2e + the v2.1.0 tag.
 
+**Part 3 recon (done 2026-06-14, so next session executes fast):** the GitHub **OAuth token is NOT
+persisted today** — `auth.py` exchanges the code, calls `fetch_user`, and discards the token; the
+`User` model has no token column, and `authorize_url` only requests `read:user user:email` (no
+write scope). So Part 3 is the **migration-heavy path**: (1) request `repo`/`workflow` scope —
+decide **incremental authorization** at the "set up repo" click vs. at login (UX call, ask first);
+(2) **persist the token encrypted at rest** (reuse the 15.1 BYO-key encryption) → **new `User`
+column + Alembic migration, applied to live Postgres, `alembic check` no drift**; (3) add an
+OAuth-token branch to `github_app.open_setup_pr` (today installation-token only) + router wiring to
+choose OAuth-vs-App; (4) faked-client tests for the OAuth path + the scope-upgrade/re-auth flow.
+
 ---
 
 ## Task 17.3 — Provider-flexible `fix` (BYOM on the CLI: OpenRouter / OpenAI / Anthropic)  (2026-06-14)
