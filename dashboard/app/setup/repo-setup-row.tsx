@@ -8,14 +8,18 @@ import type { Repo, SetupPrResponse } from "@/lib/types";
 
 async function errorMessage(res: Response): Promise<string> {
   if (res.status === 403) return "Only org owners or admins can open setup PRs.";
-  if (res.status === 502) {
-    return "GitHub rejected the request — check the App installation and try again.";
-  }
+  // Prefer the backend's detail — for a 502 it now carries GitHub's own reason (e.g. a missing
+  // `workflows`/`contents` App permission), which is what you actually need to fix.
+  let detail: string | undefined;
   try {
     const body = (await res.json()) as { detail?: string };
-    if (typeof body.detail === "string" && body.detail) return body.detail;
+    if (typeof body.detail === "string" && body.detail) detail = body.detail;
   } catch {
-    // fall through to the generic message
+    // no JSON body — fall through to a status-based message
+  }
+  if (detail) return detail;
+  if (res.status === 502) {
+    return "GitHub rejected the request — check the App installation and try again.";
   }
   return `Could not open the setup PR (HTTP ${res.status}).`;
 }

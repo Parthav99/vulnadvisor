@@ -43,11 +43,31 @@ class SetupPr:
 def _ok(response: httpx.Response, context: str) -> Any:
     """Return the parsed JSON body, or raise a contextual :class:`GitHubAppError` on >= 400."""
     if response.status_code >= 400:
-        raise GitHubAppError(f"{context}: GitHub returned {response.status_code}")
+        raise GitHubAppError(
+            f"{context}: GitHub returned {response.status_code}{_github_message(response)}"
+        )
     try:
         return response.json()
     except ValueError as exc:
         raise GitHubAppError(f"{context}: GitHub returned a non-JSON body") from exc
+
+
+def _github_message(response: httpx.Response) -> str:
+    """GitHub's human-readable error ``message`` in parens, or ``""`` — defensive, never raises.
+
+    GitHub puts the real reason here (e.g. "refusing to allow a GitHub App to create or update
+    workflow `.github/workflows/...` without `workflows` permission"); surfacing it turns an opaque
+    502 into an actionable one.
+    """
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    if isinstance(body, dict):
+        message = body.get("message")
+        if isinstance(message, str) and message:
+            return f" ({message})"
+    return ""
 
 
 class GitHubApp:

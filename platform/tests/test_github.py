@@ -9,6 +9,7 @@ import hmac
 import json
 from typing import Any
 
+import pytest
 import yaml
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -489,6 +490,63 @@ async def test_post_or_update_suggestions_prunes_then_reposts(monkeypatch: Any) 
     assert seen["posted"]["event"] == "COMMENT"  # never REQUEST_CHANGES
     assert seen["posted"]["commit_id"] == "abc"
     assert seen["posted"]["comments"][0]["line"] == 11
+
+
+async def test_open_setup_pr_surfaces_github_error_message(monkeypatch: Any) -> None:
+    """A workflows-permission rejection on the file commit propagates GitHub's reason, not just 403.
+
+    This is the live failure behind the opaque "GitHub rejected the request" 502: a GitHub App
+    without the ``workflows`` permission can't commit a file under ``.github/workflows/``. The error
+    must name that so the operator knows to grant the permission rather than guess.
+    """
+    import httpx
+
+    from vulnadvisor_platform import github_app as ga
+    from vulnadvisor_platform.config import Settings
+
+    workflow_reason = (
+        "refusing to allow a GitHub App to create or update workflow "
+        "`.github/workflows/vulnadvisor.yml` without `workflows` permission"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_live"})
+        if path.endswith("/git/ref/heads/main") and request.method == "GET":
+            return httpx.Response(200, json={"object": {"sha": "basesha"}})
+        if path.endswith("/git/ref/heads/vulnadvisor/setup") and request.method == "GET":
+            return httpx.Response(404)
+        if path.endswith("/git/refs") and request.method == "POST":
+            return httpx.Response(201, json={})
+        if path.endswith("/contents/.github/workflows/vulnadvisor.yml"):
+            if request.method == "GET":
+                return httpx.Response(404)
+            return httpx.Response(403, json={"message": workflow_reason})  # PUT (the commit)
+        return httpx.Response(404)  # pragma: no cover - defensive
+
+    private_pem, _ = _rsa_keypair()
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        ga.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler))
+    )
+    app_client = ga.GitHubApp(Settings(github_app_id="1", github_app_private_key=private_pem))
+
+    with pytest.raises(GitHubAppError) as excinfo:
+        await app_client.open_setup_pr(
+            installation_id=5,
+            repo_full_name="acme/web",
+            base_branch="main",
+            file_path=".github/workflows/vulnadvisor.yml",
+            file_content="name: VulnAdvisor\n",
+            commit_message="Add workflow",
+            pr_title="Add VulnAdvisor",
+            pr_body="body",
+        )
+    message = str(excinfo.value)
+    assert "committing the workflow file" in message  # which step failed
+    assert "403" in message
+    assert "workflows` permission" in message  # GitHub's own reason, surfaced
 
 
 # --- pure helpers -------------------------------------------------------------------------------
