@@ -4,6 +4,47 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## One-click setup — Task C: API-URL guard (kill the localhost-in-workflow bug)  (2026-06-14)
+
+**Status:** complete, automated gate passing (ruff + mypy --strict + full pytest 854 passed/1 skip).
+
+**Root cause of friction #2.** `public_api_url` defaults to `http://localhost:8000` (config.py) and
+is baked verbatim into the setup workflow; the deploy guide never set `PUBLIC_API_URL` in prod, so
+shipped workflows pointed at localhost and CI uploads silently failed.
+
+**What changed**
+- `setup_pr.py`: new pure `api_url_problem(api_url) -> str | None` — returns an operator-facing
+  reason the URL is unreachable from CI (bad scheme, no host, `localhost`/`*.localhost`, or an IP
+  that is loopback/private/link-local/unspecified/reserved via stdlib `ipaddress`), else None. A
+  real DNS hostname is assumed public (we don't resolve it).
+- `routers/github.py` `open_setup_pr`: calls the guard right after the repo checks and **before any
+  GitHub work**; a problem raises 500 (platform-misconfig, not the caller's fault) with the reason.
+- `docs/deploy.md`: the backend `fly secrets set` block now sets `PUBLIC_API_URL`, with a note that
+  it must be set and that the endpoint refuses loopback/private URLs — fixing the actual root cause
+  alongside the guard.
+
+**Why these choices**
+- Guard is a pure function so the host/IP matrix is table-tested without a server; the endpoint test
+  only confirms the wiring (500 + no GitHub calls).
+- 500 not 409: the caller can't fix a server-side config value; the detail tells the operator what
+  to set. Fail-fast before opening a PR or writing a secret, so a misconfig never half-applies.
+- DNS hostnames pass without resolution — avoids network in a pure function and false negatives on
+  split-horizon DNS; loopback/private *literals* (the realistic misconfig) are what we catch.
+
+**Validation evidence**
+- `ruff check platform` / `ruff format --check platform` — clean.
+- `mypy --strict src platform/vulnadvisor_platform` — Success, 115 files.
+- `pytest platform/tests/test_github.py test_setup_pr.py` — 71 passed. Full suite — 854 passed,
+  1 skipped. New: a 4-case accepts table + a 14-case rejects table for `api_url_problem`, and an
+  endpoint test proving a localhost `public_api_url` → 500 with no setup/secret calls. `_overrides()`
+  now uses a public api URL so the existing setup-PR endpoint tests still pass the guard.
+
+**Open questions / next**
+- Task D (platform-proxy `suggest`, drop model-key secrets from the workflow) and Task E (dashboard
+  auto-consent + `secret_set` copy) remain.
+
+---
+
 ## One-click setup — Task B: auto-write the VULNADVISOR_API_KEY secret  (2026-06-14)
 
 **Status:** complete, automated gate passing (ruff + mypy --strict + full pytest 835 passed/1 skip).

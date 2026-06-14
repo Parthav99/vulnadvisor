@@ -54,6 +54,7 @@ from vulnadvisor_platform.setup_pr import (
     SETUP_PR_TITLE,
     WORKFLOW_COMMIT_MESSAGE,
     WORKFLOW_PATH,
+    api_url_problem,
     render_pr_body,
     render_workflow,
 )
@@ -112,6 +113,11 @@ async def open_setup_pr(
             status.HTTP_409_CONFLICT,
             "this repository is not linked to GitHub (it only receives CLI/CI uploads)",
         )
+    # Refuse to ship a workflow baked with a URL CI can't reach (e.g. the dev localhost default).
+    # This is a platform-config error, not the caller's fault -> 500 with an operator-facing detail.
+    url_problem = api_url_problem(settings.public_api_url)
+    if url_problem is not None:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, url_problem)
     installation = (
         await session.execute(
             select(Installation)

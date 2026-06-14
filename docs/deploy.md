@@ -85,14 +85,18 @@ Use the Neon URL from Step 1. Generate a strong `SECRET_KEY` (signs session cook
 fly secrets set \
   DATABASE_URL="postgresql+asyncpg://myuser:mypassword@ep-cool-name-123456.us-east-1.aws.neon.tech/neondb" \
   SECRET_KEY="$(openssl rand -hex 32)" \
-  DASHBOARD_URL="https://vulnadvisor.vercel.app"
+  DASHBOARD_URL="https://vulnadvisor.vercel.app" \
+  PUBLIC_API_URL="https://vulnadvisor-api.fly.dev"
 ```
 
 > Windows PowerShell: replace `$(openssl rand -hex 32)` with a 64-char hex string, e.g.
 > `python -c "import secrets; print(secrets.token_hex(32))"`.
 
 `DASHBOARD_URL` is where the backend sends the browser after a successful GitHub login — point it at
-your Vercel URL.
+your Vercel URL. `PUBLIC_API_URL` is this backend's own public URL; it is baked into the scan
+workflow the setup PR adds, so a CI runner can upload reports. **It must be set** — it defaults to
+`http://localhost:8000`, and the setup-PR endpoint refuses to ship a workflow pointing at a
+loopback/private URL (it would never reach the platform).
 
 ### 2c. (Optional but recommended) GitHub login + PR comments
 

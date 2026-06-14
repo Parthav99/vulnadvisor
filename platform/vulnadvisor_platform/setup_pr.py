@@ -5,7 +5,12 @@ and the setup-status chip shown per repo in the dashboard. The REST orchestratio
 opens the PR lives in :mod:`vulnadvisor_platform.github_app`.
 """
 
+import ipaddress
 import json
+from urllib.parse import urlparse
+
+# Hostnames that resolve to the local machine — never reachable from a customer's CI runner.
+_LOOPBACK_HOSTNAMES = frozenset({"localhost", "ip6-localhost", "ip6-loopback"})
 
 # Where the workflow lands in the user's repo, and the branch the App commits it to. Re-running
 # setup re-uses the same branch, which is what makes the whole flow idempotent (one branch ->
@@ -27,6 +32,39 @@ STATUS_NOT_SET_UP = "not-set-up"
 STATUS_PR_OPEN = "pr-open"
 STATUS_PR_MERGED = "pr-merged"
 STATUS_RECEIVING_SCANS = "receiving-scans"
+
+
+def api_url_problem(api_url: str) -> str | None:
+    """Return why ``api_url`` is unreachable from CI, or ``None`` if it looks publicly usable.
+
+    The setup workflow bakes this URL into a customer's GitHub-hosted runner, so a loopback or
+    private-network value (the dev default ``http://localhost:8000``) would ship a workflow that can
+    never reach the platform — a silently broken setup. Guarding turns that into an actionable error
+    pointing the operator at ``PUBLIC_API_URL``. A real DNS hostname is assumed publicly reachable
+    (we don't resolve it); only obviously local/private hosts and bad schemes are rejected.
+    """
+    parsed = urlparse(api_url.strip())
+    if parsed.scheme not in ("http", "https"):
+        return f"API URL must be http(s) (got {api_url!r}); set PUBLIC_API_URL to the platform URL"
+    host = parsed.hostname
+    if not host:
+        return f"API URL has no host (got {api_url!r}); set PUBLIC_API_URL to the platform URL"
+    lowered = host.lower()
+    if lowered in _LOOPBACK_HOSTNAMES or lowered.endswith(".localhost"):
+        return (
+            f"API URL points at localhost ({api_url!r}); set PUBLIC_API_URL to the public "
+            "platform URL reachable from CI"
+        )
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None  # a DNS hostname (e.g. api.vulnadvisor.io) — assume publicly reachable
+    if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified or ip.is_reserved:
+        return (
+            f"API URL points at a private/loopback address ({api_url!r}); set PUBLIC_API_URL to a "
+            "public platform URL reachable from CI"
+        )
+    return None
 
 
 def render_workflow(*, default_branch: str, api_url: str) -> str:

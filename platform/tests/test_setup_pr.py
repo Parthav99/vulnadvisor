@@ -29,6 +29,7 @@ from vulnadvisor_platform.setup_pr import (
     STATUS_RECEIVING_SCANS,
     WORKFLOW_COMMIT_MESSAGE,
     WORKFLOW_PATH,
+    api_url_problem,
     render_pr_body,
     render_workflow,
     setup_status,
@@ -136,6 +137,47 @@ def test_pr_body_explains_the_one_manual_step() -> None:
     assert "vulnadvisor login" in body
     # Idempotency is promised to the user in writing.
     assert "updates this PR in place" in body
+
+
+# --- api-url guard --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.vulnadvisor.io",
+        "https://vulnadvisor.example/api",
+        "http://api.internal.acme.com:8000",  # a real DNS host (not an IP) — we don't resolve it
+        "https://8.8.8.8",  # a public IP literal
+    ],
+)
+def test_api_url_problem_accepts_public_urls(url: str) -> None:
+    assert api_url_problem(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://localhost:8000",
+        "http://LOCALHOST:8000",
+        "https://app.localhost",
+        "http://127.0.0.1:8000",
+        "http://127.5.5.5",
+        "http://[::1]:8000",
+        "http://10.0.0.5",
+        "http://192.168.1.10:8000",
+        "http://172.16.4.4",
+        "http://169.254.1.1",  # link-local
+        "http://0.0.0.0:8000",  # unspecified
+        "ftp://example.com",  # bad scheme
+        "not-a-url",  # no scheme/host
+        "https://",  # no host
+    ],
+)
+def test_api_url_problem_rejects_unreachable_urls(url: str) -> None:
+    problem = api_url_problem(url)
+    assert problem is not None
+    assert "PUBLIC_API_URL" in problem
 
 
 # --- setup status ---------------------------------------------------------------------------------

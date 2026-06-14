@@ -124,7 +124,11 @@ class _FakeApp:
 
 def _overrides() -> _FakeApp:
     fake = _FakeApp()
-    app.dependency_overrides[get_settings] = lambda: Settings(github_webhook_secret=_SECRET)
+    # A publicly-reachable api URL so the setup-PR url guard (Task C) passes; the localhost default
+    # would be rejected. A dedicated test overrides this back to localhost to exercise the guard.
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        github_webhook_secret=_SECRET, public_api_url="https://api.vulnadvisor.example"
+    )
     app.dependency_overrides[get_github_app] = lambda: fake
     app.dependency_overrides[get_github_secrets] = lambda: fake.secrets
     return fake
@@ -1041,6 +1045,25 @@ async def test_setup_pr_cross_org_is_404(
     )
     assert resp.status_code == 404
     assert fake.setup_calls == []
+
+
+async def test_setup_pr_localhost_api_url_blocked(client: AsyncClient, seeded_key: str) -> None:
+    """A misconfigured (localhost) public_api_url is refused before any GitHub work happens."""
+    fake = _overrides()
+    # Override the api URL back to the unreachable dev default to trip the guard.
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        github_webhook_secret=_SECRET, public_api_url="http://localhost:8000"
+    )
+    await _post(client, _install_payload(), "installation")
+
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/setup-pr", headers={"Authorization": f"Bearer {seeded_key}"}
+    )
+    assert resp.status_code == 500
+    assert "PUBLIC_API_URL" in resp.json()["detail"]
+    # Nothing was attempted on GitHub, and no setup state was recorded.
+    assert fake.setup_calls == []
+    assert fake.secrets.calls == []
 
 
 async def test_setup_pr_github_error_maps_to_502(client: AsyncClient, seeded_key: str) -> None:
