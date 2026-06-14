@@ -48,8 +48,9 @@ EXPECTED_WORKFLOW = """\
 # Scans on every push to main and on every pull request, then uploads the
 # JSON report to your VulnAdvisor dashboard. On pull requests it also posts one-click,
 # machine-validated fix suggestions in-line using the built-in GITHUB_TOKEN (no GitHub
-# App needed). Only the report leaves CI — never your source code. The setup PR body
-# explains the repository secrets.
+# App needed). The scan never sends source code; the suggest step runs the model call on
+# the VulnAdvisor platform (it sends the code around each finding to your own platform),
+# so no model-key secret is needed. The setup PR body explains the details.
 name: VulnAdvisor
 
 on:
@@ -80,9 +81,8 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VULNADVISOR_API_KEY: ${{ secrets.VULNADVISOR_API_KEY }}
+          API_URL: "https://api.vulnadvisor.example"
         run: vulnadvisor suggest
 """
 
@@ -108,12 +108,16 @@ def test_workflow_is_valid_yaml_with_expected_structure() -> None:
     assert scan["run"] == "vulnadvisor scan . --upload"
     assert scan["env"]["VULNADVISOR_API_KEY"] == "${{ secrets.VULNADVISOR_API_KEY }}"
     assert scan["env"]["API_URL"] == _API_URL
-    # The zero-setup PR-suggestion step: GITHUB_TOKEN only, gated to pull requests.
+    # The zero-config PR-suggestion step: no model-key secret — the platform runs the model call
+    # via VULNADVISOR_API_KEY (Task D). Gated to pull requests; GITHUB_TOKEN posts the suggestions.
     suggest = steps[-1]
     assert suggest["run"] == "vulnadvisor suggest"
     assert suggest["if"] == "github.event_name == 'pull_request'"
     assert suggest["env"]["GITHUB_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
-    assert suggest["env"]["OPENROUTER_API_KEY"] == "${{ secrets.OPENROUTER_API_KEY }}"
+    assert suggest["env"]["VULNADVISOR_API_KEY"] == "${{ secrets.VULNADVISOR_API_KEY }}"
+    assert suggest["env"]["API_URL"] == _API_URL
+    assert "OPENROUTER_API_KEY" not in suggest["env"]
+    assert "ANTHROPIC_API_KEY" not in suggest["env"]
 
 
 @pytest.mark.parametrize("branch", ["main", "master", "release/v1.0", "dev-2026"])
@@ -132,8 +136,9 @@ def test_pr_body_explains_the_one_manual_step() -> None:
     # Direct link to where the key is minted (trailing slash on dashboard_url normalized away).
     assert f"{_DASH_URL}/orgs/acme/settings/api-keys" in body
     assert "acme/web" in body
-    # The privacy posture and the device-flow alternative are both stated.
-    assert "never leaves CI" in body
+    # The privacy posture, the zero-config promise, and the device-flow alternative are all stated.
+    assert "never source code" in body
+    assert "no model-key secret to add" in body
     assert "vulnadvisor login" in body
     # Idempotency is promised to the user in writing.
     assert "updates this PR in place" in body

@@ -4,6 +4,73 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## One-click setup — Task D2: CLI suggest via the platform proxy + zero-config fallback key  (2026-06-14)
+
+**Status:** complete, automated gate passing (ruff + format + mypy --strict + full pytest 876
+passed / 1 skip). Second half of Task D: the CLI `suggest` loop now runs its model call through the
+D1 endpoint, so a CI workflow needs **no model-key secret**. Plus a maintainer-requested amendment
+to D1 — a **platform fallback model key** so suggestions work zero-config even before an org saves
+its own BYO key.
+
+**Maintainer decisions (this turn).** (1) `suggest` prefers a direct model key when one is set
+(source stays on the runner), else the platform proxy. (2) No-key / spent-cap → graceful no-op,
+exit 0, never fail the build. (3) Add a platform fallback key (BYOM pressure off the org). The
+fallback key is a **no-credit OpenRouter key**, so its model must be an explicit `:free` model
+(`deepseek/deepseek-r1:free`) — `openrouter/auto` routes to paid and would fail. **The key is NOT
+committed**: it lives in the gitignored `platform/.env` (local) / a fly secret (prod), sourced via
+`os.environ` per the standing no-hardcoded-secrets rule.
+
+**What changed**
+- **Platform fallback (amends D1).** `config.py`: `copilot_fallback_api_key` + `copilot_fallback_model`
+  (env-only, empty default = disabled). `routers/llm.py`: key selection is now org BYO key → fallback
+  key → `available=False`; the fallback path uses the configured free model (request `model` still
+  wins). Decrypt moved before `consume_grant` so a corrupt ciphertext 500s without metering.
+- **CLI proxy client.** New `src/vulnadvisor/llm/proxy.py` — `PlatformSuggestClient` implements the
+  `LLMClient` Protocol over the project `Transport`, POSTing to `/v1/llm/complete` with the org API
+  key. It **latches** "unavailable" on an `available:false` body or a 429, so a key-less org costs at
+  most one round-trip across the whole sweep; a transient 502 is per-attempt (retries). Defensive
+  parse (bad JSON / non-object / missing/blank/non-string text → `LLMError`).
+- **CLI rewire.** `main.py`: `build_platform_suggest_client` (creds resolved env→login store, like
+  `scan --upload`) + `build_suggest_client` (direct key wins, else proxy), both module-level for test
+  substitution. `suggest` uses `build_suggest_client`; the missing-client message names both options.
+  `fix --suggest-json` stays direct-key only (local-first). The suggest docstring now states the
+  proxy sends the fix-prompt's code context to *your* platform (honesty: validation still runs in CI).
+- **Workflow + PR body (`setup_pr.py`).** The suggest step drops `OPENROUTER_/OPENAI_/ANTHROPIC_API_KEY`
+  and now carries `VULNADVISOR_API_KEY` + `API_URL` (GITHUB_TOKEN still posts). PR body: "no model-key
+  secret to add"; the "what leaves CI" note is now accurate (suggest sends code around each finding to
+  the platform; an opt-in direct-key path keeps source on the runner). Workflow header comment updated.
+- **Docs.** `docs/deploy.md`: optional `COPILOT_FALLBACK_API_KEY`/`COPILOT_FALLBACK_MODEL` fly-secrets
+  block with the free-model caveat.
+
+**Why these choices**
+- A direct key still keeps source in CI; the proxy is the zero-config default. Honest PR-body copy on
+  the trade-off (code context → your own platform) keeps the privacy posture truthful rather than
+  silently broadening what leaves CI.
+- The proxy latch bounds wasted calls for a key-less org to one; a 502 is treated as transient so a
+  blip doesn't permanently silence the run. Both keep the build green (the loop records a failed
+  attempt and moves on).
+
+**Validation evidence**
+- `ruff check` / `ruff format --check` (src + platform + tests) — clean.
+- `mypy --strict src platform/vulnadvisor_platform` — Success, 117 files.
+- `pytest` — **876 passed, 1 skipped** (+15). New `tests/test_proxy.py` (11): request contract
+  (URL/Bearer/body, model included only when set, sentinel model id), `available:false` latch (one
+  call), 429 latch, transient-502 retry, 5-case malformed→`LLMError`. `tests/test_cli.py`: suggest
+  falls back to the proxy when no model key; no-key-anywhere→exit 2 naming both options (replaces the
+  old requires-model-key test); existing suggest happy-paths unchanged (direct key wins).
+  `platform/tests/test_llm.py` (+3): fallback key drives the call + uses its free model; org key wins
+  over fallback; request model overrides the fallback model. `platform/tests/test_setup_pr.py`:
+  workflow snapshot + structure assert the suggest step has VULNADVISOR_API_KEY+API_URL and **no**
+  model-key env; PR-body asserts the zero-config copy.
+
+**Open questions / next.** Task D fully done. **Live e2e deferred** (prior-task precedent): a real PR
+with the proxy generating a real patch via the fallback key end-to-end (the contract, latch, cap, and
+key selection are all proven hermetically). **Next: Task E** — dashboard `secret_set` UX + auto-consent
+(`SetupPrResponse.secret_set`, the 409 "needs repo access" retry); read `node_modules/next/dist/docs/`
+first per `dashboard/AGENTS.md`.
+
+---
+
 ## One-click setup — Task D1: platform-proxy `/v1/llm/complete` endpoint  (2026-06-14)
 
 **Status:** complete, automated gate passing (ruff + format + mypy --strict + full pytest 861

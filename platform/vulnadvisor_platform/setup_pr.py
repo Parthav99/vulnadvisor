@@ -75,8 +75,9 @@ def render_workflow(*, default_branch: str, api_url: str) -> str:
 
     On pull requests the workflow also runs ``vulnadvisor suggest``, which posts machine-validated
     one-click fix suggestions in-line using the built-in ``GITHUB_TOKEN`` — **no GitHub App
-    required** (Task 17.4). That step needs ``pull-requests: write`` and one model-key secret; an
-    unset key simply means no suggestions, never a failed build.
+    required** (Task 17.4). The model call is run by the platform via ``VULNADVISOR_API_KEY`` —
+    **no model-key secret** (Task D); when the platform has no model key for the org the step posts
+    nothing, never failing the build. It needs ``pull-requests: write`` to post.
     """
     branch = json.dumps(default_branch)
     url = json.dumps(api_url)
@@ -86,8 +87,9 @@ def render_workflow(*, default_branch: str, api_url: str) -> str:
 # Scans on every push to {default_branch} and on every pull request, then uploads the
 # JSON report to your VulnAdvisor dashboard. On pull requests it also posts one-click,
 # machine-validated fix suggestions in-line using the built-in GITHUB_TOKEN (no GitHub
-# App needed). Only the report leaves CI — never your source code. The setup PR body
-# explains the repository secrets.
+# App needed). The scan never sends source code; the suggest step runs the model call on
+# the VulnAdvisor platform (it sends the code around each finding to your own platform),
+# so no model-key secret is needed. The setup PR body explains the details.
 name: VulnAdvisor
 
 on:
@@ -118,9 +120,8 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
-          OPENROUTER_API_KEY: ${{{{ secrets.OPENROUTER_API_KEY }}}}
-          OPENAI_API_KEY: ${{{{ secrets.OPENAI_API_KEY }}}}
-          ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
+          VULNADVISOR_API_KEY: ${{{{ secrets.VULNADVISOR_API_KEY }}}}
+          API_URL: {url}
         run: vulnadvisor suggest
 """
 
@@ -146,20 +147,25 @@ The workflow authenticates with a repository secret named `VULNADVISOR_API_KEY`:
 2. In **{repo_full_name} → Settings → Secrets and variables → Actions**, add a repository \
 secret named `VULNADVISOR_API_KEY` with that value.
 
-### One-click fix suggestions on your pull requests (optional)
+### One-click fix suggestions on your pull requests
 
 On every pull request the workflow also runs `vulnadvisor suggest`: it machine-validates a patch \
 for each finding and posts it as an in-line GitHub **suggestion** you can commit with one click — \
-using the built-in `GITHUB_TOKEN`, **no GitHub App required**. To enable it, add **one** model-key \
-repository secret (any works — a free OpenRouter key is enough): `OPENROUTER_API_KEY`, \
-`OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`. Without a model key this step posts nothing and never \
-fails your build.
+using the built-in `GITHUB_TOKEN`, **no GitHub App required**. The model call is run for you by \
+the VulnAdvisor platform with the same `VULNADVISOR_API_KEY` — **no model-key secret to add**. If \
+your org has no model key configured this step simply posts nothing and never fails your build.
 
-### What gets uploaded
+> Prefer to keep source on the runner? Add a model-key repository secret (`OPENROUTER_API_KEY`, \
+`OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`) and pass it to the suggest step; `vulnadvisor suggest` \
+then calls the model directly from CI instead of via the platform.
 
-Only the JSON scan report (package names, advisory ids, reachability evidence). Your source \
-code never leaves CI — the scan and the fix validation both run entirely inside your own runner; \
-the only outbound calls are the report upload, your own model key, and GitHub.
+### What leaves CI
+
+The scan uploads only the JSON report (package names, advisory ids, reachability evidence) — never \
+source code. The suggest step additionally sends the code **around each finding** to your \
+VulnAdvisor platform so it can generate a fix with the org's model key; the fix is then validated \
+(apply, lint, type-check, tests, rescan) entirely inside your own runner. Outbound calls are the \
+report upload, the suggest request to your platform, and GitHub.
 
 By default the scan never fails your build; add `--fail-on <tier|score>` to the scan step \
 when you're ready to gate merges.

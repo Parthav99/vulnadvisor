@@ -135,6 +135,63 @@ async def test_complete_defaults_model_to_none(
     assert captured["model"] is None  # provider default chosen downstream
 
 
+# --- platform fallback key (zero-config) ---------------------------------------------------------
+
+FALLBACK_KEY = "sk-or-v1-fallback-0123456789abcdef"
+FALLBACK_MODEL = "deepseek/deepseek-r1:free"
+
+
+async def test_complete_uses_fallback_key_when_org_has_none(
+    client: AsyncClient, seeded_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _override_settings(copilot_fallback_api_key=FALLBACK_KEY, copilot_fallback_model=FALLBACK_MODEL)
+    captured: dict[str, Any] = {}
+    _patch_client(monkeypatch, captured)
+
+    resp = await client.post(
+        "/v1/llm/complete", headers=_auth(seeded_key), json={"system": "s", "user": "u"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["available"] is True
+    # The platform fallback key + its configured free model drove the call (no org key needed).
+    assert captured["api_key"] == FALLBACK_KEY
+    assert captured["model"] == FALLBACK_MODEL
+    assert await _used_today(client, seeded_key) == 1
+
+
+async def test_complete_org_key_wins_over_fallback(
+    client: AsyncClient, seeded_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _override_settings(copilot_fallback_api_key=FALLBACK_KEY, copilot_fallback_model=FALLBACK_MODEL)
+    await _set_org_key(client, seeded_key)
+    captured: dict[str, Any] = {}
+    _patch_client(monkeypatch, captured)
+
+    resp = await client.post(
+        "/v1/llm/complete", headers=_auth(seeded_key), json={"system": "s", "user": "u"}
+    )
+    assert resp.status_code == 200
+    # The org's own key takes precedence; the fallback is only a last resort.
+    assert captured["api_key"] == ORG_KEY
+
+
+async def test_complete_request_model_overrides_fallback_model(
+    client: AsyncClient, seeded_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _override_settings(copilot_fallback_api_key=FALLBACK_KEY, copilot_fallback_model=FALLBACK_MODEL)
+    captured: dict[str, Any] = {}
+    _patch_client(monkeypatch, captured)
+
+    resp = await client.post(
+        "/v1/llm/complete",
+        headers=_auth(seeded_key),
+        json={"system": "s", "user": "u", "model": "explicit/model"},
+    )
+    assert resp.status_code == 200
+    assert captured["model"] == "explicit/model"
+
+
 # --- cap -----------------------------------------------------------------------------------------
 
 

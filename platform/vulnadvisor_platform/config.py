@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     copilot_service_token: str = ""
     # Per-org daily cap on copilot requests (grants per UTC day).
     copilot_daily_cap: int = 50
+    # Platform fallback model key for the server-side suggest proxy (Task D). When an org has not
+    # configured its own BYO copilot key, /v1/llm/complete uses this key so `vulnadvisor suggest`
+    # works zero-config. Sourced from the environment only (never committed); empty disables the
+    # fallback (the endpoint then reports available=False -> the CLI posts nothing). The model is
+    # detected from the key prefix; COPILOT_FALLBACK_MODEL overrides the default (e.g. an OpenRouter
+    # free model for a no-credit key, which would otherwise route to a paid model).
+    copilot_fallback_api_key: str = ""
+    copilot_fallback_model: str = ""
 
     # GitHub App (webhooks + PR comments). Empty in dev/tests.
     github_webhook_secret: str = ""

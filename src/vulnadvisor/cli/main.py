@@ -36,6 +36,7 @@ from vulnadvisor.llm.fix import (
     sast_finding_id,
 )
 from vulnadvisor.llm.fix_validate import PatchApplyError, apply_patch_to_tree, build_validator
+from vulnadvisor.llm.proxy import PlatformSuggestClient
 from vulnadvisor.llm.suggest import generate_suggestions
 from vulnadvisor.model.advisory import Advisory
 from vulnadvisor.model.fix import FixOutcome
@@ -145,6 +146,52 @@ def build_fix_client(
     user's own key); every validation step is local.
     """
     return build_fix_client_from_env(provider_override=provider, model_override=model)
+
+
+# `suggest` accepts a direct model key (code stays in CI) or the platform proxy (no model-key
+# secret needed; the platform runs the call with the org's key) — see build_suggest_client.
+_MISSING_SUGGEST_KEY_MESSAGE = (
+    "vulnadvisor suggest needs either a model key (OPENROUTER_API_KEY / OPENAI_API_KEY / "
+    "ANTHROPIC_API_KEY) to call the model directly, or VULNADVISOR_API_KEY + API_URL so the "
+    "VulnAdvisor platform runs the call for you (no model-key secret needed in CI)."
+)
+
+
+def build_platform_suggest_client(model: str | None = None) -> LLMClient | None:
+    """Build the platform-proxy suggest client from ``VULNADVISOR_API_KEY`` + ``API_URL``, or None.
+
+    Resolves credentials exactly like ``scan --upload``: env first, then the ``vulnadvisor login``
+    store. Returns ``None`` when no platform credentials are present (``suggest`` then needs a
+    direct model key). Module-level so tests can substitute it.
+    """
+    api_key = os.environ.get("VULNADVISOR_API_KEY")
+    api_url = os.environ.get("API_URL")
+    if not api_key or not api_url:
+        stored = load_credentials()
+        if stored is not None:
+            api_key = api_key or stored.api_key
+            api_url = api_url or stored.api_url
+    if not api_key or not api_url:
+        return None
+    return PlatformSuggestClient(
+        api_url=api_url, api_key=api_key, transport=UrllibTransport(), model=model
+    )
+
+
+def build_suggest_client(
+    provider: Provider | None = None, model: str | None = None
+) -> LLMClient | None:
+    """Pick the ``suggest`` client: a direct model key wins, else the platform proxy.
+
+    The direct path keeps source on the runner (the call goes to your own model endpoint); the
+    proxy sends the fix-prompt's first-party code context to your VulnAdvisor platform, which runs
+    the call with the org's key — so CI needs no model-key secret. Returns ``None`` only when
+    neither a model key nor platform credentials are configured.
+    """
+    direct = build_fix_client(provider, model)
+    if direct is not None:
+        return direct
+    return build_platform_suggest_client(model)
 
 
 # Zero-setup PR suggestions need only the built-in Actions token — no GitHub App (Task 17.4).
@@ -945,13 +992,18 @@ def suggest(
     Designed to run in GitHub Actions on ``pull_request`` events: it scans first-party code,
     machine-validates a patch for every alarming finding (the same loop as ``vulnadvisor fix``), and
     posts the fixes as in-line ``suggestion`` review comments using the built-in ``GITHUB_TOKEN`` -
-    **no GitHub App, no webhook, no platform**. The pull request and head commit are read from the
-    Actions event payload (``GITHUB_EVENT_PATH``). The review event is always a comment - never a
-    "request changes", never an auto-commit; a developer clicks "Commit suggestion". Re-runs prune
-    and repost our own prior suggestions, so a fixed finding's suggestion disappears in place.
+    **no GitHub App, no webhook**. The pull request and head commit are read from the Actions event
+    payload (``GITHUB_EVENT_PATH``). The review event is always a comment - never a "request
+    changes", never an auto-commit; a developer clicks "Commit suggestion". Re-runs prune and repost
+    our own prior suggestions, so a fixed finding's suggestion disappears in place.
 
-    The only network calls are to your own model key and to GitHub; your source code stays in CI.
-    Outside a pull request (e.g. a push build) this is a clean no-op. Use ``--dry-run`` to preview.
+    The model call uses a direct key when one is set (``OPENROUTER_/OPENAI_/ANTHROPIC_API_KEY`` -
+    source stays on the runner), otherwise the VulnAdvisor platform runs it via
+    ``VULNADVISOR_API_KEY`` + ``API_URL`` (so CI needs no model-key secret; the fix-prompt's code
+    context is sent to *your* platform, which calls the model with the org's key). If no model key
+    is available the build is never failed - ``suggest`` simply posts nothing. Validation (apply,
+    lint, type-check, tests, rescan) always runs in your own runner. Outside a pull request (e.g. a
+    push build) this is a clean no-op. Use ``--dry-run`` to preview.
     """
     ctx = read_pr_context(os.environ)
     if ctx is None:
@@ -960,9 +1012,9 @@ def suggest(
         )
         return
 
-    client = build_fix_client(provider, model)
+    client = build_suggest_client(provider, model)
     if client is None:
-        typer.secho(_MISSING_FIX_KEY_MESSAGE, fg=typer.colors.RED, err=True)
+        typer.secho(_MISSING_SUGGEST_KEY_MESSAGE, fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
 
     report = scan_project(path, build_matcher(), run_sca=False, run_sast=True)

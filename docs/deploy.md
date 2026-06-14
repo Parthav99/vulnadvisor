@@ -98,6 +98,21 @@ workflow the setup PR adds, so a CI runner can upload reports. **It must be set*
 `http://localhost:8000`, and the setup-PR endpoint refuses to ship a workflow pointing at a
 loopback/private URL (it would never reach the platform).
 
+**Optional — zero-config `vulnadvisor suggest`.** The PR-suggestion step calls `/v1/llm/complete`,
+which runs the model server-side with the org's own BYO copilot key. To make suggestions work even
+for orgs that have *not* configured a key, set a platform fallback key:
+
+```bash
+fly secrets set \
+  COPILOT_FALLBACK_API_KEY="sk-or-v1-..." \
+  COPILOT_FALLBACK_MODEL="deepseek/deepseek-r1:free"
+```
+
+`COPILOT_FALLBACK_MODEL` must name a model the key can actually call — for a free/no-credit
+OpenRouter key, an explicit `:free` model (the default `openrouter/auto` routes to a paid model and
+would fail). Leave both unset to require each org to bring its own key; the suggest step then simply
+posts nothing for orgs without one (it never fails the build).
+
 ### 2c. (Optional but recommended) GitHub login + PR comments
 
 The dashboard's GitHub sign-in and the PR-comment bot need GitHub credentials. Skip this for a first
