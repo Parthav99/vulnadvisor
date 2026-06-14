@@ -39,6 +39,7 @@ __all__ = [
     "OpenAICompatibleClient",
     "Provider",
     "build_anthropic_client",
+    "build_fix_client_for_key",
     "build_fix_client_from_env",
     "provider_for_key",
     "resolve_fix_client_config",
@@ -315,6 +316,34 @@ def _resolve_fix_model(
     return DEFAULT_FIX_MODEL[provider]
 
 
+def build_fix_client_for_key(
+    api_key: str,
+    *,
+    provider: Provider | None = None,
+    model: str | None = None,
+    transport: Transport | None = None,
+) -> LLMClient:
+    """Build a fix/suggest client from an explicit key (provider detected from the prefix).
+
+    The single place the OpenAI/OpenRouter/Anthropic routing and endpoint URLs live, shared by
+    :func:`build_fix_client_from_env` (CLI, key from the environment) and the platform's
+    server-side suggest proxy (Task D, key = the org's decrypted BYO copilot key). ``provider``
+    overrides prefix detection; ``model`` overrides the provider default.
+    """
+    resolved_provider = provider or provider_for_key(api_key)
+    resolved_model = model or DEFAULT_FIX_MODEL[resolved_provider]
+    transport = transport or UrllibTransport()
+    if resolved_provider is Provider.ANTHROPIC:
+        return AnthropicClient(transport, api_key, model=resolved_model)
+    base_url = _OPENROUTER_API_URL if resolved_provider is Provider.OPENROUTER else _OPENAI_API_URL
+    return OpenAICompatibleClient(
+        transport=transport,
+        api_key=api_key,
+        base_url=base_url,
+        model=resolved_model,
+    )
+
+
 def build_fix_client_from_env(
     transport: Transport | None = None,
     *,
@@ -335,13 +364,9 @@ def build_fix_client_from_env(
     )
     if config is None:
         return None
-    transport = transport or UrllibTransport()
-    if config.provider is Provider.ANTHROPIC:
-        return AnthropicClient(transport, config.api_key, model=config.model)
-    base_url = _OPENROUTER_API_URL if config.provider is Provider.OPENROUTER else _OPENAI_API_URL
-    return OpenAICompatibleClient(
-        transport=transport,
-        api_key=config.api_key,
-        base_url=base_url,
+    return build_fix_client_for_key(
+        config.api_key,
+        provider=config.provider,
         model=config.model,
+        transport=transport,
     )

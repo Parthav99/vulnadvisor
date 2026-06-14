@@ -20,6 +20,7 @@ from vulnadvisor_platform.routers import (
     github,
     ingest,
     keys,
+    llm,
     read,
 )
 from vulnadvisor_platform.schemas import HealthResponse, MeResponse, OrgMembershipOut
@@ -50,6 +51,7 @@ app.include_router(device.router)
 app.include_router(github.router)
 app.include_router(ingest.router)
 app.include_router(keys.router)
+app.include_router(llm.router)
 app.include_router(read.router)
 
 

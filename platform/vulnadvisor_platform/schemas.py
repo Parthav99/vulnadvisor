@@ -412,3 +412,30 @@ class CopilotGrant(BaseModel):
     key_source: Literal["org", "platform"]
     api_key: str | None
     remaining_today: int
+
+
+class LlmCompleteRequest(BaseModel):
+    """Body for ``POST /v1/llm/complete`` — one system+user prompt run on the org's BYO key.
+
+    This is the server-side seam for ``vulnadvisor suggest`` in CI (Task D): the CLI sends the
+    fix-loop's prompt and the platform performs the model call, so the workflow needs no model-key
+    secret. The caps are generous (the fix prompt embeds first-party code context) but bounded so a
+    runaway body is rejected cleanly rather than forwarded to the model.
+    """
+
+    system: str = Field(max_length=100_000)
+    user: str = Field(max_length=400_000)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class LlmCompleteResponse(BaseModel):
+    """Result of a server-side model call (Task D).
+
+    ``available`` is ``False`` when the org has no BYO copilot key configured — the CLI then posts
+    nothing and never fails the build. ``text`` carries the model's raw output when available, and
+    ``remaining_today`` reports the org's leftover daily-cap budget after this grant.
+    """
+
+    available: bool
+    text: str | None = None
+    remaining_today: int | None = None

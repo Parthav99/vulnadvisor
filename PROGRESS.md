@@ -4,6 +4,71 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## One-click setup — Task D1: platform-proxy `/v1/llm/complete` endpoint  (2026-06-14)
+
+**Status:** complete, automated gate passing (ruff + format + mypy --strict + full pytest 861
+passed / 1 skip). First half of Task D — the **platform endpoint**; D2 (CLI rewire of `suggest` +
+the workflow/PR-body edits to drop the model-key secrets) is the next turn. Split agreed with the
+maintainer up front: the seam spans a new server-side LLM call *and* a CLI rewire, so each half
+gets its own green gate + commit.
+
+**Goal.** `vulnadvisor suggest` in CI should need **no model-key secret**: it authenticates with
+the existing `VULNADVISOR_API_KEY` and the platform performs the LLM call server-side using the
+org's BYO copilot key (under the daily cap). This endpoint is that server-side call.
+
+**The seam (recon).** The whole validated-fix loop (`generate_suggestions`→`generate_fix`) depends
+only on the `LLMClient` Protocol (`complete(system, user)->str`), and `_validate_fixes` already
+takes an injected client — so D2 just supplies a proxy client; nothing in the loop/validator/poster
+changes. Platform pieces already lined up: org-API-key auth (`CurrentApiKey`), `consume_grant` +
+`decrypt_api_key` (copilot.py). The **one** genuinely new capability: the platform never called a
+model server-side before (copilot only hands the key to the dashboard) — it now does, reusing the
+CLI's dependency-free clients.
+
+**What changed**
+- `src/vulnadvisor/llm/client.py`: extracted `build_fix_client_for_key(api_key, *, provider?,
+  model?, transport?)` — the single place the OpenAI/OpenRouter/Anthropic routing + endpoint URLs
+  live. `build_fix_client_from_env` now delegates to it (behaviour byte-identical; existing 17.3
+  tests stayed green). The platform reuses it so the server-side call is identical to the local
+  `fix` path.
+- `platform/.../routers/llm.py` (new) — `POST /v1/llm/complete`, authed by the org API key. Resolves
+  the org from the key; **no copilot key → `available=False`, no grant consumed** (graceful no-op,
+  the maintainer-locked behaviour); else `consume_grant` (429 on a spent daily cap) → `decrypt_api_key`
+  (500 on a corrupt ciphertext) → build the client for the decrypted key → run `complete` via
+  `run_in_threadpool` (the urllib transport is blocking; keep it off the event loop) → **commit the
+  grant only after the call succeeds**. An `LLMError` → 502 with the grant left unconsumed.
+- `schemas.py`: `LlmCompleteRequest` (system/user/optional model, bounded lengths) +
+  `LlmCompleteResponse` (`available`/`text`/`remaining_today`). `app.py`: router registered.
+
+**Why these choices**
+- The decrypted BYO key never leaves the platform — only the model's text output is returned
+  (mirrors the copilot grant's trust posture; here there's no service token because the org API key
+  *is* the user-facing auth).
+- Grant-consumed-only-on-success (commit last) means a 429 cap or a 502 model failure never burns
+  budget; the CLI's fix loop already treats a per-call `LLMError` as a failed attempt and moves on,
+  so a 502 keeps the build green and honest (no silent success).
+- No-key → `available=False` rather than an error, so D2's `suggest` posts nothing and never fails
+  the build (the locked graceful-no-op decision, covering both no-key and cap-spent).
+
+**Validation evidence**
+- `ruff check` / `ruff format --check` (src + platform) — clean.
+- `mypy --strict src platform/vulnadvisor_platform` — Success, 116 files.
+- `pytest platform/tests/test_llm.py` — 7 passed. Full suite — **861 passed, 1 skipped** (+7).
+  New `test_llm.py`: no-BYO-key→`available=False` + zero grants; org key drives the call (decrypted
+  key + requested model + prompt captured, `remaining_today` decrements, `used_today`=1); model
+  defaults to None downstream; daily cap [1,0]→429; an `LLMError`→502 with the grant **not** burned
+  (`used_today`=0); a corrupt ciphertext→loud 500 ("re-save"); no API key→401. The model call is
+  monkeypatched in the router namespace (no network) — provider routing stays unit-tested in
+  `tests/test_llm.py` (src).
+
+**Open questions / next (D2).** Add a CLI `LLMClient` that POSTs to `/v1/llm/complete` with
+`VULNADVISOR_API_KEY`; rewire `suggest` to **prefer a direct model key if present, else the platform
+proxy** (maintainer-locked); treat `available=False`/429 as a graceful no-op (exit 0). Drop
+`OPENROUTER_/OPENAI_/ANTHROPIC_API_KEY` from `render_workflow`'s suggest step + the "add a model key"
+PR-body copy (now only `VULNADVISOR_API_KEY` + `GITHUB_TOKEN`), and update the `test_setup_pr.py`
+workflow snapshot. Then Task E (dashboard `secret_set` UX + auto-consent).
+
+---
+
 ## One-click setup — Task C: API-URL guard (kill the localhost-in-workflow bug)  (2026-06-14)
 
 **Status:** complete, automated gate passing (ruff + mypy --strict + full pytest 854 passed/1 skip).
