@@ -2,7 +2,17 @@ import json
 
 import pytest
 
-from vulnadvisor.llm.client import AnthropicClient, LLMError, build_anthropic_client
+from vulnadvisor.llm.client import (
+    DEFAULT_FIX_MODEL,
+    AnthropicClient,
+    LLMError,
+    OpenAICompatibleClient,
+    Provider,
+    build_anthropic_client,
+    build_fix_client_from_env,
+    provider_for_key,
+    resolve_fix_client_config,
+)
 from vulnadvisor.llm.explainer import Explainer, finding_hash
 from vulnadvisor.llm.prompt import build_messages, templated_explanation
 from vulnadvisor.model.advisory import Advisory, EpssScore, MatchedAdvisory
@@ -229,3 +239,200 @@ def test_build_anthropic_client_requires_key(monkeypatch: pytest.MonkeyPatch) ->
     client = build_anthropic_client()
     assert client is not None
     assert client.model == "custom-model"
+
+
+# --- Task 17.3: provider-flexible fix client (OpenRouter / OpenAI / Anthropic) -------------------
+
+
+class _RecordingTransport:
+    """A Transport that records every outbound URL and replays a canned chat-completions body."""
+
+    def __init__(self, response: bytes) -> None:
+        self.response = response
+        self.urls: list[str] = []
+        self.headers: list[dict[str, str]] = []
+
+    def request(self, method, url, *, body=None, headers=None):  # type: ignore[no-untyped-def]
+        self.urls.append(url)
+        self.headers.append(dict(headers or {}))
+        return self.response
+
+
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("sk-or-v1-abc", Provider.OPENROUTER),
+        ("sk-ant-api03-xyz", Provider.ANTHROPIC),
+        ("sk-proj-123", Provider.OPENAI),
+        ("sk-classic", Provider.OPENAI),
+        ("nopfx", Provider.OPENAI),  # unrecognized -> default
+    ],
+)
+def test_provider_for_key_by_prefix(key: str, expected: Provider) -> None:
+    assert provider_for_key(key) is expected
+
+
+def test_provider_for_key_unrecognized_uses_supplied_default() -> None:
+    assert provider_for_key("weirdkey", default=Provider.OPENROUTER) is Provider.OPENROUTER
+
+
+def test_resolve_config_key_precedence_openrouter_first() -> None:
+    env = {
+        "OPENROUTER_API_KEY": "sk-or-1",
+        "OPENAI_API_KEY": "sk-proj-2",
+        "ANTHROPIC_API_KEY": "sk-ant-3",
+    }
+    config = resolve_fix_client_config(env)
+    assert config is not None
+    assert config.provider is Provider.OPENROUTER
+    assert config.api_key == "sk-or-1"
+    assert config.model == DEFAULT_FIX_MODEL[Provider.OPENROUTER]
+
+
+def test_resolve_config_falls_through_to_anthropic() -> None:
+    config = resolve_fix_client_config({"ANTHROPIC_API_KEY": "sk-ant-3"})
+    assert config is not None
+    assert config.provider is Provider.ANTHROPIC
+    assert config.model == DEFAULT_FIX_MODEL[Provider.ANTHROPIC]
+
+
+def test_resolve_config_openai_default_model() -> None:
+    config = resolve_fix_client_config({"OPENAI_API_KEY": "sk-proj-2"})
+    assert config is not None
+    assert config.provider is Provider.OPENAI
+    assert config.model == DEFAULT_FIX_MODEL[Provider.OPENAI]
+
+
+def test_resolve_config_no_key_returns_none() -> None:
+    assert resolve_fix_client_config({}) is None
+
+
+def test_resolve_config_provider_override_wins_over_prefix() -> None:
+    # An Anthropic-looking key forced onto OpenRouter (e.g. a proxy) honours the override.
+    config = resolve_fix_client_config(
+        {"ANTHROPIC_API_KEY": "sk-ant-3"}, provider_override=Provider.OPENROUTER
+    )
+    assert config is not None
+    assert config.provider is Provider.OPENROUTER
+    assert config.model == DEFAULT_FIX_MODEL[Provider.OPENROUTER]
+
+
+def test_resolve_config_model_override_wins() -> None:
+    config = resolve_fix_client_config(
+        {"OPENROUTER_API_KEY": "sk-or-1"}, model_override="meta-llama/llama-3:free"
+    )
+    assert config is not None
+    assert config.model == "meta-llama/llama-3:free"
+
+
+def test_resolve_config_vulnadvisor_model_env_override() -> None:
+    config = resolve_fix_client_config(
+        {"OPENROUTER_API_KEY": "sk-or-1", "VULNADVISOR_MODEL": "anthropic/claude-3:beta"}
+    )
+    assert config is not None
+    assert config.model == "anthropic/claude-3:beta"
+
+
+def test_resolve_config_explicit_model_beats_vulnadvisor_env() -> None:
+    config = resolve_fix_client_config(
+        {"OPENAI_API_KEY": "sk-proj-2", "VULNADVISOR_MODEL": "env-model"},
+        model_override="flag-model",
+    )
+    assert config is not None
+    assert config.model == "flag-model"
+
+
+def test_resolve_config_anthropic_legacy_model_env_preserved() -> None:
+    # The existing ANTHROPIC_MODEL path still works for an Anthropic key (no VULNADVISOR_MODEL).
+    config = resolve_fix_client_config(
+        {"ANTHROPIC_API_KEY": "sk-ant-3", "ANTHROPIC_MODEL": "claude-legacy"}
+    )
+    assert config is not None
+    assert config.model == "claude-legacy"
+
+
+def test_build_fix_client_openrouter_is_openai_compatible() -> None:
+    client = build_fix_client_from_env(env={"OPENROUTER_API_KEY": "sk-or-1"})
+    assert isinstance(client, OpenAICompatibleClient)
+    assert client.base_url == "https://openrouter.ai/api/v1/chat/completions"
+    assert client.model == "openrouter/auto"
+
+
+def test_build_fix_client_openai_endpoint() -> None:
+    client = build_fix_client_from_env(env={"OPENAI_API_KEY": "sk-proj-2"})
+    assert isinstance(client, OpenAICompatibleClient)
+    assert client.base_url == "https://api.openai.com/v1/chat/completions"
+
+
+def test_build_fix_client_anthropic_uses_messages_client() -> None:
+    client = build_fix_client_from_env(env={"ANTHROPIC_API_KEY": "sk-ant-3"})
+    assert isinstance(client, AnthropicClient)
+
+
+def test_build_fix_client_no_key_is_none() -> None:
+    assert build_fix_client_from_env(env={}) is None
+
+
+def test_openai_client_parses_choice_and_sends_bearer_auth() -> None:
+    payload = json.dumps(
+        {"choices": [{"message": {"role": "assistant", "content": _good_json()}}]}
+    ).encode()
+    transport = _RecordingTransport(payload)
+    client = OpenAICompatibleClient(
+        transport=transport,
+        api_key="sk-or-secret",
+        base_url="https://openrouter.ai/api/v1/chat/completions",
+        model="openrouter/auto",
+    )
+    out = client.complete(system="s", user="u")
+    assert "attack_story" in out
+    assert transport.headers[0]["authorization"] == "Bearer sk-or-secret"
+    assert transport.urls == ["https://openrouter.ai/api/v1/chat/completions"]
+
+
+def test_openai_client_accepts_list_content_parts() -> None:
+    payload = json.dumps(
+        {"choices": [{"message": {"content": [{"type": "text", "text": "hello"}]}}]}
+    ).encode()
+    client = OpenAICompatibleClient(
+        transport=_RecordingTransport(payload),
+        api_key="sk-or-1",
+        base_url="https://openrouter.ai/api/v1/chat/completions",
+        model="m",
+    )
+    assert client.complete(system="s", user="u") == "hello"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"not json",
+        json.dumps({"choices": []}).encode(),  # empty choices
+        json.dumps({"choices": [{}]}).encode(),  # no message
+        json.dumps({"choices": [{"message": {}}]}).encode(),  # no content
+        json.dumps({"choices": [{"message": {"content": ""}}]}).encode(),  # blank content
+        json.dumps({"choices": [{"message": {"content": 5}}]}).encode(),  # non-string content
+        json.dumps(["a", "list"]).encode(),  # not an object
+    ],
+)
+def test_openai_client_malformed_raises_llm_error(body: bytes) -> None:
+    client = OpenAICompatibleClient(
+        transport=_RecordingTransport(body),
+        api_key="sk-or-1",
+        base_url="https://openrouter.ai/api/v1/chat/completions",
+        model="m",
+    )
+    with pytest.raises(LLMError):
+        client.complete(system="s", user="u")
+
+
+def test_openrouter_network_audit_never_contacts_anthropic() -> None:
+    """A built OpenRouter client's only outbound host is openrouter.ai — never api.anthropic.com."""
+    payload = json.dumps({"choices": [{"message": {"content": _good_json()}}]}).encode()
+    transport = _RecordingTransport(payload)
+    client = build_fix_client_from_env(transport=transport, env={"OPENROUTER_API_KEY": "sk-or-1"})
+    assert client is not None
+    client.complete(system="s", user="u")
+    assert transport.urls, "expected the model to be called"
+    assert all("openrouter.ai" in url for url in transport.urls)
+    assert all("api.anthropic.com" not in url for url in transport.urls)

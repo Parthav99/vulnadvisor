@@ -19,7 +19,12 @@ from vulnadvisor.cli.pipeline import ScanReport, scan_project
 from vulnadvisor.cli.render import render_report
 from vulnadvisor.coverage import CoverageParseError, apply_coverage_overlay, parse_coverage
 from vulnadvisor.engine.sast_scoring import order_unified
-from vulnadvisor.llm.client import LLMClient, build_anthropic_client
+from vulnadvisor.llm.client import (
+    LLMClient,
+    Provider,
+    build_anthropic_client,
+    build_fix_client_from_env,
+)
 from vulnadvisor.llm.explainer import Explainer
 from vulnadvisor.llm.fix import (
     FixError,
@@ -110,13 +115,27 @@ def build_explainer() -> Explainer:
     return Explainer(client=client, cache=SqliteCache(default_cache_path()))
 
 
-def build_fix_client() -> LLMClient | None:
-    """Build the LLM client for ``vulnadvisor fix``: Anthropic from the user's own key, or ``None``.
+# Provider-agnostic: a free OpenRouter key is enough; ANTHROPIC_API_KEY still works. Listing all
+# three keeps the "your own key, the only network call" promise explicit (Task 17.3).
+_MISSING_FIX_KEY_MESSAGE = (
+    "vulnadvisor fix needs a language model API key. Set OPENROUTER_API_KEY (a free OpenRouter "
+    "key works), OPENAI_API_KEY, or ANTHROPIC_API_KEY - your own key. It is the only network "
+    "call fix makes; your code stays on this machine."
+)
 
-    Defined as a module-level function so tests can substitute a scripted client. The fix loop's
-    only network call goes through this client (the user's own key); every validation step is local.
+
+def build_fix_client(
+    provider: Provider | None = None, model: str | None = None
+) -> LLMClient | None:
+    """Build the LLM client for ``vulnadvisor fix`` from the user's own key, or ``None``.
+
+    Provider-flexible (Task 17.3): detects OpenRouter / OpenAI / Anthropic from the key prefix
+    (``--provider`` overrides) across ``OPENROUTER_API_KEY`` → ``OPENAI_API_KEY`` →
+    ``ANTHROPIC_API_KEY`` (first present wins). Defined as a module-level function so tests can
+    substitute a scripted client. The fix loop's only network call goes through this client (the
+    user's own key); every validation step is local.
     """
-    return build_anthropic_client()
+    return build_fix_client_from_env(provider_override=provider, model_override=model)
 
 
 def build_symbol_names_for() -> Callable[[Advisory], frozenset[str]] | None:
@@ -674,6 +693,21 @@ def fix(
             help="How many times to retry the model with validation feedback (default: 3).",
         ),
     ] = 3,
+    provider: Annotated[
+        Provider | None,
+        typer.Option(
+            "--provider",
+            help="Model provider (default: detected from your key prefix). "
+            "A free OpenRouter key works.",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Model id (default: the provider's default; or set VULNADVISOR_MODEL).",
+        ),
+    ] = None,
 ) -> None:
     """Generate and machine-validate a patch for a first-party (SAST) finding.
 
@@ -692,7 +726,9 @@ def fix(
     report = scan_project(path, build_matcher(), run_sca=False, run_sast=True)
 
     if suggest_json is not None:
-        _fix_suggest_json(report, path, suggest_json, max_attempts=max_attempts)
+        _fix_suggest_json(
+            report, path, suggest_json, max_attempts=max_attempts, provider=provider, model=model
+        )
         return
 
     if finding_id is None:
@@ -709,14 +745,9 @@ def fix(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
 
-    client = build_fix_client()
+    client = build_fix_client(provider, model)
     if client is None:
-        typer.secho(
-            "vulnadvisor fix needs a language model. Set ANTHROPIC_API_KEY (your own key); "
-            "it is the only network call fix makes - your code stays on this machine.",
-            fg=typer.colors.RED,
-            err=True,
-        )
+        typer.secho(_MISSING_FIX_KEY_MESSAGE, fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
 
     def source_for(rel: str) -> str | None:
@@ -769,7 +800,15 @@ def fix(
         typer.echo("Re-run with --apply to write this patch to your working tree.")
 
 
-def _fix_suggest_json(report: ScanReport, path: Path, out_file: Path, *, max_attempts: int) -> None:
+def _fix_suggest_json(
+    report: ScanReport,
+    path: Path,
+    out_file: Path,
+    *,
+    max_attempts: int,
+    provider: Provider | None = None,
+    model: str | None = None,
+) -> None:
     """Fix-and-validate every alarming finding and write the validated patches to ``out_file``.
 
     This is the non-interactive CI half of ``vulnadvisor fix``: it never prints code and never
@@ -777,14 +816,9 @@ def _fix_suggest_json(report: ScanReport, path: Path, out_file: Path, *, max_att
     PR suggestions. Exit 0 even when no safe fix is found (an empty document is still valid to
     upload); exit 2 only when the model key is missing or the file cannot be written.
     """
-    client = build_fix_client()
+    client = build_fix_client(provider, model)
     if client is None:
-        typer.secho(
-            "vulnadvisor fix needs a language model. Set ANTHROPIC_API_KEY (your own key); "
-            "it is the only network call fix makes - your code stays on this machine.",
-            fg=typer.colors.RED,
-            err=True,
-        )
+        typer.secho(_MISSING_FIX_KEY_MESSAGE, fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
 
     def source_for(rel: str) -> str | None:

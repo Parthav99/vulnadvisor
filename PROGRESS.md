@@ -4,6 +4,69 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 17.3 — Provider-flexible `fix` (BYOM on the CLI: OpenRouter / OpenAI / Anthropic)  (2026-06-14)
+
+**Status:** complete, full automated gate passing. **No new dependency** — a second stdlib client
+over the existing `Transport` (published wheel still 3 runtime deps). Closes the gap where the
+dashboard copilot already did BYOM (15.1b) but the CLI fix loop was Anthropic-only: a **free
+OpenRouter key is now enough** to run `vulnadvisor fix` and `fix --suggest-json`.
+
+**The shape (mirrors 15.1b server-side):** provider is **detected from the key prefix** — `sk-or-`
+→ **OpenRouter**, `sk-ant-` → Anthropic, `sk-`/`sk-proj-` → OpenAI — with `--provider` /
+`--model` flags and a `VULNADVISOR_MODEL` env override. Keys are read from `OPENROUTER_API_KEY` →
+`OPENAI_API_KEY` → `ANTHROPIC_API_KEY` (first present wins, documented). The 17.1 validation loop
+(propose → apply → syntax → ruff → mypy → tests → rescan → retry) is **reused verbatim** — only the
+client behind the `LLMClient` Protocol changed, so soundness is inherited and the "code never leaves
+the machine except to your own model endpoint" audit holds for every provider.
+
+**Pieces:**
+- **`llm/client.py`** — generalized into a two-client module. New `Provider` enum
+  (anthropic/openai/openrouter), `provider_for_key` (prefix detection, specific prefixes first),
+  `DEFAULT_FIX_MODEL` per provider (Anthropic keeps the historical haiku default → existing path
+  byte-for-byte unchanged; OpenRouter `openrouter/auto`; OpenAI `gpt-5.2`). New
+  **`OpenAICompatibleClient`** — the OpenAI `/chat/completions` shape over the existing `Transport`
+  with `Authorization: Bearer`, `base_url` selecting OpenAI vs OpenRouter; **one** client serves
+  both. Defensive `_extract_openai_text` parses `choices[0].message.content` (string *or* a
+  list-of-parts), every malformed shape → `LLMError` (same fallback contract as the Anthropic
+  extractor, refactored onto a shared `_load_object`). Pure `resolve_fix_client_config(env, ...)`
+  (key precedence → provider → model resolution, fully unit-testable on a dict) + thin
+  `build_fix_client_from_env(transport=?, provider_override=?, model_override=?, env=?)`.
+  `build_anthropic_client` (the explainer's builder) is untouched.
+- **CLI (`cli/main.py`)** — `build_fix_client(provider, model)` now calls
+  `build_fix_client_from_env`; `fix` gains `--provider {openrouter,openai,anthropic}` and `--model`
+  (threaded into both the interactive path and `_fix_suggest_json`). The missing-key message is now
+  the shared, provider-agnostic `_MISSING_FIX_KEY_MESSAGE` (lists all three keys; still mentions
+  `ANTHROPIC_API_KEY`, so the existing assertions hold).
+- **Docs** — README gains a "Validated fixes (`vulnadvisor fix`)" section (provider-flexible,
+  free-OpenRouter-key-is-enough, prefix detection + precedence + override flags) and the Privacy
+  note now covers `fix` across all three providers.
+
+**Validation:** ruff + format clean (121 files) · `mypy --strict src` clean (83) · **pytest 784
+passed, 1 skipped** (+31). New in `test_llm.py` (+24): `provider_for_key` prefix table incl.
+unrecognized→default; `resolve_fix_client_config` key-precedence (OpenRouter first), fall-through to
+Anthropic, OpenAI default model, no-key→None, `--provider` override beats prefix, `--model` beats
+`VULNADVISOR_MODEL` beats Anthropic-legacy `ANTHROPIC_MODEL` beats default; `build_fix_client_from_env`
+returns `OpenAICompatibleClient` w/ correct base_url+model for OpenRouter/OpenAI and `AnthropicClient`
+for sk-ant; `OpenAICompatibleClient` parses a choice + sends Bearer + hits the right URL, accepts
+list content-parts, **7-case malformed→`LLMError`** table; **network audit** — a built OpenRouter
+client's only outbound host is `openrouter.ai`, never `api.anthropic.com`. `test_fix.py` (+1):
+**full 17.1 loop end-to-end through a scripted OpenAI-compatible (OpenRouter) client** — chat-
+completions response shape, real apply→syntax→ruff→rescan validation → `VALIDATED`, host audit
+(only `openrouter.ai`). `test_cli.py` (+1): `--provider`/`--model` flags reach the builder; the 7
+existing fix monkeypatches updated to `lambda *a, **k:` for the new builder signature. **CLI smoke:**
+`fix --help` shows the flags; with no key set, a real finding yields the provider-agnostic message +
+exit 2.
+
+**Deferred (prior-task precedent, tool/credential-gated):** (1) the **live** OpenRouter run (a real
+free key authoring a real diff end-to-end) — the loop, parsing, routing, and host audit are proven
+hermetically with a scripted OpenAI-compatible client; only the model's own patch authorship needs a
+funded/free key. (2) The **generated workflow's** model-key step belongs to **17.4** (which
+explicitly updates the 14.2 workflow to run `fix`/`suggest` with a provider key + `GITHUB_TOKEN`);
+17.3 leaves the upload-only workflow as-is. **Next:** Task 17.4 (zero-setup PR suggestions — a
+GitHub login / Actions `GITHUB_TOKEN` is enough, no App; tags **v2.1.0**).
+
+---
+
 ## Task 17.2 — PR review agent (CodeRabbit-grade, engine-grounded)  (2026-06-14)
 
 **Status:** complete, full automated gate passing (CLI + platform), migration applied to **live

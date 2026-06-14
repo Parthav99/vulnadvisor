@@ -587,7 +587,7 @@ def test_fix_requires_model_key(
     fake_matcher: Callable[..., AdvisoryMatcher],
 ) -> None:
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
-    monkeypatch.setattr(cli_main, "build_fix_client", lambda: None)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: None)
     project = _fix_project(tmp_path)
     result = runner.invoke(app, ["fix", "app.py", "--path", str(project)])
     assert result.exit_code == 2
@@ -600,7 +600,7 @@ def test_fix_unknown_finding_id_is_usage_error(
     fake_matcher: Callable[..., AdvisoryMatcher],
 ) -> None:
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
-    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(""))
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(""))
     project = _fix_project(tmp_path)
     result = runner.invoke(app, ["fix", "nope.py", "--path", str(project)])
     assert result.exit_code == 2
@@ -614,7 +614,7 @@ def test_fix_prints_validated_diff_without_applying(
 ) -> None:
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
     diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
-    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(diff))
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(diff))
     project = _fix_project(tmp_path)
 
     result = runner.invoke(app, ["fix", "app.py", "--path", str(project)])
@@ -625,6 +625,35 @@ def test_fix_prints_validated_diff_without_applying(
     assert (project / "app.py").read_text(encoding="utf-8") == _FIX_VULN
 
 
+def test_fix_passes_provider_and_model_flags_through(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    """Task 17.3: ``--provider`` / ``--model`` reach the client builder (which detects the rest)."""
+    from vulnadvisor.llm.client import Provider
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    seen: dict[str, object] = {}
+
+    def fake_build(provider=None, model=None):  # type: ignore[no-untyped-def]
+        seen["provider"] = provider
+        seen["model"] = model
+        return _ScriptedFixClient(diff)
+
+    monkeypatch.setattr(cli_main, "build_fix_client", fake_build)
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["fix", "app.py", "--path", str(project), "--provider", "openrouter", "--model", "x:free"],
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["provider"] is Provider.OPENROUTER
+    assert seen["model"] == "x:free"
+
+
 def test_fix_apply_writes_the_patch(
     tmp_path: Path,
     monkeypatch,  # type: ignore[no-untyped-def]
@@ -632,7 +661,7 @@ def test_fix_apply_writes_the_patch(
 ) -> None:
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
     diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
-    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(diff))
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(diff))
     project = _fix_project(tmp_path)
 
     result = runner.invoke(app, ["fix", "app.py", "--path", str(project), "--apply"])
@@ -649,7 +678,7 @@ def test_fix_suggest_json_writes_validated_fixes(
     """``fix --suggest-json`` fixes every finding and writes the validated patches as a document."""
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
     diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
-    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(diff))
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(diff))
     project = _fix_project(tmp_path)
     out = tmp_path / "suggestions.json"
 
@@ -672,7 +701,7 @@ def test_fix_suggest_json_requires_model_key(
     fake_matcher: Callable[..., AdvisoryMatcher],
 ) -> None:
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
-    monkeypatch.setattr(cli_main, "build_fix_client", lambda: None)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: None)
     project = _fix_project(tmp_path)
     out = tmp_path / "suggestions.json"
     result = runner.invoke(app, ["fix", "--suggest-json", str(out), "--path", str(project)])
@@ -686,7 +715,7 @@ def test_fix_without_id_or_suggest_json_is_usage_error(
     fake_matcher: Callable[..., AdvisoryMatcher],
 ) -> None:
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
-    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(""))
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(""))
     project = _fix_project(tmp_path)
     result = runner.invoke(app, ["fix", "--path", str(project)])
     assert result.exit_code == 2

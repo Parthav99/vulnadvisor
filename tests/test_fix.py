@@ -22,7 +22,7 @@ import pytest
 from vulnadvisor.advisories.matcher import AdvisoryMatcher
 from vulnadvisor.advisories.transport import Transport
 from vulnadvisor.cli.pipeline import scan_project
-from vulnadvisor.llm.client import AnthropicClient, LLMError
+from vulnadvisor.llm.client import AnthropicClient, LLMError, OpenAICompatibleClient
 from vulnadvisor.llm.fix import (
     AmbiguousFindingError,
     FindingNotFoundError,
@@ -281,6 +281,48 @@ def test_network_audit_only_the_model_endpoint_is_contacted(tmp_path: Path) -> N
     assert result.outcome is FixOutcome.VALIDATED
     assert calls, "expected the model to be called"
     assert all("api.anthropic.com" in url for url in calls)
+
+
+def test_full_loop_with_openai_compatible_client_validates_and_audits_host(tmp_path: Path) -> None:
+    """Task 17.3: a scripted OpenAI-compatible (OpenRouter) client drives the *unchanged* 17.1 loop.
+
+    The model response uses the chat-completions ``choices/message/content`` shape; the validation
+    loop (apply -> syntax -> ruff -> rescan) is identical, and the only outbound host is
+    ``openrouter.ai`` — never ``api.anthropic.com``.
+    """
+    name, vuln, fixed = FIXTURES[1]  # CWE-78 -> argv list
+    proj = _make_project(tmp_path, "openrouter", REL, vuln)
+    findings = _sast_scan(proj)
+    target = resolve_sast_finding(findings, REL)
+    diff = _canonical_diff(REL, vuln, fixed)
+
+    calls: list[str] = []
+
+    class RecordingTransport:
+        def request(self, method, url, *, body=None, headers=None):  # type: ignore[no-untyped-def]
+            calls.append(url)
+            # The OpenAI-compatible chat-completions response shape.
+            payload = {"choices": [{"message": {"content": _suggestion_json(diff)}}]}
+            return json.dumps(payload).encode("utf-8")
+
+    transport: Transport = RecordingTransport()
+    client = OpenAICompatibleClient(
+        transport=transport,
+        api_key="sk-or-test",
+        base_url="https://openrouter.ai/api/v1/chat/completions",
+        model="openrouter/auto",
+    )
+    context = extract_code_context(target.finding, lambda r: (proj / r).read_text(encoding="utf-8"))
+    validate = build_validator(project_root=proj, target=target, baseline=findings)
+    result = generate_fix(
+        finding=target.finding, code_context=context, client=client, validate=validate
+    )
+
+    assert result.outcome is FixOutcome.VALIDATED
+    assert result.suggestion is not None
+    assert calls, "expected the model to be called"
+    assert all("openrouter.ai" in url for url in calls)
+    assert all("api.anthropic.com" not in url for url in calls)
 
 
 # --- parsing ------------------------------------------------------------------------------------

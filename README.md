@@ -146,6 +146,30 @@ a priority score, or the ranking. Coverage of files outside the scanned project 
 malformed coverage report is a clean usage error, never a crash. The annotation appears in the
 terminal Card C, in the JSON report (additive `runtime` object), and in SARIF result properties.
 
+## Validated fixes (`vulnadvisor fix`)
+
+For a first-party (SAST) finding, VulnAdvisor can ask a language model for the smallest safe patch
+and then **prove it** on a throwaway copy of your project — the patch must apply, keep the code
+parsing/linting/type-checking, pass your tests, and make the finding disappear from a fresh scan
+without introducing a new one. Only a fully validated patch is shown; otherwise you get an honest
+"no safe fix found". The working tree is never touched unless you pass `--apply`.
+
+The fix loop is **provider-flexible** — any OpenAI-compatible key works, so a **free OpenRouter
+key is enough**; an Anthropic key is no longer required. The provider is detected from the key
+prefix (`sk-or-` → OpenRouter, `sk-ant-` → Anthropic, `sk-`/`sk-proj-` → OpenAI), read in this
+order (first present wins): `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...        # a free OpenRouter key works
+vulnadvisor fix app/views.py:42:command-injection           # print the validated diff
+vulnadvisor fix app/views.py:42:command-injection --apply   # write it to your tree
+vulnadvisor fix --provider openrouter --model openrouter/auto app/views.py:42:command-injection
+```
+
+Override the provider with `--provider {openrouter,openai,anthropic}` and the model with `--model`
+(or the `VULNADVISOR_MODEL` env var). The single network call goes to **your own** chosen endpoint;
+every validation step is local, so your code never leaves the machine otherwise.
+
 ## Output formats & CI gating
 
 `vulnadvisor scan PATH --format {terminal,json,sarif}`:
@@ -181,9 +205,10 @@ VulnAdvisor is built for environments where source code must not leave the machi
 - **No telemetry, no analytics, no phone-home.** Ever.
 - Source code is analyzed **locally**; only dependency names/versions are sent to public advisory
   APIs (OSV, GitHub Advisory, EPSS, CISA KEV), cached in a local SQLite database.
-- The optional LLM layer is the only call to a non-public service, uses **your own**
-  `ANTHROPIC_API_KEY`, and sends only the finding metadata it needs to write the explanation. It is
-  off unless you set the key, and `--no-explain` disables it entirely.
+- The optional LLM layers (Card A explanations and `vulnadvisor fix`) are the only calls to a
+  non-public service, use **your own** key (`ANTHROPIC_API_KEY` for explanations; OpenRouter /
+  OpenAI / Anthropic for `fix`), and send only the finding metadata they need. They are off unless
+  you set a key, and `--no-explain` disables the explanation layer entirely.
 
 ## Develop
 
