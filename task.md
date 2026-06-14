@@ -419,11 +419,12 @@ parsing of coverage JSON; works with branch and line coverage; documented in REA
 > Default: fixes are generated where the code already lives (user's machine/CI, BYO key).
 > Cloud-side code access is per-org opt-in. Never auto-commit.
 >
-> **Onboarding/BYOM addendum (17.3–17.4, maintainer-requested):** the fix loop must work with
-> **any** model key the user already has — a free **OpenRouter** key, not just Anthropic — and the
-> in-line PR suggestions must reach a user **without a GitHub App install**: a GitHub *login* (or
-> simply the auto-added Actions workflow using the built-in `GITHUB_TOKEN`) is enough. The App stays
-> as an optional org-wide/bot-identity upgrade, never a prerequisite.
+> **Onboarding/BYOM addendum (17.3–17.5, maintainer-requested):** the fix loop must work with
+> **any** model key the user already has — a free **OpenRouter** key, not just Anthropic (17.3) — and
+> the in-line PR suggestions must reach a user **without a GitHub App install**: a GitHub *login* (or
+> simply the auto-added Actions workflow using the built-in `GITHUB_TOKEN`) is enough (17.4). The App
+> stays as an optional org-wide/bot-identity upgrade, never a prerequisite. The validated fix is also
+> shown **in our own dashboard finding card** (17.5) so the whole vuln→evidence→fix loop demos in-app.
 
 ### Task 17.1 — `vulnadvisor fix` (local, validated)
 **Goal:** a fix is only a fix if the machine can prove it.
@@ -508,6 +509,31 @@ platform; the platform re-exports it (no behavior change, one source of truth).
 - [ ] Full gate green (+ dashboard build/lint if the onboarding UI changes)
 **Done when (CLI v2.1):** adding the workflow (or signing in with GitHub) is enough to receive
 validated in-line suggestions — no App setup anywhere on the critical path. Tag **v2.1.0**.
+
+### Task 17.5 — Proposed fix in the dashboard finding card (demo-ready)
+**Goal:** the validated patch is visible in **our own UI**, not only on the GitHub PR — so a demo (or
+anyone testing the app) sees the whole loop in one place: the vulnerability → the source→sink
+evidence → the machine-validated fix. (Pure surfacing of data we already store from 17.2; the GitHub
+PR path stays the place you actually *commit* it.)
+**Build:** the validated fixes are already persisted on the scan (`Scan.suggestions`, 17.2) and keyed
+by `finding_id` (`<file>:<line>:<kind>`); this task only exposes + renders them.
+- **Platform read API:** surface a scan's stored suggestions to the dashboard, tenant-scoped with the
+  same org 404 semantics as the other reads (11.4) — either attach the matching `ValidatedFix` to
+  each code finding in the findings response, or a sibling `suggestions` list the client joins by
+  `finding_id` (pick one; no new table — reuse the stored rows). Findings without a fix return none.
+- **Dashboard:** in the expanded `CodeFindingCard` (13.2 / 16.4), add a **"Proposed fix"** panel —
+  the unified diff rendered with added/removed line styling (Aegis tokens), the model's **rationale**
+  and a **confidence** chip, and a **copy** button (copy-diff and/or copy-fixed-code). Wording keeps
+  the soundness contract: it is a *suggested, validated* patch, **never auto-applied** — the commit
+  happens on the PR. A finding with no stored fix renders no panel (most won't have one).
+**Validate:**
+- [ ] Read path returns the fix joined to the correct code finding; cross-org request 404s; a finding without a fix yields none (tested)
+- [ ] Dashboard: a seeded SAST finding with a stored fix renders the diff + rationale + copy button; a finding without one shows no panel (unit/e2e); copy puts the exact diff/fixed code on the clipboard
+- [ ] No tier/score/ranking is affected — the panel is pure presentation (the fix never changes the deterministic verdict)
+- [ ] Full gate green + dashboard `npm run lint` / `build` / `test` clean
+**Done when:** opening a SAST finding in the dashboard shows its validated patch inline — the demo
+walks vuln → evidence → fix without leaving the app. (Dashboard-only; ships independently of the
+v2.1.0 CLI tag — consider a `dashboard-v1.1` tag.)
 
 ---
 
