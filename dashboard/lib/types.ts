@@ -31,6 +31,9 @@ export interface SetupPrResponse {
   pr_number: number;
   pr_url: string;
   created: boolean;
+  // True when the platform auto-wrote the VULNADVISOR_API_KEY repo secret (Task B). False means no
+  // write-capable token was available; the dashboard offers one-click consent to set it (Task E).
+  secret_set: boolean;
 }
 
 export interface ScanSummary {

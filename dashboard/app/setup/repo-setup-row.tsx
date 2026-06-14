@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { SetupChip } from "@/components/setup-chip";
+import { oauthPopupReturned, SETUP_OAUTH_PATH } from "@/lib/setup";
 import type { Repo, SetupPrResponse } from "@/lib/types";
 
 async function errorMessage(res: Response): Promise<string> {
@@ -30,6 +31,19 @@ export function RepoSetupRow({ orgSlug, repo }: { orgSlug: string; repo: Repo })
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [updatedInPlace, setUpdatedInPlace] = useState(false);
+  // null = not attempted this session; true/false = the last response's secret_set.
+  const [secretSet, setSecretSet] = useState<boolean | null>(null);
+  // The platform lacks a write-capable GitHub token (a 409, or secret_set=false). We offer
+  // one-click incremental consent instead of sending the user to GitHub Settings.
+  const [needsConsent, setNeedsConsent] = useState(false);
+  const pollRef = useRef<number | null>(null);
+
+  // Stop polling the consent popup if the row unmounts mid-flow.
+  useEffect(() => {
+    return () => {
+      if (pollRef.current !== null) window.clearInterval(pollRef.current);
+    };
+  }, []);
 
   async function openSetupPr() {
     setBusy(true);
@@ -40,6 +54,12 @@ export function RepoSetupRow({ orgSlug, repo }: { orgSlug: string; repo: Repo })
         `/api/v1/orgs/${encodeURIComponent(orgSlug)}/repos/${encodeURIComponent(repo.name)}/setup-pr`,
         { method: "POST", credentials: "include" },
       );
+      if (res.status === 409) {
+        // No write-capable GitHub token yet — offer consent rather than a raw error.
+        setNeedsConsent(true);
+        setError(null);
+        return;
+      }
       if (!res.ok) {
         setError(await errorMessage(res));
         return;
@@ -48,6 +68,9 @@ export function RepoSetupRow({ orgSlug, repo }: { orgSlug: string; repo: Repo })
       setStatus("pr-open");
       setPrUrl(data.pr_url || null);
       setUpdatedInPlace(!data.created);
+      setSecretSet(data.secret_set);
+      // Secret auto-written -> done; otherwise offer consent so we can set it for them.
+      setNeedsConsent(!data.secret_set);
     } catch {
       setError("Network error reaching the API.");
     } finally {
@@ -55,7 +78,44 @@ export function RepoSetupRow({ orgSlug, repo }: { orgSlug: string; repo: Repo })
     }
   }
 
-  const showButton = repo.github_linked && status !== "receiving-scans";
+  function grantAccess() {
+    // Pop the existing incremental-auth flow; auto-retry the setup-PR POST when it returns, so the
+    // user never has to touch GitHub Settings or come back and click again.
+    const popup = window.open(SETUP_OAUTH_PATH, "vulnadvisor-oauth", "width=600,height=720");
+    if (!popup) {
+      setError("Enable pop-ups for this site to grant repository access.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const timer = window.setInterval(() => {
+      if (popup.closed) {
+        window.clearInterval(timer);
+        pollRef.current = null;
+        void openSetupPr();
+        return;
+      }
+      let returned = false;
+      try {
+        returned = oauthPopupReturned(
+          popup.location.origin,
+          popup.location.href,
+          window.location.origin,
+        );
+      } catch {
+        return; // cross-origin (on github.com) — keep waiting
+      }
+      if (returned) {
+        window.clearInterval(timer);
+        pollRef.current = null;
+        popup.close();
+        void openSetupPr();
+      }
+    }, 500);
+    pollRef.current = timer;
+  }
+
+  const showOpenButton = repo.github_linked && status !== "receiving-scans";
 
   return (
     <Card size="sm" className="flex-row items-center justify-between">
@@ -72,6 +132,16 @@ export function RepoSetupRow({ orgSlug, repo }: { orgSlug: string; repo: Repo })
         {updatedInPlace ? (
           <p className="mt-1 text-xs text-muted-foreground">Existing setup PR updated in place.</p>
         ) : null}
+        {secretSet === true ? (
+          <p className="mt-1 text-xs text-safe">Repository secret configured automatically.</p>
+        ) : null}
+        {needsConsent ? (
+          <p className="mt-1 text-xs text-muted-foreground">
+            {prUrl
+              ? "Grant repository access to set the VULNADVISOR_API_KEY secret automatically — no GitHub Settings."
+              : "VulnAdvisor needs repository access to open the PR and set its secret — one click, no GitHub Settings."}
+          </p>
+        ) : null}
       </CardContent>
       <CardContent className="flex items-center gap-2">
         {prUrl ? (
@@ -81,7 +151,12 @@ export function RepoSetupRow({ orgSlug, repo }: { orgSlug: string; repo: Repo })
             </a>
           </Button>
         ) : null}
-        {showButton ? (
+        {needsConsent ? (
+          <Button size="sm" onClick={grantAccess} disabled={busy}>
+            {busy ? "Waiting…" : "Grant repository access"}
+          </Button>
+        ) : null}
+        {showOpenButton && !needsConsent ? (
           <Button variant="outline" size="sm" onClick={openSetupPr} disabled={busy}>
             {busy ? "Opening…" : status === "pr-open" ? "Update setup PR" : "Open setup PR"}
           </Button>

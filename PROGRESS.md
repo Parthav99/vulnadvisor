@@ -4,6 +4,39 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## One-click setup — Task E: dashboard secret_set UX + one-click consent  (2026-06-14)
+
+**Status:** complete, dashboard gate green (npm test 73/73, eslint clean, `next build` compiled +
+typecheck clean). Dashboard-only; no backend change (the API already returns `secret_set` (Task B)
+and a 409 with `/v1/auth/github/login?setup=1` in its detail). Closes the one-click-setup arc
+(A–E): a user can now finish onboarding without ever touching GitHub Settings.
+
+**What changed**
+- `lib/types.ts`: `SetupPrResponse.secret_set: boolean`.
+- `lib/setup.ts` (new, pure): `SETUP_OAUTH_PATH` (`/api/v1/auth/github/login?setup=1`, same-origin
+  proxy) + `oauthPopupReturned(popupOrigin, popupHref, selfOrigin)` — the popup-return detector.
+  It fires **only** once same-origin AND off any `/auth/github` route AND not `about:blank`, so
+  neither the start login URL (same-origin!) nor the opener-origin-inheriting blank document
+  triggers a premature retry. Unit-tested in `lib/setup.test.ts` (+5).
+- `app/setup/repo-setup-row.tsx`: on success shows "Repository secret configured automatically."
+  when `secret_set`; when `secret_set` is false **or** the POST 409s, shows a one-click **Grant
+  repository access** button that pops the incremental-OAuth flow and **auto-retries the setup-PR
+  POST on return** (poll `popup.closed` + `oauthPopupReturned`; interval cleared on unmount). The
+  401/403/502 paths and idempotent "updated in place" copy are unchanged.
+
+**Why these choices.** Popup + poll keeps it dashboard-only (the existing callback redirects to the
+dashboard root, carrying no return path) and works with the same-origin `/api` proxy so the session
+cookie rides along. The return detector is the one piece with real edge cases (the login URL shares
+our origin; `about:blank` can inherit it), so it's extracted pure and table-tested rather than
+buried in the component. A blocked popup degrades to a clear message, never a dead button.
+
+**Deferred (prior-task precedent):** a live browser e2e of the consent→retry round-trip against a
+real GitHub account (the detector, the 409/secret_set branching, and the retry wiring are proven by
+the unit test + the typed build). **Next:** the deferred live e2e checks across A–E, or the
+remaining v2.1.0 tag work.
+
+---
+
 ## One-click setup — Task D2: CLI suggest via the platform proxy + zero-config fallback key  (2026-06-14)
 
 **Status:** complete, automated gate passing (ruff + format + mypy --strict + full pytest 876
