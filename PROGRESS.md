@@ -4,6 +4,39 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Setup-PR fix: resolve the repo's real default branch from GitHub  (2026-06-14)
+
+**Status:** complete. `ruff` + `ruff format --check` clean, `mypy --strict` clean (40 files),
+`pytest tests/test_setup_pr.py tests/test_github.py` 86/86. Full suite 213 passed, 1 pre-existing
+unrelated fail (`test_llm.py::test_complete_without_byo_key_is_graceful_noop`, red on clean HEAD).
+
+**Symptom.** Opening the setup PR for `parthav-san/pygoat` failed with *"GitHub App error: base
+branch 'main' not found"* — the repo's real default is `master`, but the dashboard showed "default
+main". Root cause: `_upsert_repo` (the `installation_repositories` webhook) never sets
+`default_branch`, and that webhook payload's repo objects don't carry it, so every synced repo sits
+at the model default `"main"`. That stale value was used both as the PR base **and** the workflow's
+`on: push` branch — so a non-`main` repo got a PR off a non-existent base and a dead push trigger.
+
+**What changed**
+- `github_app.py`: added `default_branch(installation_id, repo_full_name)` /
+  `default_branch_with_token(token, repo_full_name)` (+ shared `_default_branch`) — GET `/repos/
+  {owner}/{repo}` and return its `default_branch`, defensively (`None` on any failure).
+- `routers/github.py`: `open_setup_pr` now resolves the real default branch from GitHub (via the
+  same App/OAuth credential it will open the PR with), **self-heals** `repo.default_branch` in the
+  DB when it differs, and renders the workflow + PR base from the corrected value. A lookup failure
+  is non-fatal — it falls back to the stored value rather than blocking setup. The `_open_setup_pr`
+  404 base-branch guard stays as a last-resort safety net.
+- Tests: `test_github.py` self-heal case (`master` repo → PR base + workflow push trigger both
+  `master`, stored value flips); `test_setup_pr.py` unit tests for `default_branch` (reports
+  GitHub's value; `None` on a 404 lookup), plus a `GET /repos/{owner}/{repo}` route on the stateful
+  GitHub fake. Fake `_FakeApp` gained the two methods + a `default_branch_value` knob.
+
+**Why.** GitHub is the source of truth for the default branch; the stored value is a sync-time guess
+that the webhook can't populate. Resolving at setup time (and self-healing the row) fixes both the
+PR base and the push trigger in one place, and makes the dashboard's "default <branch>" honest.
+
+---
+
 ## Setup-PR UX fix: PUBLIC_API_URL falls back to the request host  (2026-06-14)
 
 **Status:** complete. Platform gate green for the touched areas — `ruff check` + `ruff format

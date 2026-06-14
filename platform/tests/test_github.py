@@ -64,6 +64,10 @@ class _FakeApp:
         self.calls: list[dict[str, Any]] = []
         self.setup_calls: list[dict[str, Any]] = []
         self.suggestion_calls: list[dict[str, Any]] = []
+        self.default_branch_calls: list[dict[str, Any]] = []
+        # What GitHub reports as the repo's default branch. None = "couldn't determine" -> the route
+        # keeps the stored value; a string self-heals it (e.g. a repo whose real default is master).
+        self.default_branch_value: str | None = None
         self.fail_setup = False
         # The paired secrets fake, registered alongside in _overrides() and reachable from tests.
         self.secrets = _FakeSecrets()
@@ -99,6 +103,18 @@ class _FakeApp:
             }
         )
         return len(comments)
+
+    async def default_branch(
+        self, *, installation_id: int | None, repo_full_name: str
+    ) -> str | None:
+        self.default_branch_calls.append(
+            {"installation_id": installation_id, "repo": repo_full_name}
+        )
+        return self.default_branch_value
+
+    async def default_branch_with_token(self, *, token: str, repo_full_name: str) -> str | None:
+        self.default_branch_calls.append({"token": token, "repo": repo_full_name})
+        return self.default_branch_value
 
     async def open_setup_pr(self, **kwargs: Any) -> SetupPr:
         if self.fail_setup:
@@ -714,6 +730,35 @@ async def test_setup_pr_full_flow(client: AsyncClient, seeded_key: str) -> None:
     after = await _repo_listing(client, seeded_key)
     assert after["setup_status"] == "pr-open"
     assert after["setup_pr_url"] == "https://github.com/acme/web/pull/7"
+
+
+async def test_setup_pr_self_heals_wrong_default_branch(
+    client: AsyncClient, seeded_key: str
+) -> None:
+    """A repo whose real default is 'master' (stored as the 'main' default) is resolved from GitHub.
+
+    The installation_repositories webhook carries no default_branch, so the row sits at 'main'.
+    Left uncorrected the PR would branch off a non-existent base and the workflow would only run on
+    a dead 'main' push trigger. The setup-PR endpoint asks GitHub for the real branch and uses it.
+    """
+    fake = _overrides()
+    fake.default_branch_value = "master"  # GitHub reports the repo's real default branch
+    assert (await _post(client, _install_payload(), "installation")).status_code == 200
+    # Sanity: the row was synced with the stale 'main' default before setup runs.
+    assert (await _repo_listing(client, seeded_key))["default_branch"] == "main"
+
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/setup-pr", headers={"Authorization": f"Bearer {seeded_key}"}
+    )
+    assert resp.status_code == 200
+
+    # The PR is branched off 'master', and the workflow's push trigger targets 'master', not 'main'.
+    # (Assert on the rendered text: PyYAML parses the bare `on:` key as the boolean True.)
+    call = fake.setup_calls[0]
+    assert call["base_branch"] == "master"
+    assert 'branches: ["master"]' in call["file_content"]
+    # The stored value is self-healed so the dashboard and future scans stay correct.
+    assert (await _repo_listing(client, seeded_key))["default_branch"] == "master"
 
 
 async def test_setup_pr_reclick_updates_not_duplicates(

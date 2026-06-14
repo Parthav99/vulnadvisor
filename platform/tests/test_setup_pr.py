@@ -273,11 +273,18 @@ class _FakeGitHub:
         self.pulls: list[dict[str, Any]] = []
         self.commits = 0
         self.last_put_body: dict[str, Any] | None = None
+        self.default_branch = base_branch  # what GET /repos/{owner}/{repo} reports
+        self.fail_repo = False  # make that lookup 404 (permission/missing repo)
         self._next_pr = 1
         self._next_sha = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path, method = request.url.path, request.method
+
+        if method == "GET" and re.match(r"^/repos/[^/]+/[^/]+$", path):
+            if self.fail_repo:
+                return httpx.Response(404, json={"message": "Not Found"})
+            return httpx.Response(200, json={"default_branch": self.default_branch})
 
         if method == "GET" and (m := re.match(r"^/repos/[^/]+/[^/]+/git/ref/(.+)$", path)):
             ref = m.group(1)
@@ -434,3 +441,20 @@ async def test_open_setup_pr_missing_base_branch_raises(monkeypatch: Any) -> Non
     with pytest.raises(GitHubAppError, match="base branch"):
         await _open(app)
     assert fake.pulls == []
+
+
+async def test_default_branch_reports_githubs_value(monkeypatch: Any) -> None:
+    """``default_branch`` returns what GitHub says the repo's default is — not the stored guess."""
+    fake = _FakeGitHub(base_branch="master")
+    app = _patched_app(monkeypatch, fake)
+
+    assert await app.default_branch(installation_id=5001, repo_full_name="acme/web") == "master"
+
+
+async def test_default_branch_none_when_lookup_fails(monkeypatch: Any) -> None:
+    """A 404 repo lookup (missing/permission) returns None so the caller keeps the stored value."""
+    fake = _FakeGitHub()
+    fake.fail_repo = True
+    app = _patched_app(monkeypatch, fake)
+
+    assert await app.default_branch(installation_id=5001, repo_full_name="acme/web") is None

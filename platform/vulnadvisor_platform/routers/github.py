@@ -143,6 +143,27 @@ async def open_setup_pr(
 
     owner_login = installation.account_login if installation is not None else user.login
     repo_full_name = f"{owner_login}/{repo.name}"
+
+    # Resolve the repo's *real* default branch from GitHub and self-heal the stored value. The
+    # installation_repositories webhook carries no default_branch, so the row can sit at the model's
+    # "main" default even when the repo's default is "master" — which would both branch the PR off
+    # a non-existent base and bake a dead push trigger into the workflow. A lookup failure is
+    # non-fatal (returns None): we fall back to the stored value rather than block setup.
+    try:
+        if installation is not None:
+            real_default_branch = await app.default_branch(
+                installation_id=installation.github_installation_id, repo_full_name=repo_full_name
+            )
+        else:
+            assert oauth_token is not None  # guaranteed by _user_setup_token (raises otherwise)
+            real_default_branch = await app.default_branch_with_token(
+                token=oauth_token, repo_full_name=repo_full_name
+            )
+    except GitHubAppError:
+        real_default_branch = None
+    if real_default_branch is not None and real_default_branch != repo.default_branch:
+        repo.default_branch = real_default_branch
+
     workflow = render_workflow(default_branch=repo.default_branch, api_url=api_url)
     pr_body = render_pr_body(
         repo_full_name=repo_full_name, org_slug=org.slug, dashboard_url=settings.dashboard_url

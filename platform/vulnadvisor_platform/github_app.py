@@ -225,6 +225,38 @@ class GitHubApp:
             pr_body=pr_body,
         )
 
+    async def default_branch(
+        self, *, installation_id: int | None, repo_full_name: str
+    ) -> str | None:
+        """The repo's current default branch as GitHub reports it (App path), or ``None``."""
+        token = await self._installation_token(installation_id)
+        return await self._default_branch(token=token, repo_full_name=repo_full_name)
+
+    async def default_branch_with_token(self, *, token: str, repo_full_name: str) -> str | None:
+        """The repo's current default branch via the user's OAuth ``token``, or ``None``."""
+        return await self._default_branch(token=token, repo_full_name=repo_full_name)
+
+    async def _default_branch(self, *, token: str, repo_full_name: str) -> str | None:
+        """GET the repo and return its ``default_branch`` (defensively); ``None`` on any failure.
+
+        The stored value can be stale or simply wrong: the ``installation_repositories`` webhook
+        payload carries no ``default_branch``, so a freshly-synced repo sits at the model's
+        ``"main"`` default even when its real default is ``"master"``. Resolving it from GitHub
+        keeps both the workflow's push trigger and the PR base correct. A failure (network/
+        permission/non-JSON) is non-fatal — it returns ``None`` so the caller uses the stored value.
+        """
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{_API}/repos/{repo_full_name}", headers=headers)
+        if response.status_code >= 400:
+            return None
+        try:
+            data = response.json()
+        except ValueError:
+            return None
+        branch = data.get("default_branch") if isinstance(data, dict) else None
+        return branch if isinstance(branch, str) and branch else None
+
     async def _open_setup_pr(
         self,
         *,
