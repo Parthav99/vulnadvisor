@@ -573,3 +573,582 @@ stars, benchmark numbers), ask. Consistent with §4 of `docs/m12-strategy.md`.
 - [ ] Every number sourced; every claim traceable to the product or the benchmark
 - [ ] Maintainer review
 **Done when:** you can send it to an investor without edits.
+
+---
+---
+
+# VulnAdvisor — Build Plan v3 (task.md) — M19 → M26
+
+The phase that turns a working product into a category leader: make the **validated fix the
+visible centrepiece** (Gap 1), push **recall to production grade** (Gap 2), and then win on
+**speed, automation, and zero-key fix quality** — every line of it **$0 to run**.
+
+Read `CLAUDE.md` first (rules, stack, confidence tiers). The same loop and Definition of Done
+apply verbatim: one task per turn, run the Validation Gate yourself and paste it, update
+`PROGRESS.md`, commit + push. **Soundness rules are not relaxed by anything below** — a missed
+fixture vuln is release-blocking, no tier is ever silently downgraded, and uncertainty never
+reads as safety. **Fix quality bar (non-negotiable):** a fix is emitted only when the machine has
+*proven* it — patch applies → `ruff` → `mypy` → tests → re-scan clean — so we never ship bogus or
+unvalidated code; and a *low fix yield* (a finding returning "no safe fix" when a safe fix exists)
+is treated as a bug to fix, not an acceptable wall. Dashboard tasks additionally require `npm run build` + `npm run lint` +
+`npm test` clean. **Any new dependency (uv or npm) is named in the task and must be approved at
+task start before `uv add` / `npm install`.**
+
+## Why this phase (market grounding)
+- **Pi (pi.security)** raised $35M for an *agentic product-security platform* — autonomous
+  remediation plus a "security brain" of institutional memory. Their wedge is **agentic
+  auto-fix + memory**, not reachability. We answer with M24 (one-click autonomous remediation,
+  free-tier) and M26.6 (local-first "security brain"), while keeping our trust posture (runs
+  locally, no telemetry) that a cloud agent can't copy.
+- **Semgrep/Endor** sell reachability as a noise-killer (Semgrep cites *up to 98%* fewer
+  critical false positives) but both have **"limited capabilities for dynamic languages like
+  Python."** That is precisely our moat. M21 makes us the engine that *re-ranks their findings*
+  with Python-deep reachability; M20 widens what we catch natively.
+- **Everything here is zero-cost**: stdlib analysis, free OSS tools as optional subprocesses
+  (Semgrep OSS), free data feeds (OSV/EPSS/KEV), deterministic fixes that need no model key, and
+  free-tier model fallback for the long tail. No new paid service is introduced.
+
+## Phase 3 release map
+- **M19** Gap 1 — **quality** validated fixes (raise fix yield, never bogus) shown as the card's hero → **dashboard-v1.2**
+- **M20** Gap 2a — taint-engine recall depth (containers, cross-module, attributes, more CWEs) → **CLI v2.2**
+- **M21** Gap 2b — multi-tool fusion: Semgrep OSS findings, re-ranked by our reachability → **CLI v2.3**
+- **M22** Performance — content-hash cache + incremental & parallel scans → **CLI v2.4**
+- **M23** Fix quality — deterministic CWE fix templates, **zero API key** → **CLI v2.5**
+- **M24** Automation — one-click autonomous remediation, **free-tier** → **CLI v3.0**
+- **M25** Permanent mitigation — eradicate the vuln *class*; guardrail so it never returns → **CLI v3.1**
+- **M26** Bonus — VEX/SBOM, AI-security rules, diff-aware gating, malware detection, LSP, security-brain
+
+Safe reorder: M22 (performance) may move before M21 if a large-repo demo needs speed first.
+M20 must precede M21 (fusion overlays the native taint engine) and M23 must precede M24
+(autonomous remediation leans on zero-key templates to stay free-tier). M23 must precede M25
+(guardrails fix the class via deterministic templates); M25 composes with the M26 diff-aware gate
+(M26.3), pre-commit hook (M26.5), and security brain (M26.6), which may land in either order.
+
+---
+
+## M19 — Gap 1: quality validated fixes, shown as the hero (fix yield + visibility)
+
+> **Priority 1, re-scoped to the real pain.** On a live PR (your pygoat repo) **every** finding came
+> back "no safe fix" — you never saw a single fix. Two failures compound: **(a) fix yield** — the
+> loop declined everything (no deterministic templates yet, and the model path produced nothing the
+> validator would accept, or had no key), and **(b) visibility** — even a produced fix never reaches
+> the card, because the generated CI workflow runs `vulnadvisor suggest` (posts to GitHub via
+> `GITHUB_TOKEN`) while the scan step uploads the report **without** `--suggestions`, so the
+> platform's `Scan.suggestions` stays empty and 17.5's read API joins nothing. This milestone makes
+> fixes **real, validated, and non-bogus**, raises how often we actually *have* a fix, then shows it
+> as the card's hero. The **quality bar holds** — we never emit an unproven patch — but "everything
+> declined" is a *yield bug we fix here*, not an acceptable answer. No new runtime dependency.
+
+### Task 19.1 — Root-cause trace: why zero fixes *and* why none were visible (diagnosis; no production code)
+**Goal:** pin both failures precisely — the **yield** failure ("no safe fix for everything") and the **visibility** failure ("even a fix wouldn't render").
+**Build:** reproduce the pygoat outcome on a seeded vulnerable fixture and trace two paths.
+**Yield:** instrument the fix loop (`llm/fix.py` / `suggest`) and record, per finding, *why* it
+declined — no model key, model returned an unparseable/empty patch, patch didn't apply,
+lint/type/test/re-scan failed, or no template existed (there are none yet). **Visibility:** trace
+`fix --suggest-json` → `suggest` / `scan --upload` → ingest (`Scan.suggestions`,
+`reports.py`/`routers/ingest.py`) → read join (`routers/read.py`) → `CodeFindingCard`, confirming
+the workflow uploads no suggestions and checking join-key parity (`<file>:<line>:<kind>`) and
+SCA-finding coverage. Write `docs/fix-gap-trace.md` with the per-finding decline reasons **and** the
+broken visibility hop (payloads at each). Add **two failing tests**: one where a common, clearly
+fixable CWE (e.g. `yaml.load`) returns "no safe fix", one where "validated fix produced → dashboard
+read returns none". **No production code changes in this task.**
+**Validate:**
+- [ ] `docs/fix-gap-trace.md` tabulates, per seeded finding, the exact decline reason; and shows the broken visibility hop with payloads
+- [ ] Two red tests reproduce the yield gap and the visibility gap (they go green in 19.3 / 19.2)
+- [ ] Only tests + a doc added; `git diff` touches no `src/`/`platform/` production module
+- [ ] Full gate green except the two intentionally-red tests (documented)
+**Done when:** both failures are measured, attributed, and reproduced by tests.
+
+### Task 19.2 — Repair the fix→dashboard visibility pipeline
+**Goal:** a validated patch reliably reaches the finding card from **both** CI and a plain local upload.
+**Build:** close the visibility hops 19.1 found. The generated workflow (14.2/`setup_pr.py`) must
+produce a suggestions document and **upload it** (`scan --upload --suggestions <file>` alongside the
+report, or a unified `suggest --upload` — pick one, single source of truth). Make `fix
+--suggest-json`, `suggest`, and the upload share **one** suggestions schema, and normalize the
+read-API join id identically on both sides (defensive, version-safe). A validated fix for an **SCA**
+finding must persist and join too, not only SAST. Turn 19.1's visibility test green; add CI-path
+(faked GitHub + real ingest+read) and local-upload e2e coverage. Keep the privacy copy honest about
+what each path sends.
+**Validate:**
+- [ ] 19.1's visibility test now passes
+- [ ] CI-path **and** `scan --upload --suggestions` both populate `Scan.suggestions`; the read join returns the fix for a seeded **SAST** and a seeded **SCA** finding
+- [ ] Cross-org request still 404s (tenant isolation intact)
+- [ ] No tier/score/ranking change (the fix is pure presentation data); full gate + platform tests green
+**Done when:** any validated fix that exists is shown; no path drops it silently.
+
+### Task 19.3 — Raise fix yield with high-confidence quick-fixes (the heart of Gap 1)
+**Goal:** stop returning "no safe fix" for vulnerabilities that have an obvious, safe fix — produce
+**real, validated** patches for the common cases *now*, never bogus code.
+**Build:** a **high-confidence deterministic quick-fix set** for the handful of CWEs that dominate
+real findings and have an unambiguous safe rewrite: `yaml.load`→`yaml.safe_load` (CWE-502),
+`subprocess(shell=True)`→list-args `shell=False` (CWE-78), `eval`→`ast.literal_eval` where
+literal-shaped (CWE-94/95), `md5`/`sha1`→`sha256` (CWE-327/328), `random`→`secrets` for tokens
+(CWE-330), `requests(..., verify=False)`→verified (CWE-295). Each is an AST-targeted rewrite that
+runs **before** the model and is accepted only after the full 17.1 validation loop (apply → ruff →
+mypy → tests → re-scan clean). Also harden the **model fallback** for the long tail: tighter
+code-context selection, structured-output retries, clearer decline reasons. Surface a **fix-yield
+metric** (% of fixable seeded findings that produced a validated fix) with a documented target. This
+is the *bridge*: the full template engine + the remaining CWEs land in **M23**, which generalizes
+exactly this set — soundness/quality bar identical (a rewrite that can't be made safely **declines**,
+never emits).
+**Validate:**
+- [ ] Each quick-fix produces a **validated** patch on its seeded fixture (apply→lint→types→tests→re-scan clean); 19.1's yield test (e.g. `yaml.load`) goes green
+- [ ] **Zero unsafe/bogus patches**: a quick-fix that can't safely rewrite declines (→ model fallback); no emitted patch ever fails the validator
+- [ ] Works **offline, no API key** for the quick-fix CWEs (transport mock asserts zero outbound calls)
+- [ ] Fix-yield metric reported on the fixture suite and meets the documented target; full gate green
+**Done when:** common vulnerabilities come back with a real, validated fix instead of "no safe fix".
+
+### Task 19.4 — Fix-centric finding card (the centrepiece redesign)
+**Goal:** the proposed fix is the **hero** of the card, not a footnote — and its quality is legible.
+**Build:** restructure the expanded `CodeFindingCard` so the **Proposed Fix** panel leads: the
+unified diff with Aegis add/remove styling, a confidence chip, the model/template **rationale**,
+**copy-diff** and **copy-fixed-code** buttons, and a provenance line proving it earned trust
+(`validated: applied · ruff · mypy · tests · re-scan clean`, plus a **"deterministic" vs "model"**
+badge from 19.3). Source→sink evidence sits alongside (not above). The **collapsed row** gains a
+"Fix ready" badge when a validated patch exists, and an honest "No safe fix found" state **only** when
+the loop genuinely declined. Soundness wording unchanged: *suggested, machine-validated, never
+auto-applied — you commit it on the PR*. Pure presentation; never alters the verdict.
+**Validate:**
+- [ ] Seeded SAST **and** SCA findings, with and without a fix, render correctly; "Fix ready" + deterministic-vs-model badges accurate; "no safe fix" shown only when truly declined
+- [ ] Copy buttons place the exact diff / fixed code on the clipboard (e2e or documented manual)
+- [ ] Keyboard-only + screen-reader pass (focus order, `aria-expanded`, labelled buttons); `prefers-reduced-motion` respected
+- [ ] Dashboard `build`/`lint`/`test` clean; Lighthouse perf/a11y not regressed vs M13 baseline
+**Done when (dashboard-v1.2):** opening a finding shows a real, validated fix front-and-centre; the
+vuln→evidence→fix loop demos in one screen. Tag `dashboard-v1.2`.
+
+---
+
+## M20 — Gap 2 (I): taint-engine recall depth
+
+> The native engine's reach is the floor everything else builds on, so widen it first.
+> Containers, cross-module flow, object state, and ~10 new CWE families — each with fixtures.
+> Soundness verbatim: every new capability ships with a **zero-missed-flow** fixture gate.
+> No new dependency (stdlib `ast` + the existing call/import graph).
+
+### Task 20.1 — Container & data-structure taint propagation
+**Goal:** taint survives `dict`/`list`/`set`/`tuple`, comprehensions, unpacking, and string assembly.
+**Build:** extend `sast/taint.py` to propagate (conservatively) through container writes/reads
+(a tainted element taints the container; reads off a tainted container are tainted), tuple/dict
+unpacking, comprehensions/generators, slicing, and string assembly (`str.format`, `%`, f-strings
+already handled — add `.join`, `os.path.join`, `+` chains). Opaque/dynamic indexing →
+`DYNAMIC-UNKNOWN`, never silently clean. Pure, no I/O.
+**Validate:**
+- [ ] ≥10 fixtures: list-append→sink, dict-value→sink, comprehension, unpack, `.join`, nested container, sanitized-in-container, dynamic-index-blocked
+- [ ] **Zero missed flows**; whole-container conservatism never downgrades a real flow; output deterministic
+- [ ] Per-file perf within the existing budget (document); full gate green
+**Done when:** data flowing through Python's everyday containers is no longer invisible.
+
+### Task 20.2 — Cross-module / cross-file taint
+**Goal:** a source in module A reaching a sink in module B via imported callables is `CONFIRMED-FLOW`.
+**Build:** carry demand-driven propagation across module boundaries on the existing import/call
+graph: resolve imported callables (`from x import f`, aliases, re-exports), and compute a
+**per-function taint summary** (which params taint which returns/sinks) cached and reused so the
+search stays tractable. FFI boundary policy holds — a path into a native extension **escalates**,
+never silently terminates.
+**Validate:**
+- [ ] ≥6 fixtures: cross-module direct, via re-export, via wrapper chain, sanitized in another module, class-method across modules, not-reachable-across-modules
+- [ ] **Zero missed cross-module flows**; summaries deterministic and order-independent
+- [ ] Perf budget held with summary caching (document); full gate green
+**Done when:** the differentiator extends across the whole project, not just one file.
+
+### Task 20.3 — Object / attribute & class-state taint
+**Goal:** taint through `self.x`, instance attributes, dataclass fields, and simple class state.
+**Build:** best-effort field-sensitive attribute taint — assigning a source to `self.attr` taints
+later reads of `self.attr`; constructor params propagate; `setattr`/dynamic attribute access →
+`DYNAMIC-UNKNOWN`. Pure.
+**Validate:**
+- [ ] Fixtures: attr set→get→sink, constructor-taint, dataclass field, dynamic-attr-blocked
+- [ ] **Zero missed**; dynamic constructs escalate, never downgrade; full gate green
+**Done when:** stateful, object-oriented flows are traced, conservatively and soundly.
+
+### Task 20.4 — New CWE families (breadth)
+**Goal:** roughly double the vuln classes, each declared as data (sources/sinks/sanitizers).
+**Build:** add rule packs in `sast/rules.py` for: SSTI (CWE-1336, `render_template_string`/Jinja
+`Template` on taint), XXE (CWE-611, unsafe `lxml`/`xml.etree`), open redirect (CWE-601), weak
+crypto / insecure hash (CWE-327/328, md5/sha1/DES), insecure randomness for security (CWE-330,
+`random` → tokens), disabled TLS verification (CWE-295, `verify=False`), LDAP injection (CWE-90),
+XPath injection (CWE-643), ReDoS (CWE-1333, catastrophic regex on tainted input), and archive
+path traversal / "tarbomb" (CWE-22 on `tarfile`/`zipfile` extract). Each pure and declarative.
+**Validate:**
+- [ ] ≥2 fixtures per family (positive + sanitized/negative) plus adversarial aliasing (`import x as y`, `from x import f`)
+- [ ] **Zero missed** per family; recall benchmark rises; output deterministic; full gate green
+**Done when:** the engine speaks ~17 CWE families, all soundly tiered.
+
+### Task 20.5 — Recall benchmark refresh
+**Goal:** prove the lift, reproducibly, and honestly.
+**Build:** extend `benchmarks/` with the container/cross-module/attribute cases + the new families
+over the fixture suite and 2–3 real OSS Python apps; report recall/precision vs **Bandit** and
+**Semgrep OSS** (forward-references M21); update `benchmarks/SAST-REPORT.md` including where a
+competitor wins.
+**Validate:**
+- [ ] One command regenerates every number identically
+- [ ] **Zero missed seeded vulns** for VulnAdvisor (release-blocking); warm-cache perf budget met or the miss documented with a profiling plan
+- [ ] Full gate green
+**Done when (CLI v2.2):** recall is materially higher with zero fixture misses. Tag **v2.2.0**.
+
+---
+
+## M21 — Gap 2 (II): multi-tool fusion — Semgrep OSS, re-ranked by our reachability
+
+> We don't out-rule Semgrep; we make it (and any scanner) **smarter** by ranking its findings
+> through our Python-deep reachability/taint engine and confidence tiers — turning its raw output
+> into the same evidence-backed, deprioritized-vs-actionable list that is our whole story.
+> **New optional dependency to approve at 21.2:** Semgrep OSS, invoked as a **subprocess**, in an
+> optional `[semgrep]` extra — never imported into the core wheel, so the published core stays at
+> exactly 3 runtime deps. Semgrep OSS + community rules are free and run locally (zero cost,
+> source never leaves the machine).
+
+### Task 21.1 — Fusion design doc (approval gate)
+**Goal:** agree the adapter + overlay + dedup architecture before any code.
+**Build:** `docs/fusion-design.md`: the external-tool **adapter protocol** (run → parse →
+normalize to our finding model); the **reachability-overlay contract** — every imported finding
+gets one of our tiers + evidence, or `DYNAMIC-UNKNOWN`, and is **never silently dropped**; the
+**dedup/merge** keys ((file, line, CWE), richer-evidence record wins, both provenances kept); the
+**provenance** model ("found by: Semgrep OSS · ranked by VulnAdvisor"); **soundness obligations**
+(an external finding we can't locate/overlay **escalates**, never disappears); the **licensing**
+note (subprocess boundary keeps the core wheel clean); the tool roadmap (Semgrep OSS first;
+`pip-audit`/Bandit as optional corroborators later); explicit **non-goals**.
+**Validate:**
+- [ ] Doc covers: adapter schema, overlay contract + soundness proof obligations, dedup keys, provenance, licensing/subprocess boundary, non-goals
+- [ ] Maintainer approval recorded in `PROGRESS.md`
+**Done when:** approved. No code in this task.
+
+### Task 21.2 — Semgrep OSS adapter
+**Goal:** ingest Semgrep OSS results as first-class VulnAdvisor findings.
+**Build:** `sast/external/semgrep.py` — detect Semgrep (optional), run `semgrep --json` over the
+target as a subprocess (pinned ruleset; configurable), and **defensively** parse the JSON into our
+finding model (rule-id→CWE map, file/line, severity). Keep the pure parse layer separate from the
+subprocess shell so parsing is unit-testable without Semgrep installed. Semgrep absent → a clear
+"install the `[semgrep]` extra" no-op, never a crash.
+**Validate:**
+- [ ] Table-driven parse: single, multi-finding, unknown-rule (→ best-effort CWE/`DYNAMIC-UNKNOWN`), malformed JSON (→ safe skip with a logged reason)
+- [ ] Subprocess shelled through a mock; **tool-absent → clean skip** (tested); core wheel dep count unchanged (metadata test)
+- [ ] Full gate green
+**Done when:** Semgrep's findings arrive in our model without trusting its shape.
+
+### Task 21.3 — Reachability overlay + dedup/fusion
+**Goal:** rank every external finding with our engine; produce one merged, de-duplicated list.
+**Build:** overlay each Semgrep finding with our taint/reachability evidence → assign a tier
+(`CONFIRMED-FLOW` when our taint corroborates the flow; `POSSIBLE-FLOW`/`IMPORTED`/
+`DYNAMIC-UNKNOWN` otherwise — **never** "not a finding"); dedup against native findings by
+(file, line, CWE), keeping the richer-evidence record and **both** provenances; order the merged
+list through the **existing deterministic engine**. An external finding we cannot locate or
+overlay **escalates to `DYNAMIC-UNKNOWN`** and stays in the list.
+**Validate:**
+- [ ] Overlay tiers correct on fixtures where our taint agrees vs. disagrees with Semgrep
+- [ ] Dedup keeps exactly one record with both provenances; ordering deterministic via the engine
+- [ ] **Zero external findings silently lost** (release-blocking); full gate green
+**Done when:** Semgrep's noise becomes our tiered, evidence-backed, deduplicated list.
+
+### Task 21.4 — Output / CLI / dashboard integration + fusion benchmark
+**Goal:** fused findings everywhere, with honest provenance, and the noise-reduction proof.
+**Build:** `scan --with-semgrep` (and `--external none|semgrep`); render provenance in the 3-card
+output, JSON (additive `provenance`/`source` field, schema bump as needed), SARIF (tool
+extensions), and the dashboard ("found by Semgrep OSS · ranked by VulnAdvisor reachability").
+Extend `benchmarks/SAST-REPORT.md` with the fusion story: **how much of Semgrep's output our
+reachability deprioritizes** (our answer to Semgrep's own "up to 98%" claim — measured on Python,
+where they're weak).
+**Validate:**
+- [ ] Mixed native+Semgrep ranked list snapshot-tested; JSON/SARIF validate; ingest accepts the new field
+- [ ] Dashboard renders a seeded fused finding with correct provenance (e2e)
+- [ ] Fusion benchmark reproducible by one command; full gate green
+**Done when (CLI v2.3):** `vulnadvisor scan --with-semgrep` returns one reachability-ranked list
+spanning native + Semgrep findings, zero silently dropped. Tag **v2.3.0**.
+
+---
+
+## M22 — Performance: incremental & parallel scanning
+
+> Make scans fast enough for pre-commit and large monorepos: cache per-file analysis by content
+> hash in the existing SQLite store, re-analyze only changed files + their dependents, and
+> parallelize — without ever letting a stale cache hide a finding. No new runtime dependency
+> (stdlib `hashlib`, `concurrent.futures`, the existing `store/` SQLite).
+
+### Task 22.1 — Content-hash analysis cache (design + store)
+**Goal:** a deterministic, soundly-invalidatable cache of per-file analysis.
+**Build:** `docs/incremental-design.md` — cache key = file **content hash** + analyzer version +
+**rule-pack hash**; any version/rule change busts **everything** (correctness obligation: a stale
+cache must never hide a finding). Implement the schema in `store/` (SQLite), caching per-file
+parsed facts (imports, defs, sinks, taint summaries). Pure, defensive cache layer.
+**Validate:**
+- [ ] Cache hit/miss keyed by content hash; an analyzer-version or rule-pack change invalidates all entries (tested)
+- [ ] A corrupt/missing cache row is ignored and rebuilt — never a crash, never a hidden finding
+- [ ] Full gate green
+**Done when:** per-file analysis is cacheable with a provably sound invalidation rule.
+
+### Task 22.2 — Incremental scan (changed files + dependent closure)
+**Goal:** scan only what changed and what depends on it — and get the same answer as a cold scan.
+**Build:** `scan --incremental` and `--since <git-ref>`: compute changed files (content hash vs.
+cache, or `git diff`), recompute their facts, then recompute the **dependent closure** over the
+import/call graph (a changed function summary re-triggers its callers), and merge cached +
+recomputed into a result **identical** to a cold scan.
+**Validate:**
+- [ ] **Property test: incremental result == cold-scan result** on the entire fixture suite (release-blocking equivalence)
+- [ ] Dependent-closure correctness: editing a callee re-evaluates its callers (tested); `--since <ref>` diffs correctly
+- [ ] Full gate green
+**Done when:** incremental scans are correct by construction, not just fast.
+
+### Task 22.3 — Parallelism + performance benchmark
+**Goal:** hit a documented performance budget on real repositories.
+**Build:** parallelize per-file analysis (`ProcessPoolExecutor`) with a **deterministic merge**
+(output independent of worker count). `benchmarks/PERF-REPORT.md`: cold vs. warm vs. incremental
+wall times on 2–3 real OSS apps, with pyscan and Semgrep timed side by side on the same repos.
+**Validate:**
+- [ ] Output byte-identical regardless of worker count (tested)
+- [ ] Warm-full budget met (or the miss documented with a profiling plan); incremental on a one-file change is seconds, not minutes
+- [ ] Reproducible by one command; full gate green
+**Done when (CLI v2.4):** incremental scans are seconds-fast and provably equal to a cold scan.
+Tag **v2.4.0**.
+
+---
+
+## M23 — Fix quality: deterministic CWE fix templates (zero API key)
+
+> The most common CWEs get **deterministic, AST-based fixes that need no model key and no
+> network** — instant, reproducible, validated by the same 17.1 loop. Template-first /
+> LLM-fallback: this turns the pygoat-style "all 22 findings → no safe fix" outcome into real
+> one-click fixes, and feeds the M19 card. It **generalizes the M19.3 high-confidence quick-fix
+> set** into the full library — the remaining CWEs plus a formatting-preserving rewrite framework.
+> **Possible new dependency (decided at 23.1):**
+> `libcst` for formatting-preserving rewrites — approve `uv add libcst` if chosen; otherwise a
+> constrained `ast`-range rewrite with no new dep.
+
+### Task 23.1 — Template engine + safe AST-rewrite framework
+**Goal:** a pure, formatting-preserving, reversible rewrite framework.
+**Build:** `fix/templates/`: a `FixTemplate` protocol (match a finding's CWE+sink shape → emit a
+**minimal** unified diff) and an AST-rewrite helper that edits only the target nodes and preserves
+surrounding formatting. Decide **libcst vs. `ast`-range rewrite** here (libcst preserves
+formatting natively but is a new dep — ask to `uv add libcst==<pin>` at task start; the
+`ast`-range path stays dependency-free). Deterministic, pure, no I/O.
+**Validate:**
+- [ ] Framework round-trips: rewrite → valid Python → reparses; surrounding formatting preserved (tested)
+- [ ] Pure (no hidden I/O); full gate green
+**Done when:** there is a safe, tested substrate for deterministic edits.
+
+### Task 23.2 — Templates for the high-frequency CWEs
+**Goal:** deterministic fixes for the cases that dominate real findings.
+**Build:** templates covering, at minimum: `yaml.load`→`yaml.safe_load` (CWE-502);
+`subprocess(..., shell=True)`→list-args `shell=False` (CWE-78); `eval`/`exec`→`ast.literal_eval`
+where literal-shaped (CWE-94/95); string-built SQL→parameterized query (CWE-89); `md5`/`sha1`→
+`sha256` (CWE-327/328); `random`→`secrets` for tokens (CWE-330); `verify=False`→removed (CWE-295);
+hardcoded secret→`os.environ[...]` + a `.env` note (CWE-798); `tarfile`/`zipfile` extract→member
+path validation (CWE-22). Each emits a minimal diff; when no safe deterministic rewrite exists
+(e.g. genuinely dynamic `pickle.load`) the template **declines** (→ LLM fallback) and never emits
+an unsafe patch.
+**Validate:**
+- [ ] Per-template table tests: apply → valid Python → the finding is gone on re-scan; explicit decline cases
+- [ ] **Zero unsafe rewrites** (a declined template emits nothing); full gate green
+**Done when:** the common CWEs have correct, deterministic patches.
+
+### Task 23.3 — Template-first integration into the validated fix loop
+**Goal:** try the deterministic fix first; call the model only when no template matches.
+**Build:** wire templates into `fix`, `suggest`, and `fix --suggest-json`: per finding, attempt
+the matching template → run the **existing 17.1 validation loop** (apply → ruff → mypy → tests →
+re-scan proves it gone) → on success emit it tagged `source=template`, high confidence, **zero
+network**; else fall back to the LLM path (17.3). `vulnadvisor fix` now works **fully offline**
+for templated CWEs (no key). The dashboard fix card (M19) and PR suggestions show a
+"deterministic fix" badge.
+**Validate:**
+- [ ] A templated finding is fixed with **no API key and no outbound network** (transport mock asserts zero calls)
+- [ ] A non-templated finding falls back to the LLM path; e2e over ≥8 fixtures mixing template + LLM fixes
+- [ ] Dashboard/PR badge distinguishes deterministic vs. model fixes; full gate + dashboard gate green
+**Done when (CLI v2.5):** common CWEs get validated, zero-key, instant fixes; `vulnadvisor fix`
+needs no model key for them. Tag **v2.5.0**.
+
+---
+
+## M24 — Automation: one-click autonomous remediation (free-tier compatible)
+
+> The user clicks one button; the agent scans, fixes (template-first so most cost **$0**, a free
+> model for the long tail), validates, and opens a PR — end to end, no babysitting. Builds on M23
+> (zero-key templates keep it free), 17.4 (`GITHUB_TOKEN` PR posting), and the platform proxy.
+> No new runtime dependency.
+
+### Task 24.1 — `vulnadvisor autofix` orchestrator (CLI)
+**Goal:** one command: scan → fix → validate → branch → PR.
+**Build:** `vulnadvisor autofix [--open-pr] [--max-fixes N]`: run the SAST+SCA scan → for each
+fixable finding run the **template-first** validated fix (M23) → stage the validated patches on a
+**new branch** → open a PR (reuse the 17.4 `GITHUB_TOKEN` path) with a triage table and per-fix
+provenance. **Never auto-merge, never commit to the default branch.** Idempotent: re-running
+updates its own PR. The summary is honest — fixed / declined / needs-review counts.
+**Validate:**
+- [ ] Faked-GitHub e2e: scan → validated fixes → new branch → PR; idempotent re-run updates in place; mixed fixable/unfixable handled
+- [ ] **Never** targets the default branch (tested); templated fixes need no model key
+- [ ] Full gate green
+**Done when:** one command goes from "vulnerable" to "fix PR open".
+
+### Task 24.2 — Free-tier model orchestration (rate-limit-aware, $0)
+**Goal:** the LLM-fallback portion runs on free tiers without ever failing the run.
+**Build:** a budget/rate-limit-aware scheduler around the fix loop: template-first (no call), then
+batch the remainder to a **free** model (OpenRouter `:free` / the platform fallback key) with
+exponential backoff on 429, a per-run call cap, and graceful degradation — a finding that can't be
+fixed within budget becomes **"needs review"**, never a failed build. Document the end-to-end
+free-tier path.
+**Validate:**
+- [ ] 429 backoff + per-run cap honored against a scripted client (no network); a template-only run makes **zero** model calls
+- [ ] Over-budget findings degrade to "needs review" (exit 0); full gate green
+**Done when:** autonomous remediation is genuinely $0 by default.
+
+### Task 24.3 — Dashboard "Fix it" button + scheduled automation
+**Goal:** the one-click surface, plus a hands-off scheduled mode.
+**Build:** a dashboard finding/scan **"Open fix PR"** button that triggers the autofix flow (via
+the existing OAuth / `GITHUB_TOKEN` setup) and shows PR-status chips (Generating / PR open /
+Merged); plus an **opt-in scheduled GitHub Action** (e.g. weekly) running `autofix --open-pr` so
+new findings get fix PRs automatically. Free-tier / zero-cost by default.
+**Validate:**
+- [ ] The button triggers the flow and reflects PR status against a seeded org + faked client (e2e)
+- [ ] The scheduled workflow is valid YAML (snapshot) and uses only free-tier defaults
+- [ ] Dashboard `build`/`lint`/`test` clean; live spot-check documented in `PROGRESS.md`
+**Done when (CLI v3.0):** one click (or one schedule) takes a user from vulnerable to fix-PR-open,
+free-tier, unattended. Tag **v3.0.0**.
+
+---
+
+## M25 — Permanent mitigation: eradicate the vulnerability *class*, not just the instance
+
+> A one-line patch fixes today's bug and leaves the door open for the same mistake to walk back in on
+> the next PR — the repetitive grind you flagged. This milestone makes mitigation **permanent**: when
+> we fix a class of vulnerability we also install a durable, repo-wide **guardrail** so the same
+> anti-pattern can't be reintroduced silently — *fix once, blocked forever*. Three strata: a generated
+> **detection rule** wired into the CI gate + pre-commit hook, an optional **dangerous-API ban** (with
+> an allowlist for vetted call sites), and an optional **safe-wrapper centralization**. Builds on M23
+> (templates fix every sibling instance) and composes with M26's diff-aware gate (M26.3), pre-commit
+> hook (M26.5), and security brain (M26.6). **Honesty rule:** a guardrail is a *detection gate for the
+> known anti-pattern*, never a claim of total immunity, and it is always a visible, committed config —
+> never a silent suppression. No new runtime dependency (an exported Semgrep rule reuses the M21
+> `[semgrep]` extra).
+
+### Task 25.1 — Guardrail design doc (approval gate)
+**Goal:** agree how a one-time fix becomes a permanent, sound, repo-wide control before any code.
+**Build:** `docs/guardrail-design.md`: the three mitigation strata and when each applies —
+**(1) detection guardrail** (generate a custom rule from the fixed finding's CWE+sink shape, runnable
+by our native engine and exportable as a Semgrep custom rule, wired into CI + pre-commit so
+reintroduction *fails as a new finding*); **(2) dangerous-API ban** (a checked-in config banning the
+primitive — `yaml.load`/`eval`/`os.system`/`shell=True`/`md5`/`pickle.load` — with an explicit
+allowlist for audited call sites); **(3) safe-wrapper centralization** (introduce one guarded wrapper,
+rewrite call sites, so the dangerous API has a single audited home). The **class-vs-instance policy**
+(fix all siblings of a CWE+sink class in one pass, install one guardrail), the **soundness/honesty
+bounds** (no false-immunity claims; the rule must not miss the patterns it claims to cover; always
+visible), the integration points, and explicit **non-goals**. Maintainer approval in `PROGRESS.md`.
+**Validate:**
+- [ ] Doc covers the three strata, class-vs-instance policy, soundness/honesty bounds, CI/pre-commit/security-brain integration, non-goals
+- [ ] Maintainer approval recorded
+**Done when:** approved. No code in this task.
+
+### Task 25.2 — Guardrail rule generation (detect any reintroduction of the class)
+**Goal:** from a fixed finding, emit a durable rule that flags the anti-pattern *class*, not the one line.
+**Build:** `mitigate/guardrail.py` — given a finding (CWE + sink + sanitizer shape), generate a custom
+detection rule in our native rule-pack format **and** an exported Semgrep custom rule (reuse the M21
+adapter), written into the repo under `.vulnadvisor/guardrails/`. The rule matches variants of the same
+anti-pattern (aliased imports, attribute chains), not just the exact original site. Deterministic, pure.
+**Validate:**
+- [ ] The generated rule fires on a reintroduced instance **and** an aliased/rephrased variant of the class; does **not** fire on the safe form
+- [ ] Native rule and exported Semgrep rule agree on the fixtures; output deterministic; full gate green
+**Done when:** a fixed class has a portable rule that catches it coming back.
+
+### Task 25.3 — `vulnadvisor mitigate` — install the permanent guardrail (CI + pre-commit)
+**Goal:** one command turns a fix into a repo-wide gate that blocks the class forever.
+**Build:** `vulnadvisor mitigate <finding-id | cwe> [--apply]`: fix **all sibling instances** of the
+class (template-first, M23) → generate the guardrail rule (25.2) → wire it into the CI workflow + a
+pre-commit hook so any future reintroduction **fails the build as a new finding** (composes with the
+M26.3 diff-aware gate and M26.5 pre-commit). Optional `--ban-api` writes the dangerous-API ban config;
+optional `--wrapper` introduces the safe wrapper and rewrites call sites. Idempotent; never silent
+(writes visible config + a one-line rationale per guardrail). Never auto-commits to the default branch.
+**Validate:**
+- [ ] After `mitigate`, a reintroduced vuln **fails** the gate; the safe form **passes**; idempotent re-run
+- [ ] `--ban-api` config rejects the dangerous primitive and allows the vetted wrapper/allowlisted site
+- [ ] Every sibling instance of the class is fixed in one pass (tested); full gate green
+**Done when:** one command eradicates a class and stands a guard so it can't return unnoticed.
+
+### Task 25.4 — Class-eradication report + dashboard "Permanently mitigated" state
+**Goal:** show the user a class is *closed for good*, with evidence — not just patched once.
+**Build:** a report (and dashboard finding/class state) listing, per mitigated CWE class: instances
+fixed, the guardrail now guarding it, and where it's enforced (CI + pre-commit). The finding card gains
+a **"Permanently mitigated — guardrail active"** state, distinct from "Fix ready". Persist the guardrail
+in the security brain (M26.6) so it travels with the repo via git and a reintroduction re-surfaces.
+Soundness: the wording reads "mitigated against the known anti-pattern", honest about scope — never
+"can never happen".
+**Validate:**
+- [ ] Dashboard renders the permanently-mitigated state for a seeded mitigated class; the report lists instances + guardrail + enforcement points
+- [ ] A reintroduced instance re-surfaces (via the brain + the gate); wording never overclaims immunity
+- [ ] Dashboard `build`/`lint`/`test` clean; full gate green
+**Done when (CLI v3.1):** a fixed vulnerability class is blocked from ever silently returning — fix
+once, guarded forever. Tag **v3.1.0**.
+
+---
+
+## M26 — Bonus Milestone (beyond Pi and the reachability incumbents)
+
+> High-leverage differentiators from the market scan, each **zero-cost** and each riding the moat
+> (Python-deep · one call graph powering SCA+SAST · evidence-first · local, no telemetry). They
+> ship independently — pick by what the launch/fundraise narrative needs. New optional deps are
+> named per task and approved at task start; nothing here adds a paid service.
+
+### Task 26.1 — Reachability-driven VEX + SBOM (the compliance moat)
+**Goal:** emit standards-based **VEX** statements straight from our tiers — "not_affected:
+vulnerable_code_not_in_execute_path", with our call-path as the justification. No competitor
+grounds VEX in **function-level Python reachability** for free.
+**Build:** `vulnadvisor sbom` / `scan --vex`: generate a **CycloneDX** SBOM and **OpenVEX** /
+CycloneDX-VEX where each finding's reachability tier maps to a VEX status — `NOT-IMPORTED` →
+`not_affected`, `IMPORTED-AND-CALLED` → `affected`, `DYNAMIC-UNKNOWN`/`IMPORTED` →
+`under_investigation` — with the evidence as the justification. Pure, schema-validated.
+**Validate:**
+- [ ] VEX + SBOM validate against their schemas; the tier→status mapping is table-tested
+- [ ] **Soundness:** no input maps uncertainty to `not_affected` (uncertainty never reads as safe)
+- [ ] Full gate green
+**Done when:** a user exports an auditor-ready VEX/SBOM backed by real reachability evidence.
+
+### Task 26.2 — AI/LLM-security rule family (the Pi-beating, AI-native angle)
+**Goal:** secure the user's **own AI code** — the fastest-growing Python risk class and Pi's home turf.
+**Build:** a taint family for insecure LLM/agent usage on the existing engine: untrusted input →
+model prompt without guardrails (prompt injection); **tainted LLM output → dangerous sink**
+(`eval`/`exec`/SQL/shell — "LLM-to-RCE"); insecure tool / function-calling; unsafe model-file
+loading (`torch.load`, `joblib`, `pickle`); SSRF via an LLM tool. Sources/sinks declared for
+`openai`/`anthropic`/`langchain`/`llama-index`/`transformers`.
+**Validate:**
+- [ ] ≥2 fixtures per pattern (positive + guarded/sanitized); **zero missed**; adversarial aliasing covered
+- [ ] Full gate green
+**Done when:** VulnAdvisor finds insecure AI code, soundly tiered — a feature Pi sells and we give away.
+
+### Task 26.3 — Diff-aware "new findings only" PR gating
+**Goal:** never block a build on legacy debt — fail only on what **this PR introduced** (the modern AppSec default).
+**Build:** `scan --new-only --base <ref>`: diff findings against the base scan and apply
+`--fail-on` **only** to newly-introduced findings while still reporting the rest; a baseline file
+suppresses pre-existing findings. Pure diff over finding identities (reuse the scan-diff logic).
+**Validate:**
+- [ ] New vs. pre-existing classification table-tested; `--fail-on` triggers only on new findings; baseline honored
+- [ ] Full gate green
+**Done when:** teams can adopt the gate on a legacy repo without a wall of red.
+
+### Task 26.4 — Malicious / typosquat package detection (supply chain)
+**Goal:** catch the install-time supply-chain attack that SCA (known-CVE) misses.
+**Build:** heuristics + the **OSV malicious** feed: typosquat edit-distance to popular packages,
+suspicious `setup.py` / install-script behavior, recently-published + low-reputation, and
+dependency-confusion shadowing. Findings ranked by the same engine. Free data only; defensive parsing.
+**Validate:**
+- [ ] Typosquat table (near-miss vs. legitimate), OSV-malicious match, malformed-feed → safe skip
+- [ ] Full gate green
+**Done when:** `vulnadvisor scan` flags a malicious/typosquatted dependency, not just a known CVE.
+
+### Task 26.5 — Real-time editor feedback: LSP + pre-commit hook
+**Goal:** shift fully left — findings as you type, and a gate before commit. Possible new optional
+dep: the `pygls` Language Server framework (approve at task start; or a minimal stdio LSP with no dep).
+**Build:** `vulnadvisor lsp` — a stdio Language Server publishing diagnostics with tier + evidence,
+reusing the M22 incremental scan for speed — plus a `.pre-commit-hooks.yaml` running an incremental
+`--new-only` scan. Offline, local, zero-cost.
+**Validate:**
+- [ ] LSP diagnostics round-trip (client fixture) with correct ranges + tiers
+- [ ] The pre-commit hook blocks a seeded **new** vuln and passes a clean tree
+- [ ] Full gate green
+**Done when:** VulnAdvisor lives in the editor and the commit gate, not just CI.
+
+### Task 26.6 — Local "security brain": institutional triage memory (Pi's signature, done privately)
+**Goal:** Pi's differentiator — memory of past triage — but **local-first and zero-cost**, no data leaving the machine.
+**Build:** persist triage decisions (acknowledged / false-positive / wontfix + reason) in the
+`store/` SQLite keyed by finding identity; on future scans, suppress/annotate matching findings
+with the recorded rationale; export/import the memory so a team shares it via git. **Soundness:** a
+suppression is always *shown* (never silent) and **re-surfaces if the code (content hash) changed**.
+**Validate:**
+- [ ] A decision persists and re-applies by identity; a code change re-surfaces a suppressed finding (tested)
+- [ ] Export/import round-trips; suppressions are visible, never silent; full gate green
+**Done when:** VulnAdvisor remembers your team's triage — privately — closing Pi's "security brain" gap.

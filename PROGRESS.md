@@ -4,6 +4,50 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 19.1 — Root-cause trace: why zero fixes *and* why none were visible (diagnosis)  (2026-06-15)
+
+**Status:** complete. **Diagnosis only — no production code touched.** Full gate green with the two
+intentional reds recorded as strict-xfail: `ruff check` clean, `ruff format --check` clean (198
+files), `mypy --strict src platform/vulnadvisor_platform` clean (117 files), **pytest 891 passed, 1
+skipped, 2 xfailed**. `git diff` adds only `docs/fix-gap-trace.md` + two test files (no `src/` /
+`platform/` production module).
+
+**Both failures measured, attributed, reproduced.**
+
+- **Yield gap.** The fix loop (`llm/fix.py` `generate_fix` / `llm/suggest.py` `generate_suggestions`)
+  is **model-only** — there is no deterministic quick-fix path. Reproduced on a seeded `yaml.load`
+  fixture (one alarming CWE-502 `possible-flow` finding, id `app.py:5:unsafe-deserialization`):
+  `generate_fix` returns `no-safe-fix` both when the model errors (no key →
+  `model call failed: no model key configured`) and when it returns empty/garbage
+  (`response was not a valid fix JSON object`). On pygoat the platform-proxy client *latched*
+  unavailable after the first call, so every finding declined for the same "no usable model" reason.
+  The decline reasons are *correct* (soundness holds); the low **yield** is the bug. → repaired in
+  **19.3** (deterministic quick-fix set that runs before the model, validated by the 17.1 loop).
+- **Visibility gap.** Even a produced fix never reaches the 17.5 finding card. The generated setup
+  workflow (`setup_pr.py: render_workflow`) runs `vulnadvisor scan . --upload` **without**
+  `--suggestions` and a separate `vulnadvisor suggest` that **only posts to GitHub** via
+  `GITHUB_TOKEN`. Confirmed on the rendered workflow: `--suggestions` absent, `suggest --upload`
+  absent. So `Scan.suggestions` is always `[]` (`parse_suggestions(None)`), `read.py: _proposed_fixes`
+  returns `[]`, and `CodeFindingCard` joins nothing — independent of yield. **Join-key parity is fine
+  and not the break:** CLI `sast_finding_id`, `parse_suggestions`, `_proposed_fixes`, and dashboard
+  `codeFindingId` all emit `<file>:<line>:<kind>`. Second sub-problem: `generate_suggestions` iterates
+  only `ScoredSastFinding`, so **SCA findings get no fix at all**. → repaired in **19.2** (workflow +
+  CLI upload the suggestions, SAST **and** SCA).
+
+**Deliverables.** `docs/fix-gap-trace.md` (per-finding decline table + the hop-by-hop visibility
+trace with payloads + join-key parity proof + repair attributions). Two failing tests, each
+`xfail(strict=True)` so they run+fail today (reported `xfailed`, gate stays green) and force the flip
+when fixed (XPASS under strict → remove the marker):
+- `tests/test_fix_gap.py::test_yaml_load_yields_a_validated_fix_offline` — yield gap, green in 19.3.
+- `platform/tests/test_fix_gap.py::test_setup_workflow_uploads_validated_suggestions` — visibility
+  gap, green in 19.2.
+
+**Note for 19.2 / 19.3.** Deleting each `xfail` marker (turning the red into a plain green regression
+test) is part of that task; 19.2 will also need to update the `render_workflow` snapshot
+(`test_workflow_snapshot` / `EXPECTED_WORKFLOW`) once the workflow uploads suggestions.
+
+---
+
 ## v1.0.5: ship suggest + graceful upload skip  (2026-06-15)
 
 **Status:** complete. 891 passed, 1 skipped. Published to PyPI. Pushed to main (`f99510a`).
