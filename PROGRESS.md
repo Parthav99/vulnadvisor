@@ -4,6 +4,50 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## One-click setup — Task A: encrypted repo-secret writer  (2026-06-14)
+
+**Status:** complete, automated gate passing (ruff + mypy --strict + full pytest).
+
+**Context.** First slice of the "true one-click, zero-config setup PR" architecture. Decisions
+locked with the user up front: model key for `vulnadvisor suggest` → **proxy via platform** (reuse
+the BYO copilot key + daily cap); primary credential → **the user's `repo`-scoped OAuth token** (no
+GitHub App permission change, so existing installs are undisturbed); secret scope → **per-repo**.
+Remaining slices (B wire-in, C api-url guard, D platform-proxy suggest, E dashboard auto-consent)
+are not started.
+
+**What changed**
+- New dependency: `pynacl==1.5.0` in the `platform` group. GitHub Actions secrets must be encrypted
+  client-side with the repo's public key via libsodium's sealed box (`crypto_box_seal`);
+  `cryptography` does not expose that construction, PyNaCl does. Ships `py.typed`, so no mypy
+  override needed.
+- New `platform/vulnadvisor_platform/github_secrets.py`:
+  - `encrypt_secret(public_key_b64, value)` — pure sealed-box encryption returning the base64 the
+    PUT expects; a malformed key raises `GitHubSecretsError`, never a raw crypto error.
+  - `GitHubSecrets.put_repo_secret(...)` — fetch the repo's Actions public key, then
+    `PUT /repos/{repo}/actions/secrets/{name}`. 201→created, 204→updated; any 4xx surfaces GitHub's
+    own `message` (mirrors the github_app 502-detail pattern). Needs only `repo` scope.
+  - `get_github_secrets` / `GitHubSecretsDep` FastAPI dependency for Task B wire-in + test override.
+- New `platform/tests/test_github_secrets.py` (10 tests): encrypt round-trips and is not plaintext;
+  fresh ciphertext per call; malformed key rejected; the REST path proven against an
+  `httpx.MockTransport` fake holding a **real** keypair, so a test decrypts what the client PUT
+  (true end-to-end encryption), plus 204-update, 404-public-key, malformed-key, and 403-permission.
+
+**Why these choices**
+- Encryption kept a pure function so correctness is provable offline; only the two-call dance needs
+  the network fake. Matches the existing setup-PR test style.
+- Per-call `token` (not settings-bound) so the same client serves both the OAuth path now and an
+  installation-token path later without change.
+
+**Validation evidence**
+- `ruff check` / `ruff format --check` — clean.
+- `mypy --strict src platform/vulnadvisor_platform` — Success, no issues in 115 files.
+- `pytest platform/tests/test_github_secrets.py` — 10 passed. Full suite — 833 passed, 1 skipped.
+
+**Open questions**
+- None blocking. Task B will mint an org key and call `put_repo_secret` from `open_setup_pr`.
+
+---
+
 ## Task 17.5 — Proposed fix in the dashboard finding card (demo-ready)  (2026-06-14)
 
 **Status:** complete, full automated gate passing (CLI/src + platform + dashboard). **No new
