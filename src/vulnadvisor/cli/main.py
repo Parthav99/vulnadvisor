@@ -542,6 +542,16 @@ def _upload_report(
             api_key = api_key or stored.api_key
             api_url = api_url or stored.api_url
 
+    if not api_key or not api_url:
+        typer.secho(
+            "Upload skipped: no API key/URL found. "
+            "Set the VULNADVISOR_API_KEY secret in your repo settings, "
+            "or run 'vulnadvisor login' locally.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return
+
     document = build_report(
         report.findings,
         report.degraded_sources,
