@@ -4,6 +4,57 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Audit — Release auditor pass before M18 (M12–M17)  (2026-06-14)
+
+**Status:** **audit complete, no code changes needed.** Acted as release auditor for M12–M17 (no
+new features, did not start M18). The hermetic gate is fully green, all five cross-cutting
+invariants hold, and **no genuine in-code gap or regression was found**. Produced
+**`docs/release-checklist.md`** — the single inventory + copy-pasteable runbooks for every
+deferred/credential-gated item and the exact blockers for the `v2.0.0`/`v2.1.0` tags. Neither tag
+cut (by design both end-of-milestone gates require a live e2e the maintainer must run).
+
+**1. Full gate re-run (real output, not claims):** `ruff check` "All checks passed!" · `ruff format
+--check` "190 files already formatted" · `mypy --strict src` Success (85) · `mypy --strict
+platform/vulnadvisor_platform` Success (29) · `pytest` **819 passed, 1 skipped** — true split is
+`tests/` 665+1 and `platform/tests/` 154 (combined 820 items; PROGRESS elsewhere labels the
+combined 819 as "src" — a cosmetic reporting quirk, not a defect, noted in the checklist). Dashboard:
+`npm run lint` clean · `npm test` **64/64** · `npm run build` compiled + typecheck clean. **No
+failures to fix.**
+
+**2. Cross-cutting invariants — all verified:** (a) JSON `schema_version` 1.0/1.1/1.2 all parse
+(`SUPPORTED_SCHEMA_VERSIONS={1.0,1.1,1.2}` + `test_ingest` asserts each). (b) SARIF validates against
+the bundled `fixtures/schemas/sarif-2.1.0.json` (Draft7), **including code findings**
+(`test_sast_scoring`). (c) Every Alembic migration is **additive** (upgrades only relax-to-nullable
+or `add_column` with `server_default`; `drop_*` only in `downgrade()`); chain is linear (single head
+`e2d5a8f3c6b1`); started the docker Postgres, `alembic upgrade head` + **`alembic check` → "No new
+upgrade operations detected"** (no drift). (d) Core wheel = **exactly 3 runtime deps**
+`{packaging,pydantic,typer}`, mcp extra-only (metadata test + pyproject). (e) **No telemetry** — the
+only outbound hosts in `src/` are OSV/EPSS/KEV/GitHub + the user's own model key
+(anthropic/openai/openrouter) + the user's own configured platform URL; no analytics/sentry SDKs;
+`socket.gethostname()` is local-only (device-name for the login key).
+
+**3. Deferred-item inventory (`docs/release-checklist.md`):** runbooks (prereqs, exact commands,
+pass criteria, code-complete-vs-gap) for — copilot red-team live (15.1), copilot chat e2e (15.2),
+SAST card browser e2e (16.4), GitHub code-scanning SARIF upload (16.4), SCA+SAST+pyscan perf
+(16.5), `vulnadvisor fix` live (17.1/17.3), 17.2 App-path in-line suggestion live e2e, 17.4
+`GITHUB_TOKEN` zero-setup live e2e, 17.4 P3 OAuth setup-PR spot-check. **Every one is
+code-complete** (proven hermetically with scripted/faked clients + real subprocess/rescan +
+snapshots + a live-applied additive migration); only live credential-gated verification remains.
+The release-blocking **SAST zero-missed gate runs offline today** (`python -m benchmarks --sast` →
+100% recall, exit 0) — re-confirmed during the audit.
+
+**4. Tag blockers:** **v2.0.0** waits on two live checks only — SAST card browser e2e + GitHub
+code-scanning SARIF acceptance (16.5 benchmark gate already green). **v2.1.0** waits on four live
+checks only — `vulnadvisor fix` live, 17.2 App-path e2e, 17.4 `GITHUB_TOKEN` e2e, 17.4 P3 OAuth
+spot-check. Both sets are **purely maintainer live verification, no code gap**; neither tag's gate
+is green hermetically, so neither was cut. (17.5 dashboard fix card ships as `dashboard-v1.1`, does
+not gate v2.1.0, and is not yet implemented — out of audit scope.)
+
+**Next:** the maintainer runs the §3 runbooks with a model key + GitHub credentials, then cuts
+`v2.0.0` / `v2.1.0` per §4; or proceed to M18 (launch/benchmark/pitch).
+
+---
+
 ## Task 17.4 Part 3 — Hosted onboarding: setup-PR via the user's OAuth token (no App)  (2026-06-14)
 
 **Status:** **Part 3 complete**, full automated gate passing (CLI + platform), migration applied to
