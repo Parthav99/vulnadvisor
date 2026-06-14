@@ -37,3 +37,10 @@ services:
       # Where the backend sends the browser after a successful GitHub login.
       - key: DASHBOARD_URL
         value: https://vulnadvisor.vercel.app
+      # This service's own public URL, baked into the scan workflow the setup PR adds so a CI runner
+      # can upload reports. Without it the backend falls back to localhost and the setup PR would
+      # ship a workflow CI can't reach. (The setup-PR endpoint also auto-derives this from the
+      # request as a safety net, but pinning it here is explicit and correct-by-default.)
+      # Change this if you rename the service or attach a custom domain.
+      - key: PUBLIC_API_URL
+        value: https://vulnadvisor-api.onrender.com
