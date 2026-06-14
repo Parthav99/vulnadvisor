@@ -25,7 +25,8 @@ approved at task start before `uv add` / `npm install`.**
 - **M14** Frictionless onboarding (login device flow, 1-click App, tour) → **<3-min time-to-value**
 - **M15** Triage copilot (in-dashboard AI chat over your own scan data) + MCP server
 - **M16** SAST v1 — reachability-aware Python taint engine → **CLI v2.0 (the pivot)**
-- **M17** Fix agent — validated patches + PR `suggestion` comments → **CLI v2.1**
+- **M17** Fix agent — validated patches + PR `suggestion` comments, **provider-flexible (BYOM)** and
+  **zero-setup (no GitHub App)** → **CLI v2.1**
 - **M18** Launch v2 — benchmark report v2, positioning, fundraise assets
 
 Only safe reorder: M15 may move after M16 if fundraising needs the SAST story first.
@@ -417,6 +418,12 @@ parsing of coverage JSON; works with branch and line coverage; documented in REA
 
 > Default: fixes are generated where the code already lives (user's machine/CI, BYO key).
 > Cloud-side code access is per-org opt-in. Never auto-commit.
+>
+> **Onboarding/BYOM addendum (17.3–17.4, maintainer-requested):** the fix loop must work with
+> **any** model key the user already has — a free **OpenRouter** key, not just Anthropic — and the
+> in-line PR suggestions must reach a user **without a GitHub App install**: a GitHub *login* (or
+> simply the auto-added Actions workflow using the built-in `GITHUB_TOKEN`) is enough. The App stays
+> as an optional org-wide/bot-identity upgrade, never a prerequisite.
 
 ### Task 17.1 — `vulnadvisor fix` (local, validated)
 **Goal:** a fix is only a fix if the machine can prove it.
@@ -447,7 +454,60 @@ auto-commits.
 - [ ] Faked-client tests: suggestion comment anchored to the right file/line/side; idempotent updates; mixed fixable/unfixable PRs
 - [ ] Suggestion block content == the validated diff hunk (snapshot)
 - [ ] Live e2e on a scratch repo: PR with a seeded vuln → in-line suggestion → "Commit suggestion" → next scan shows it fixed (document)
-**Done when (CLI v2.1):** the PR experience matches CodeRabbit's polish with an engine under it. Tag v2.1.0.
+**Done when:** the App-driven PR experience matches CodeRabbit's polish with an engine under it.
+(The **v2.1.0** tag moves to 17.4, which makes the PR flow reachable without an App and the fix loop
+provider-agnostic — together those complete CLI v2.1.)
+
+### Task 17.3 — Provider-flexible `fix` (BYOM on the CLI: OpenRouter / OpenAI / Anthropic)
+**Goal:** `vulnadvisor fix` and `fix --suggest-json` work with **any** OpenAI-compatible key — a free
+OpenRouter key is enough; an Anthropic key is no longer required. (Closes the gap where the dashboard
+copilot already does BYOM (15.1b) but the CLI fix loop is Anthropic-only.)
+**Build:** generalize the CLI model layer (`llm/client.py` + `build_fix_client`) the way 15.1b does
+it server-side: **detect the provider from the key prefix** — `sk-or-` → **OpenRouter**
+(OpenAI-compatible `https://openrouter.ai/api/v1/chat/completions`, default model `openrouter/auto`,
+free models usable), `sk-ant-` → Anthropic (existing path), `sk-`/`sk-proj-` → OpenAI — with a
+`--model` / `--provider` flag and `VULNADVISOR_MODEL` override; read keys from
+`OPENROUTER_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` (first present wins, documented order).
+Add a small OpenAI-compatible `chat/completions` client beside `AnthropicClient`, both behind the
+existing `LLMClient` Protocol, **stdlib-only** over the existing `Transport` (no SDK, published wheel
+unchanged). The single network call still goes to the user's own chosen endpoint; the
+"code never leaves the machine otherwise" audit holds verbatim. Update the missing-key message,
+`README`, and the generated workflow's secret name to be provider-agnostic.
+**Validate:**
+- [ ] Table-driven provider/model detection (prefix → base URL + default model); `--model`/`--provider` override; key-precedence order
+- [ ] `fix` and `--suggest-json` produce a fully **validated** patch end-to-end against a *scripted* OpenAI-compatible client (no network), reusing the 17.1 validation loop unchanged
+- [ ] Network audit (transport mock): with an `sk-or-` key the only outbound host is `openrouter.ai`; **never** `api.anthropic.com`
+- [ ] Defensive parsing of the OpenAI-compatible response shape (choices/message/content); malformed → `LLMError`, same fallback contract
+- [ ] Full gate green
+**Done when:** a user holding only a free OpenRouter key can run `vulnadvisor fix` and `fix --suggest-json` and get validated patches.
+
+### Task 17.4 — Zero-setup PR suggestions (a GitHub login is enough; no App required)
+**Goal:** a user receives in-line, one-click suggestions on their PRs **without installing or
+configuring a GitHub App** — the App becomes an opt-in upgrade, not a prerequisite. Two shared-core
+paths so the same renderer serves both.
+**Build:** move the pure diff→suggestion renderer (`platform/pr_suggestion.py` core from 17.2) into
+the **`vulnadvisor` package** (e.g. `output/pr_suggestion.py`) so the CLI can post without the
+platform; the platform re-exports it (no behavior change, one source of truth).
+1. **CI-native default (zero infra):** new `vulnadvisor suggest` (or `fix --post-pr`) that scans,
+   generates validated fixes (17.3), and **posts the in-line `suggestion` review comments directly
+   from GitHub Actions using the built-in `GITHUB_TOKEN`** (`permissions: pull-requests: write`) —
+   no App, no webhook, no platform. PR number + head sha are read from the Actions event payload
+   (`GITHUB_EVENT_PATH`) / `GITHUB_SHA`. Same idempotent `<!-- vulnadvisor:fix -->` marker
+   prune-then-repost, event `COMMENT` only, never requests changes. **Update the generated workflow
+   (14.2)** to add this step (and set the permission), so "set up repo" yields PR suggestions with
+   no App.
+2. **Hosted onboarding via OAuth login (no App install):** open the setup-PR (14.2) using the
+   **logged-in user's GitHub OAuth token** (existing `github_oauth` login) instead of an App
+   installation token, so "Sign in with GitHub → set up repo" needs no App. The GitHub App remains
+   the optional path for org-wide, bot-identity, centralized posting (17.2).
+**Validate:**
+- [ ] Faked-GitHub tests: the CLI posts/upserts inline suggestions with a `GITHUB_TOKEN`; anchored to the right file/line/side; idempotent on re-run; never `REQUEST_CHANGES`; reads PR number/sha from a fixture event payload defensively
+- [ ] Renderer parity: moving the core changes no output (existing 17.2 snapshots stay green; platform re-export tested)
+- [ ] OAuth-token setup-PR path opens/updates the workflow PR without an App installation (faked client; live spot-check)
+- [ ] **Live e2e on a scratch repo using only the default Actions `GITHUB_TOKEN`** (no App, no platform): PR with a seeded vuln → in-line suggestion → "Commit suggestion" → next run shows it fixed (document)
+- [ ] Full gate green (+ dashboard build/lint if the onboarding UI changes)
+**Done when (CLI v2.1):** adding the workflow (or signing in with GitHub) is enough to receive
+validated in-line suggestions — no App setup anywhere on the critical path. Tag **v2.1.0**.
 
 ---
 
