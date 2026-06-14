@@ -25,13 +25,16 @@ from vulnadvisor.llm.fix import (
     FixError,
     extract_code_context,
     generate_fix,
+    is_alarming,
     resolve_sast_finding,
     sast_finding_id,
 )
 from vulnadvisor.llm.fix_validate import PatchApplyError, apply_patch_to_tree, build_validator
+from vulnadvisor.llm.suggest import generate_suggestions
 from vulnadvisor.model.advisory import Advisory
 from vulnadvisor.model.fix import FixOutcome
 from vulnadvisor.model.score import ScoredFinding
+from vulnadvisor.model.suggestion import SuggestionReport
 from vulnadvisor.output.credentials import (
     Credentials,
     default_credentials_path,
@@ -289,6 +292,18 @@ def scan(
             help="Repository name to upload under (default: the scanned directory's name).",
         ),
     ] = None,
+    suggestions: Annotated[
+        Path | None,
+        typer.Option(
+            "--suggestions",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Validated-fix JSON from 'vulnadvisor fix --suggest-json', uploaded with the "
+            "report so the GitHub App can post one-click in-line PR suggestions.",
+        ),
+    ] = None,
     dashboard_url: Annotated[
         str | None,
         typer.Option(
@@ -380,7 +395,13 @@ def scan(
 
     if upload:
         _upload_report(
-            report, path, api_url=api_url, api_key=api_key, repo=repo, dashboard_url=dashboard_url
+            report,
+            path,
+            api_url=api_url,
+            api_key=api_key,
+            repo=repo,
+            suggestions=suggestions,
+            dashboard_url=dashboard_url,
         )
 
     if threshold is not None and should_fail([*report.findings, *report.sast_findings], threshold):
@@ -412,6 +433,7 @@ def _upload_report(
     api_url: str | None,
     api_key: str | None,
     repo: str | None,
+    suggestions: Path | None,
     dashboard_url: str | None,
 ) -> None:
     """Build the full JSON report and POST it to the platform; print a confirmation or fail.
@@ -419,6 +441,9 @@ def _upload_report(
     Always uploads every finding (never the ``--top`` display subset). Commit/ref come from
     GITHUB_SHA/GITHUB_REF in CI, else from git in the scanned directory, else they are sent as
     null (never placeholder zeros) so the dashboard labels the upload a local scan.
+
+    When ``suggestions`` points at a ``fix --suggest-json`` document it is attached to the upload
+    so the platform can post validated fixes as in-line PR suggestions (the code stays in CI).
 
     Credentials resolve flag/env first, then the ``vulnadvisor login`` store — so a bare
     ``scan --upload`` works with no flags after a device login.
@@ -435,6 +460,7 @@ def _upload_report(
         tool_version=_resolve_version(),
         sast_findings=report.sast_findings,
     )
+    suggestions_doc = _load_suggestions_doc(suggestions)
     repo_name = repo or (path if path.is_dir() else path.parent).resolve().name
     metadata = detect_scan_metadata(path)
     try:
@@ -445,6 +471,7 @@ def _upload_report(
             repo=repo_name,
             ref=metadata.ref,
             commit_sha=metadata.commit_sha,
+            suggestions=suggestions_doc,
         )
     except UploadError as exc:
         typer.secho(f"Upload failed: {exc}", fg=typer.colors.RED, err=True)
@@ -459,6 +486,30 @@ def _upload_report(
     )
     if dashboard_url:
         typer.echo(f"  View: {dashboard_url.rstrip('/')}/scans/{result.scan_id}")
+
+
+def _load_suggestions_doc(suggestions: Path | None) -> dict[str, object] | None:
+    """Read + validate a ``fix --suggest-json`` document for upload, or fail with a clear message.
+
+    Defensive (CLAUDE.md): a missing/garbled/wrong-shaped file is a clean ``BadParameter`` rather
+    than a traceback; ``None`` (no ``--suggestions`` flag) returns ``None`` so nothing is attached.
+    """
+    if suggestions is None:
+        return None
+    try:
+        raw = suggestions.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"could not read suggestions file: {exc}", param_hint="--suggestions"
+        ) from exc
+    try:
+        parsed = SuggestionReport.model_validate_json(raw)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"suggestions file is not a valid fix --suggest-json document: {exc}",
+            param_hint="--suggestions",
+        ) from exc
+    return parsed.model_dump(mode="json")
 
 
 def _default_client_name() -> str:
@@ -582,11 +633,12 @@ def mcp() -> None:
 @app.command()
 def fix(
     finding_id: Annotated[
-        str,
+        str | None,
         typer.Argument(
-            help="Id of the first-party finding to fix (e.g. 'app/views.py:42:command-injection')."
+            help="Id of the first-party finding to fix (e.g. 'app/views.py:42:command-injection'). "
+            "Omit with --suggest-json to fix every finding."
         ),
-    ],
+    ] = None,
     path: Annotated[
         Path,
         typer.Option(
@@ -605,6 +657,14 @@ def fix(
             help="Write the validated patch to the working tree (default: print it only).",
         ),
     ] = False,
+    suggest_json: Annotated[
+        Path | None,
+        typer.Option(
+            "--suggest-json",
+            help="Write validated fixes for every finding to this JSON file (CI/PR-agent mode); "
+            "upload it with 'scan --upload --suggestions <file>'.",
+        ),
+    ] = None,
     max_attempts: Annotated[
         int,
         typer.Option(
@@ -624,8 +684,25 @@ def fix(
     Only a fully validated patch is shown; otherwise you get an honest "no safe fix found". The
     working tree is never touched unless you pass ``--apply``. The only network call is to your own
     model key; your code never leaves the machine otherwise.
+
+    With ``--suggest-json <file>`` (CI / PR-agent mode) the finding id is optional: every alarming
+    finding is fixed-and-validated and the validated patches are written to ``<file>`` for upload
+    with the scan, where the GitHub App posts them as one-click in-line suggestions.
     """
     report = scan_project(path, build_matcher(), run_sca=False, run_sast=True)
+
+    if suggest_json is not None:
+        _fix_suggest_json(report, path, suggest_json, max_attempts=max_attempts)
+        return
+
+    if finding_id is None:
+        typer.secho(
+            "provide a finding id to fix, or use --suggest-json <file> to fix every finding.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     try:
         target = resolve_sast_finding(report.sast_findings, finding_id)
     except FixError as exc:
@@ -690,6 +767,63 @@ def fix(
         typer.secho("Applied the validated patch to your working tree.", fg=typer.colors.GREEN)
     else:
         typer.echo("Re-run with --apply to write this patch to your working tree.")
+
+
+def _fix_suggest_json(report: ScanReport, path: Path, out_file: Path, *, max_attempts: int) -> None:
+    """Fix-and-validate every alarming finding and write the validated patches to ``out_file``.
+
+    This is the non-interactive CI half of ``vulnadvisor fix``: it never prints code and never
+    touches the working tree — it produces the JSON the platform's GitHub App turns into in-line
+    PR suggestions. Exit 0 even when no safe fix is found (an empty document is still valid to
+    upload); exit 2 only when the model key is missing or the file cannot be written.
+    """
+    client = build_fix_client()
+    if client is None:
+        typer.secho(
+            "vulnadvisor fix needs a language model. Set ANTHROPIC_API_KEY (your own key); "
+            "it is the only network call fix makes - your code stays on this machine.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    def source_for(rel: str) -> str | None:
+        try:
+            return (path / rel).read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    baseline = report.sast_findings
+
+    def validator_for(target: ScoredSastFinding) -> object:
+        return build_validator(project_root=path, target=target, baseline=baseline)
+
+    def on_result(scored: ScoredSastFinding, validated: bool) -> None:
+        status = "fixed" if validated else "no safe fix"
+        typer.echo(f"  {sast_finding_id(scored)} ({scored.finding.cwe}): {status}", err=True)
+
+    typer.echo(
+        f"Fixing {sum(1 for f in baseline if is_alarming(f))} alarming finding(s)...", err=True
+    )
+    suggestion_report = generate_suggestions(
+        findings=baseline,
+        client=client,
+        validator_for=validator_for,  # type: ignore[arg-type]
+        source_for=source_for,
+        tool_version=_resolve_version(),
+        max_attempts=max_attempts,
+    )
+
+    try:
+        out_file.write_text(suggestion_report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        typer.secho(f"Could not write {out_file}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.secho(
+        f"Wrote {len(suggestion_report.fixes)} validated fix(es) to {out_file}.",
+        fg=typer.colors.GREEN,
+    )
 
 
 @app.command(name="backfill")

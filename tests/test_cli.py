@@ -639,3 +639,143 @@ def test_fix_apply_writes_the_patch(
     assert result.exit_code == 0, result.output
     assert "Applied the validated patch" in result.output
     assert (project / "app.py").read_text(encoding="utf-8") == _FIX_FIXED
+
+
+def test_fix_suggest_json_writes_validated_fixes(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    """``fix --suggest-json`` fixes every finding and writes the validated patches as a document."""
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(diff))
+    project = _fix_project(tmp_path)
+    out = tmp_path / "suggestions.json"
+
+    result = runner.invoke(app, ["fix", "--suggest-json", str(out), "--path", str(project)])
+    assert result.exit_code == 0, result.output
+    assert "1 validated fix" in result.output
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["schema_version"] == "1.0"
+    assert len(doc["fixes"]) == 1
+    fix = doc["fixes"][0]
+    assert fix["finding_id"].startswith("app.py:") and fix["cwe"] == "CWE-78"
+    assert "shlex.quote" in fix["diff"]
+    # The working tree is never touched in suggest mode.
+    assert (project / "app.py").read_text(encoding="utf-8") == _FIX_VULN
+
+
+def test_fix_suggest_json_requires_model_key(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda: None)
+    project = _fix_project(tmp_path)
+    out = tmp_path / "suggestions.json"
+    result = runner.invoke(app, ["fix", "--suggest-json", str(out), "--path", str(project)])
+    assert result.exit_code == 2
+    assert "ANTHROPIC_API_KEY" in result.output
+
+
+def test_fix_without_id_or_suggest_json_is_usage_error(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda: _ScriptedFixClient(""))
+    project = _fix_project(tmp_path)
+    result = runner.invoke(app, ["fix", "--path", str(project)])
+    assert result.exit_code == 2
+    assert "provide a finding id" in result.output
+
+
+def test_scan_upload_attaches_suggestions(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    """``scan --upload --suggestions <file>`` forwards the validated-fix document to the API."""
+    from vulnadvisor.output.upload import UploadResult
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    captured: dict[str, object] = {}
+
+    def fake_upload(report, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        return UploadResult(scan_id="scan-9", introduced=0, fixed=0, unchanged=0)
+
+    monkeypatch.setattr(cli_main, "upload_report", fake_upload)
+    suggestions = tmp_path / "s.json"
+    suggestions.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "tool_version": "1",
+                "fixes": [
+                    {
+                        "finding_id": "app.py:5:command-injection",
+                        "file": "app.py",
+                        "line": 5,
+                        "cwe": "CWE-78",
+                        "kind": "command-injection",
+                        "title": "t",
+                        "tier": "CONFIRMED-FLOW",
+                        "flow": "a -> os.system (app.py:5)",
+                        "rationale": "quote it",
+                        "confidence": "high",
+                        "diff": "--- a/app.py\n+++ b/app.py\n@@ -5 +5 @@\n-x\n+y\n",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            str(_project(tmp_path)),
+            "--format",
+            "json",
+            "--upload",
+            "--api-url",
+            "https://api.example.com",
+            "--api-key",
+            "k",
+            "--suggestions",
+            str(suggestions),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    doc = captured["suggestions"]
+    assert isinstance(doc, dict) and len(doc["fixes"]) == 1
+    assert doc["fixes"][0]["finding_id"] == "app.py:5:command-injection"
+
+
+def test_scan_upload_rejects_malformed_suggestions(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "scan",
+            str(_project(tmp_path)),
+            "--upload",
+            "--api-url",
+            "https://api.example.com",
+            "--api-key",
+            "k",
+            "--suggestions",
+            str(bad),
+        ],
+    )
+    assert result.exit_code == 2  # Typer BadParameter, no traceback

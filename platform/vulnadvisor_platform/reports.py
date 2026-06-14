@@ -12,12 +12,14 @@ from typing import Any
 
 __all__ = [
     "SUPPORTED_SCHEMA_VERSIONS",
+    "SUPPORTED_SUGGESTION_SCHEMA_VERSIONS",
     "DiffCounts",
     "FindingRow",
     "ParsedReport",
     "ReportValidationError",
     "diff_finding_keys",
     "parse_report",
+    "parse_suggestions",
 ]
 
 # The JSON report schema versions this platform understands (see output/json_report.py).
@@ -31,6 +33,15 @@ _UNKNOWN_TIER = "unknown"
 # Finding-type discriminator (1.2). Absent on 1.0/1.1 reports, which are all dependency findings.
 _TYPE_DEPENDENCY = "dependency"
 _TYPE_CODE = "code"
+
+# Validated-fix document versions the platform understands (see model/suggestion.py).
+SUPPORTED_SUGGESTION_SCHEMA_VERSIONS = frozenset({"1.0"})
+
+# A stored suggestion keeps only these fields, each defensively coerced; the diff is capped so a
+# hostile/oversized upload cannot bloat a row. The PR agent needs nothing else to render a comment.
+_SUGGESTION_STR_FIELDS = ("finding_id", "file", "cwe", "kind", "title", "tier", "flow", "rationale")
+_MAX_DIFF_CHARS = 20_000
+_MAX_SUGGESTIONS = 200
 
 
 class ReportValidationError(ValueError):
@@ -217,6 +228,61 @@ def parse_report(report: Any) -> ParsedReport:
         summary=summary,
         findings=findings,
     )
+
+
+def parse_suggestions(raw: Any) -> list[dict[str, Any]]:
+    """Validate + normalize an uploaded ``fix --suggest-json`` document into storable fix rows.
+
+    Defensive throughout (CLAUDE.md): ``None``/absent yields ``[]``; a non-object document, an
+    unsupported ``schema_version``, or a non-list ``fixes`` raises :class:`ReportValidationError`;
+    individual malformed fix entries are skipped (one bad fix never sinks an otherwise-good upload).
+    Only the fields the PR agent renders are kept, each coerced to a safe type and capped in size,
+    so what reaches the database is exactly what the comment renderer trusts.
+    """
+    if raw is None:
+        return []
+    document = _require_object(raw, "suggestions")
+    version = document.get("schema_version")
+    if version not in SUPPORTED_SUGGESTION_SCHEMA_VERSIONS:
+        supported = ", ".join(sorted(SUPPORTED_SUGGESTION_SCHEMA_VERSIONS))
+        raise ReportValidationError(
+            f"unsupported suggestions schema_version {version!r}; supported: {supported}"
+        )
+    raw_fixes = document.get("fixes")
+    if not isinstance(raw_fixes, list):
+        raise ReportValidationError("suggestions.fixes must be a list")
+
+    rows: list[dict[str, Any]] = []
+    for entry in raw_fixes[:_MAX_SUGGESTIONS]:
+        row = _clean_suggestion(entry)
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def _clean_suggestion(entry: Any) -> dict[str, Any] | None:
+    """Coerce one fix entry to a clean row, or ``None`` if it lacks the fields needed to render.
+
+    A renderable suggestion must carry a non-empty ``diff`` (the patch), a ``file`` and a positive
+    ``line`` to anchor on, and a ``finding_id`` to key by; anything else is dropped silently.
+    """
+    if not isinstance(entry, dict):
+        return None
+    diff = entry.get("diff")
+    if not isinstance(diff, str) or not diff.strip():
+        return None
+    line = entry.get("line")
+    if not isinstance(line, int) or isinstance(line, bool) or line < 1:
+        return None
+    row: dict[str, Any] = {"line": line, "diff": diff[:_MAX_DIFF_CHARS]}
+    for field in _SUGGESTION_STR_FIELDS:
+        value = entry.get(field)
+        row[field] = value if isinstance(value, str) else ""
+    if not row["finding_id"] or not row["file"]:
+        return None
+    confidence = entry.get("confidence")
+    row["confidence"] = confidence if confidence in ("high", "medium", "low") else "medium"
+    return row
 
 
 def diff_finding_keys(

@@ -58,12 +58,33 @@ def _cell(finding: dict[str, Any], *keys: str) -> str:
     return str(node) if node not in (None, "") else "—"
 
 
+def _fix_note(validated_fixes: int) -> str:
+    """One-line note pointing at the in-line suggestions, when this PR carries validated fixes."""
+    if validated_fixes <= 0:
+        return ""
+    plural = "fix" if validated_fixes == 1 else "fixes"
+    return (
+        f":wrench: **{validated_fixes} validated {plural}** posted as in-line suggestions below — "
+        "click *Commit suggestion* to apply."
+    )
+
+
 def render_pr_comment(
-    *, introduced: list[dict[str, Any]], fixed_count: int, repo: str, pr_number: int
+    *,
+    introduced: list[dict[str, Any]],
+    fixed_count: int,
+    repo: str,
+    pr_number: int,
+    validated_fixes: int = 0,
 ) -> str:
-    """Render the PR comment Markdown for the given introduced findings + fixed count."""
+    """Render the PR comment Markdown for the given introduced findings + fixed count.
+
+    ``validated_fixes`` (Task 17.2) is the number of findings that also got a machine-validated,
+    one-click in-line ``suggestion``; when > 0 the summary points the reviewer at them.
+    """
     reachable = [f for f in introduced if _tier(f) in _REACHABLE_TIERS or _tier(f) == "unknown"]
     called = sum(1 for f in introduced if _tier(f) == _CALLED_TIER)
+    fix_note = _fix_note(validated_fixes)
 
     lines = [MARKER, "## VulnAdvisor — reachability triage", ""]
     if not reachable:
@@ -71,6 +92,8 @@ def render_pr_comment(
             f"No new reachable vulnerable dependencies in this PR. "
             f"{fixed_count} finding(s) fixed. :white_check_mark:"
         )
+        if fix_note:
+            lines += ["", fix_note]
         return "\n".join(lines)
 
     lines.append(
@@ -91,6 +114,9 @@ def render_pr_comment(
         lines.append(
             f"| `{pkg} {version}` | {advisory} | {tier} | {priority:.0f} ({band}) | {fix} |"
         )
+
+    if fix_note:
+        lines += ["", fix_note]
 
     lines.append("")
     lines.append(

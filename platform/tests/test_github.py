@@ -37,6 +37,7 @@ class _FakeApp:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.setup_calls: list[dict[str, Any]] = []
+        self.suggestion_calls: list[dict[str, Any]] = []
         self.fail_setup = False
 
     async def post_or_update_comment(
@@ -50,6 +51,26 @@ class _FakeApp:
                 "body": body,
             }
         )
+
+    async def post_or_update_suggestions(
+        self,
+        *,
+        installation_id: int | None,
+        repo_full_name: str,
+        pr_number: int,
+        head_sha: str,
+        comments: Any,
+    ) -> int:
+        self.suggestion_calls.append(
+            {
+                "installation_id": installation_id,
+                "repo": repo_full_name,
+                "pr": pr_number,
+                "head_sha": head_sha,
+                "comments": list(comments),
+            }
+        )
+        return len(comments)
 
     async def open_setup_pr(self, **kwargs: Any) -> SetupPr:
         if self.fail_setup:
@@ -291,10 +312,172 @@ async def test_pull_request_unsynced_repo_is_noop(
     assert fake.calls == []
 
 
+_SQLI_DIFF = (
+    "--- a/app/db.py\n"
+    "+++ b/app/db.py\n"
+    "@@ -10,3 +10,3 @@ def get(uid):\n"
+    "     cur = conn.cursor()\n"
+    '-    cur.execute("SELECT * FROM u WHERE id = %s" % uid)\n'
+    '+    cur.execute("SELECT * FROM u WHERE id = %s", (uid,))\n'
+    "     return cur.fetchone()\n"
+)
+
+
+def _stored_fix(diff: str = _SQLI_DIFF) -> dict[str, Any]:
+    return {
+        "finding_id": "app/db.py:11:sql-injection",
+        "file": "app/db.py",
+        "line": 11,
+        "cwe": "CWE-89",
+        "kind": "sql-injection",
+        "title": "SQL injection",
+        "tier": "CONFIRMED-FLOW",
+        "flow": "get -> cursor.execute (app/db.py:11)",
+        "rationale": "Parameterize the query.",
+        "confidence": "high",
+        "diff": diff,
+    }
+
+
+async def _seed_repo_with_suggestions(
+    sessionmaker: async_sessionmaker[AsyncSession], *, fixes: list[dict[str, Any]]
+) -> None:
+    async with sessionmaker() as session:
+        org = Org(slug="acme", name="Acme", github_org_id=1)
+        session.add(org)
+        await session.flush()
+        repo = Repository(org_id=org.id, name="web", github_repo_id=777)
+        session.add(repo)
+        await session.flush()
+        head = Scan(
+            repo_id=repo.id,
+            commit_sha="headsha",
+            ref="refs/heads/feature",
+            tool_version="1",
+            degraded_sources=[],
+            summary={},
+            suggestions=fixes,
+        )
+        session.add(head)
+        await session.flush()
+        session.add(_finding(head.id, "requests", "GHSA-3"))
+        await session.commit()
+
+
+async def test_pull_request_posts_inline_suggestions(
+    client: AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    fake = _overrides()
+    await _seed_repo_with_suggestions(sessionmaker, fixes=[_stored_fix()])
+
+    resp = await _post(client, _pr_payload(777), "pull_request")
+    assert resp.status_code == 200 and resp.json()["commented"] is True
+
+    # A summary comment that points at the validated fix...
+    assert len(fake.calls) == 1
+    assert "1 validated fix" in fake.calls[0]["body"]
+    # ...and an in-line suggestion anchored to the exact sink line on the head commit.
+    assert len(fake.suggestion_calls) == 1
+    call = fake.suggestion_calls[0]
+    assert call["head_sha"] == "headsha" and call["pr"] == 7
+    assert len(call["comments"]) == 1
+    comment = call["comments"][0]
+    assert comment.path == "app/db.py" and comment.line == 11
+    assert "```suggestion" in comment.body
+
+
+async def test_pull_request_unsuggestable_fix_posts_no_inline(
+    client: AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    """A fix whose patch only adds a new file cannot be a one-click suggestion -> none posted."""
+    fake = _overrides()
+    file_add = _stored_fix("--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+print('x')\n")
+    await _seed_repo_with_suggestions(sessionmaker, fixes=[file_add])
+
+    resp = await _post(client, _pr_payload(777), "pull_request")
+    assert resp.status_code == 200
+    # The suggestions call still fires (to prune any stale comments) but carries nothing.
+    assert len(fake.suggestion_calls) == 1
+    assert fake.suggestion_calls[0]["comments"] == []
+    assert "validated fix" not in fake.calls[0]["body"]
+
+
+async def test_pull_request_synchronize_reposts_suggestions(
+    client: AsyncClient, sessionmaker: async_sessionmaker[AsyncSession]
+) -> None:
+    """A second delivery (synchronize) updates in place: the App is asked to repost each time."""
+    fake = _overrides()
+    await _seed_repo_with_suggestions(sessionmaker, fixes=[_stored_fix()])
+
+    await _post(client, _pr_payload(777), "pull_request")
+    sync = _pr_payload(777)
+    sync["action"] = "synchronize"
+    await _post(client, sync, "pull_request")
+
+    assert len(fake.suggestion_calls) == 2
+    assert all(len(call["comments"]) == 1 for call in fake.suggestion_calls)
+
+
 async def test_install_redirects(client: AsyncClient) -> None:
     resp = await client.get("/v1/github/install")
     assert resp.status_code == 307
     assert "github.com/apps/" in resp.headers["location"]
+
+
+async def test_post_or_update_suggestions_prunes_then_reposts(monkeypatch: Any) -> None:
+    """The client deletes its own prior in-line comments (by marker) before posting a new review."""
+    import httpx
+
+    from vulnadvisor_platform import github_app as ga
+    from vulnadvisor_platform.config import Settings
+    from vulnadvisor_platform.pr_suggestion import SUGGESTION_MARKER, ReviewComment
+
+    seen: dict[str, Any] = {"deleted": [], "posted": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "ghs_live"})
+        if path.endswith(f"/pulls/{42}/comments") and request.method == "GET":
+            return httpx.Response(
+                200,
+                json=[
+                    {"id": 1, "body": f"{SUGGESTION_MARKER}\nold fix"},
+                    {"id": 2, "body": "a human comment"},
+                ],
+            )
+        if "/pulls/comments/" in path and request.method == "DELETE":
+            seen["deleted"].append(int(path.rsplit("/", 1)[1]))
+            return httpx.Response(204)
+        if path.endswith(f"/pulls/{42}/reviews") and request.method == "POST":
+            import json as _json
+
+            seen["posted"] = _json.loads(request.content)
+            return httpx.Response(200, json={"id": 99})
+        return httpx.Response(404)  # pragma: no cover - defensive
+
+    private_pem, _ = _rsa_keypair()
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        ga.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler))
+    )
+    app_client = ga.GitHubApp(Settings(github_app_id="1", github_app_private_key=private_pem))
+
+    comment = ReviewComment(
+        path="app/db.py", start_line=None, line=11, side="RIGHT", body=f"{SUGGESTION_MARKER}\nnew"
+    )
+    posted = await app_client.post_or_update_suggestions(
+        installation_id=5,
+        repo_full_name="acme/web",
+        pr_number=42,
+        head_sha="abc",
+        comments=[comment],
+    )
+    assert posted == 1
+    assert seen["deleted"] == [1]  # only our marked comment is pruned, not the human one
+    assert seen["posted"]["event"] == "COMMENT"  # never REQUEST_CHANGES
+    assert seen["posted"]["commit_id"] == "abc"
+    assert seen["posted"]["comments"][0]["line"] == 11
 
 
 # --- pure helpers -------------------------------------------------------------------------------

@@ -4,6 +4,97 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 17.2 — PR review agent (CodeRabbit-grade, engine-grounded)  (2026-06-14)
+
+**Status:** complete, full automated gate passing (CLI + platform), migration applied to **live
+Postgres** with `alembic check` = no drift. **No new dependency.** The pivot's payoff lands in the
+PR: the validated patches from 17.1 become **one-click in-line GitHub `suggestion` comments** on the
+exact vulnerable lines — code never leaves CI.
+
+**Scope decisions (maintainer, at task start):** (1) **CI produces, platform posts.** CI runs
+`vulnadvisor fix --suggest-json <file>` (the non-interactive sibling of 17.1) and uploads the
+validated-fix document **alongside** the report via `scan --upload --suggestions <file>`; the diffs
+travel as data, the source stays in CI. (2) **Soundness over coverage for one-click commits:** a
+fix is offered in-line **only when its *entire* patch is expressible as anchored suggestions** —
+because a GitHub `suggestion` replaces exactly the lines it's attached to, committing one hunk of a
+multi-hunk fix would leave the code half-patched. A fix whose patch can't be cleanly suggested is
+skipped in-line (still counted in the summary), never posted as a partial click. (3) **Never
+requests changes, never auto-commits:** the review event is always `COMMENT`; the human clicks
+*Commit suggestion*. (4) **Live e2e deferred** (scratch-repo PR → suggestion → commit → rescan):
+GitHub-credential-gated, same precedent as 14.x/16.4.
+
+**The soundness shape:** every suggestion's block content **is** the validated diff hunk's new-side
+text, anchored to the **head (old) side** line numbers (the fix diff is `head -> fixed`, so `a/` is
+exactly the file GitHub sees). Idempotent on `synchronize`: the App deletes its own prior fix
+comments (by a hidden `<!-- vulnadvisor:fix -->` marker) before reposting, so moved lines never
+strand a stale suggestion.
+
+**CLI half (`src/vulnadvisor`):**
+- **`model/suggestion.py`** — frozen `ValidatedFix` (finding identity + engine facts: cwe/kind/
+  title/tier/**rendered flow** + the model's rationale/confidence + the unified `diff`) and
+  `SuggestionReport` (`schema_version 1.0` + tool_version + `fixes`). Self-contained so the platform
+  renders the 3-card story without re-running the engine.
+- **`llm/suggest.py`** — pure `generate_suggestions`: sweeps every **alarming** finding (SANITIZED
+  skipped — nothing to fix), runs the 17.1 propose->validate->retry loop with the **validator and
+  client injected** (so the whole sweep is unit-testable with no subprocess/network), and keeps only
+  `VALIDATED` patches. Soundness inherited verbatim from 17.1.
+- **CLI** — `fix` gains `--suggest-json <file>` (finding id now optional; with the flag it fixes
+  *every* finding, writes the document, exits 0 even on zero safe fixes — an empty doc is valid;
+  exit 2 only on missing key / unwritable file; the working tree is never touched). `scan` gains
+  `--suggestions <file>`, defensively parsed (`SuggestionReport.model_validate_json` → clean
+  `BadParameter` on garbage) and attached to the upload (`output/upload.py` adds an optional
+  `suggestions` body field, omitted entirely when absent — published wheel still stdlib-only).
+
+**Platform half (`platform/`):**
+- **Storage** — additive `Scan.suggestions` JSON column (Alembic `c3b9e7d1f4a8`, `server_default
+  "[]"`; applied live, `alembic check` no drift). `reports.parse_suggestions` is defensive: None →
+  `[]`; bad doc/`schema_version`/non-list `fixes` → `ReportValidationError` (422 like the report);
+  individual malformed fix entries dropped (must carry a non-empty diff, a positive line, a
+  finding_id and file); diff capped, confidence coerced, ≤200 fixes. Both ingest endpoints accept +
+  store it.
+- **`pr_suggestion.py`** (pure) — `diff_to_suggestions` parses a unified diff into per-hunk
+  `ReviewSuggestion`s: narrows to the minimal changed window, anchors to the head-side line(s)
+  (`start_line`/`line`, `side=RIGHT`), and a **pure insertion borrows one neighbour context line**
+  so it still has an anchor. `complete` is True only if the diff parsed and *every* hunk anchored.
+  `render_suggestion_body` = the marker + a ` ```suggestion ` block (== the hunk's new side) + the
+  3-card attack story (title, tier, flow, rationale) in a `<details>`; multi-hunk fixes are labelled
+  "part N of M - commit all together" with the story shown once. `build_review_comments` emits API-
+  ready comments only for complete fixes; `count_suggestable_fixes` feeds the summary line.
+- **`github_app.post_or_update_suggestions`** — mints the installation token, **prunes** its own
+  marked review comments (tolerating 404), then posts one `event:"COMMENT"` review carrying the
+  anchored comments on the head sha (multi-line keys only when needed). Never `REQUEST_CHANGES`.
+- **Webhook wiring** — `_handle_pull_request` reads `head_scan.suggestions`, builds the review
+  comments, posts the summary (now `render_pr_comment(..., validated_fixes=N)` adds a ":wrench: N
+  validated fixes ... click Commit suggestion" line), then posts the in-line suggestions when a head
+  sha is present. Existing summary/diff behaviour unchanged when there are no suggestions.
+
+**Validation:** ruff + format clean (src 121 files; platform 54) · `mypy --strict src` clean (83) /
+`mypy --strict vulnadvisor_platform` clean (37) · **src pytest 753 passed, 1 skipped** (+27:
+`tests/test_suggest.py` — validated-only sweep / SANITIZED-skipped / no-safe-fix → empty / engine-
+facts carried / JSON round-trip; `tests/test_cli.py` +6 — `fix --suggest-json` writes 1 validated
+fix without touching the tree, missing-key → 2, no-id-no-flag → 2, `scan --suggestions` forwards the
+doc, malformed suggestions → 2). **platform pytest 148 passed** (+17: `test_pr_suggestion.py` 9 —
+single-hunk anchors to the sink line + **suggestion block == diff hunk snapshot**, pure-insertion
+context anchor, multi-line start/end, file-add not-suggestable, garbage not-suggestable, body has
+marker/fence/story, multi-hunk part-labels + story-once, **mixed fixable/unfixable** skips cleanly,
+`to_api` multiline-keys-only-when-needed; `test_github.py` +4 — webhook posts an anchored in-line
+suggestion + summary "1 validated fix", unsuggestable fix posts none, **synchronize reposts**,
+**transport-level prune-then-repost** (deletes only our marker'd comment, event COMMENT, head sha);
+`test_ingest.py` +4 — stores suggestions, rejects bad schema (422), empty when absent, defensive
+`parse_suggestions` unit). **Live Postgres:** `alembic upgrade head` + `alembic check` → no drift.
+
+**Open questions / deferred (tool/credential-gated, prior-task precedent):** the **live scratch-repo
+e2e** — PR with a seeded vuln → CI uploads report+suggestions → App posts the in-line suggestion →
+"Commit suggestion" → next scan shows it fixed — needs a real GitHub App install + a funded model
+key in CI (the loop, parsing, anchoring, idempotency and review payload are all proven hermetically).
+**Known limitation (documented):** each validated fix is proven independently against the original
+head, so two fixes whose diffs touch overlapping lines may not compose in a single batch-commit
+(non-overlapping fixes compose fine); refine to a sequential re-validate if it bites. **CLI v2.1 tag
+(v2.1.0) deferred** until that live e2e lands (mirrors the v2.0 tag deferral). **Next:** the deferred
+CLI v2.0/v2.1 live checks + tags, or M18 (launch + fundraising assets).
+
+---
+
 ## Task 17.1 — `vulnadvisor fix` (local, validated)  (2026-06-14)
 
 **Status:** complete, full automated gate passing. **No new dependency** (stdlib `ast`/`shutil`/

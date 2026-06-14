@@ -94,6 +94,108 @@ async def test_ingest_empty_report_is_valid(client: AsyncClient, seeded_key: str
     assert resp.json()["diff_summary"]["introduced"] == 0
 
 
+def _suggestions_doc() -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "tool_version": "9.9.9",
+        "fixes": [
+            {
+                "finding_id": "app.py:5:command-injection",
+                "file": "app.py",
+                "line": 5,
+                "cwe": "CWE-78",
+                "kind": "command-injection",
+                "title": "OS command injection",
+                "tier": "CONFIRMED-FLOW",
+                "flow": "run -> os.system (app.py:5)",
+                "rationale": "Quote the argument.",
+                "confidence": "high",
+                "diff": "--- a/app.py\n+++ b/app.py\n@@ -5 +5 @@\n-x\n+y\n",
+            }
+        ],
+    }
+
+
+async def test_ingest_stores_validated_suggestions(
+    client: AsyncClient,
+    seeded_key: str,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    from vulnadvisor_platform.models import Scan
+
+    body = _body(build_report_doc([("jinja2", "GHSA-1")]))
+    body["suggestions"] = _suggestions_doc()
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans", headers={_HDR: f"Bearer {seeded_key}"}, json=body
+    )
+    assert resp.status_code == 201
+
+    async with sessionmaker() as session:
+        scan = (await session.execute(select(Scan))).scalars().one()
+        assert len(scan.suggestions) == 1
+        stored = scan.suggestions[0]
+        assert stored["finding_id"] == "app.py:5:command-injection"
+        assert stored["line"] == 5 and stored["diff"]
+
+
+async def test_ingest_rejects_bad_suggestions_schema(client: AsyncClient, seeded_key: str) -> None:
+    body = _body(build_report_doc([]))
+    body["suggestions"] = {"schema_version": "9.9", "tool_version": "1", "fixes": []}
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans", headers={_HDR: f"Bearer {seeded_key}"}, json=body
+    )
+    assert resp.status_code == 422
+    assert "schema_version" in resp.json()["detail"]
+
+
+async def test_ingest_without_suggestions_stores_empty(
+    client: AsyncClient,
+    seeded_key: str,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    from vulnadvisor_platform.models import Scan
+
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans",
+        headers={_HDR: f"Bearer {seeded_key}"},
+        json=_body(build_report_doc([("jinja2", "GHSA-1")])),
+    )
+    assert resp.status_code == 201
+    async with sessionmaker() as session:
+        scan = (await session.execute(select(Scan))).scalars().one()
+        assert scan.suggestions == []
+
+
+def test_parse_suggestions_is_defensive() -> None:
+    from vulnadvisor_platform.reports import ReportValidationError, parse_suggestions
+
+    assert parse_suggestions(None) == []
+    # Valid plus malformed entries: the good one survives, the rest are dropped silently.
+    doc = {
+        "schema_version": "1.0",
+        "tool_version": "1",
+        "fixes": [
+            {"finding_id": "a:1:x", "file": "a.py", "line": 1, "diff": "d", "confidence": "bogus"},
+            {"finding_id": "b:2:y", "file": "b.py", "diff": "d"},  # missing line
+            {"finding_id": "c", "file": "c.py", "line": 0, "diff": "d"},  # non-positive line
+            "not an object",
+            {"file": "d.py", "line": 1, "diff": "d"},  # missing finding_id
+        ],
+    }
+    rows = parse_suggestions(doc)
+    assert len(rows) == 1
+    assert rows[0]["finding_id"] == "a:1:x"
+    assert rows[0]["confidence"] == "medium"  # unknown confidence coerced to a safe default
+    assert rows[0]["title"] == ""  # absent string fields default to empty
+
+    for bad in ([], "x", {"schema_version": "1.0", "tool_version": "1", "fixes": "no"}):
+        try:
+            parse_suggestions(bad)
+        except ReportValidationError:
+            continue
+        raise AssertionError(f"expected ReportValidationError for {bad!r}")
+
+
 async def test_ingest_requires_auth(client: AsyncClient) -> None:
     resp = await client.post("/v1/orgs/acme/repos/web/scans", json=_body(build_report_doc([])))
     assert resp.status_code == 401

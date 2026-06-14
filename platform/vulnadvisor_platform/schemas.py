@@ -46,6 +46,7 @@ class IngestRequest(BaseModel):
     pr_number: int | None = None
     source: ScanSource = ScanSource.CI
     report: dict[str, Any]
+    suggestions: dict[str, Any] | None = None
 
 
 class ScanUploadRequest(BaseModel):
@@ -53,6 +54,7 @@ class ScanUploadRequest(BaseModel):
 
     Unlike :class:`IngestRequest`, the repository name is in the body (the report itself carries no
     repo/org identity). Commit/ref are optional so a bare ``--upload`` works outside a git repo.
+    ``suggestions`` (optional) is a ``fix --suggest-json`` document attached for the PR agent.
     """
 
     repo: str = Field(min_length=1, max_length=200)
@@ -61,6 +63,7 @@ class ScanUploadRequest(BaseModel):
     pr_number: int | None = None
     source: ScanSource = ScanSource.CI
     report: dict[str, Any]
+    suggestions: dict[str, Any] | None = None
 
 
 class DiffSummary(BaseModel):

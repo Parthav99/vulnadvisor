@@ -47,12 +47,15 @@ def upload_report(
     repo: str,
     ref: str | None = None,
     commit_sha: str | None = None,
+    suggestions: dict[str, Any] | None = None,
     timeout: float = 30.0,
 ) -> UploadResult:
     """POST ``report`` to ``{api_url}/v1/scans`` authenticated with ``api_key``.
 
     ``ref``/``commit_sha`` are sent as JSON ``null`` when unknown — never a placeholder value —
     so the dashboard can label the upload a local scan instead of rendering fake provenance.
+    ``suggestions`` (a ``fix --suggest-json`` document) is attached when present so the platform
+    can post validated fixes as in-line PR suggestions; it is omitted entirely otherwise.
 
     Raises :class:`UploadError` on a missing URL/key, an unreachable server, a non-2xx response, or
     a response that is not the expected JSON object.
@@ -66,9 +69,10 @@ def upload_report(
         )
 
     url = api_url.rstrip("/") + _ENDPOINT
-    payload = json.dumps(
-        {"repo": repo, "ref": ref, "commit_sha": commit_sha, "report": report}
-    ).encode("utf-8")
+    body: dict[str, Any] = {"repo": repo, "ref": ref, "commit_sha": commit_sha, "report": report}
+    if suggestions is not None:
+        body["suggestions"] = suggestions
+    payload = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(  # noqa: S310 - scheme is the user's configured API URL
         url,
         data=payload,

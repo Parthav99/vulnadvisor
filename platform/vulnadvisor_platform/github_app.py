@@ -18,6 +18,7 @@ from fastapi import Depends
 
 from vulnadvisor_platform.config import Settings, get_settings
 from vulnadvisor_platform.pr_comment import MARKER
+from vulnadvisor_platform.pr_suggestion import SUGGESTION_MARKER, ReviewComment
 from vulnadvisor_platform.setup_pr import SETUP_BRANCH
 
 _API = "https://api.github.com"
@@ -86,6 +87,62 @@ class GitHubApp:
                     json={"body": body},
                 )
             response.raise_for_status()
+
+    async def post_or_update_suggestions(
+        self,
+        *,
+        installation_id: int | None,
+        repo_full_name: str,
+        pr_number: int,
+        head_sha: str,
+        comments: list[ReviewComment],
+    ) -> int:
+        """Post validated fixes as in-line ``suggestion`` review comments, idempotently.
+
+        On every push we first delete our own previous fix comments (found by
+        :data:`SUGGESTION_MARKER`) so stale suggestions on moved lines never linger, then post a
+        single review carrying the current ones. The review event is always ``COMMENT`` — we never
+        request changes and never auto-commit; the developer clicks "Commit suggestion". Returns the
+        number of in-line suggestions posted (0 when there are none, after pruning stale ones).
+        """
+        token = await self._installation_token(installation_id)
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            listed = await client.get(
+                f"{_API}/repos/{repo_full_name}/pulls/{pr_number}/comments",
+                headers=headers,
+                params={"per_page": "100"},
+            )
+            listed.raise_for_status()
+            for comment in listed.json():
+                if not isinstance(comment, dict):
+                    continue
+                text = comment.get("body")
+                comment_id = comment.get("id")
+                is_ours = isinstance(text, str) and SUGGESTION_MARKER in text
+                if is_ours and isinstance(comment_id, int):
+                    deleted = await client.delete(
+                        f"{_API}/repos/{repo_full_name}/pulls/comments/{comment_id}",
+                        headers=headers,
+                    )
+                    # A 404 means it is already gone — tolerate it; anything else is a real error.
+                    if deleted.status_code not in (200, 204, 404):
+                        deleted.raise_for_status()
+
+            if not comments:
+                return 0
+
+            response = await client.post(
+                f"{_API}/repos/{repo_full_name}/pulls/{pr_number}/reviews",
+                headers=headers,
+                json={
+                    "commit_id": head_sha,
+                    "event": "COMMENT",
+                    "comments": [comment.to_api() for comment in comments],
+                },
+            )
+            response.raise_for_status()
+        return len(comments)
 
     async def open_setup_pr(
         self,

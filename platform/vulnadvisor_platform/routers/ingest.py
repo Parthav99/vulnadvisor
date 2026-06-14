@@ -14,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from vulnadvisor_platform.db import SessionDep
 from vulnadvisor_platform.models import Finding, Org, Repository, Scan, ScanSource, ScanStatus
-from vulnadvisor_platform.reports import ReportValidationError, diff_finding_keys, parse_report
+from vulnadvisor_platform.reports import (
+    ReportValidationError,
+    diff_finding_keys,
+    parse_report,
+    parse_suggestions,
+)
 from vulnadvisor_platform.schemas import (
     DiffSummary,
     IngestRequest,
@@ -50,17 +55,21 @@ async def _store_scan(
     pr_number: int | None,
     source: ScanSource,
     report: dict[str, Any],
+    suggestions: dict[str, Any] | None = None,
 ) -> IngestResponse:
     """Validate a report and persist it as a new scan + findings, returning the summary and diff.
 
     Shared by the path-scoped ingest endpoint and the key-scoped ``/v1/scans`` upload; the caller
     is responsible for authorizing the ``org``. Pure storage logic — no auth decisions here.
     Placeholder commit SHAs (all zeros, from pre-12.2 CLIs) are normalized to null on the way in.
+    Optional ``suggestions`` (a ``fix --suggest-json`` document) is validated and stored on the scan
+    for the PR review agent; a malformed one is rejected with the report's 422 semantics.
     """
     commit_sha = _clean_commit_sha(commit_sha)
     ref = _clean_ref(ref)
     try:
         parsed = parse_report(report)
+        fixes = parse_suggestions(suggestions)
     except ReportValidationError as exc:
         # 422 (unprocessable) — same status FastAPI uses for request-body validation failures.
         raise HTTPException(422, str(exc)) from exc
@@ -107,6 +116,7 @@ async def _store_scan(
         status=ScanStatus.COMPLETE.value,
         degraded_sources=parsed.degraded_sources,
         summary=parsed.summary,
+        suggestions=fixes,
     )
     session.add(scan)
     await session.flush()
@@ -169,6 +179,7 @@ async def ingest_scan(
         pr_number=body.pr_number,
         source=body.source,
         report=body.report,
+        suggestions=body.suggestions,
     )
 
 
@@ -194,4 +205,5 @@ async def upload_scan(
         pr_number=body.pr_number,
         source=body.source,
         report=body.report,
+        suggestions=body.suggestions,
     )

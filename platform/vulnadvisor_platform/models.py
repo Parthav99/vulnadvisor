@@ -171,6 +171,12 @@ class Scan(Base):
     status: Mapped[str] = mapped_column(String(16), default=ScanStatus.COMPLETE.value)
     degraded_sources: Mapped[list[str]] = mapped_column(JSONType, default=list)
     summary: Mapped[dict[str, Any]] = mapped_column(JSONType, default=dict)
+    # Validated first-party fixes from ``fix --suggest-json``, uploaded alongside the report
+    # (Task 17.2). The PR review agent renders these as one-click in-line GitHub suggestions; an
+    # ordinary upload omits them and this stays an empty list (additive, server_default "[]").
+    suggestions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONType, default=list, server_default="[]"
+    )
     created_at: Mapped[CreatedAt]
 
 

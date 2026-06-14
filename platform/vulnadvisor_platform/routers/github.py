@@ -35,6 +35,11 @@ from vulnadvisor_platform.models import (
     User,
 )
 from vulnadvisor_platform.pr_comment import MARKER, render_pr_comment
+from vulnadvisor_platform.pr_suggestion import (
+    ReviewComment,
+    build_review_comments,
+    count_suggestable_fixes,
+)
 from vulnadvisor_platform.schemas import SetupPrResponse
 from vulnadvisor_platform.security import CurrentUser
 from vulnadvisor_platform.setup_pr import (
@@ -406,6 +411,7 @@ async def _handle_pull_request(
         commit_sha=head_sha if isinstance(head_sha, str) else None,
         ref=head_ref if isinstance(head_ref, str) else None,
     )
+    review_comments: list[ReviewComment] = []
     if head_scan is None:
         body = (
             f"{MARKER}\n## VulnAdvisor — reachability triage\n\n"
@@ -420,15 +426,34 @@ async def _handle_pull_request(
         before = await _finding_map(session, base_scan.id) if base_scan is not None else {}
         introduced = [payload_ for key, payload_ in after.items() if key not in before]
         fixed_count = sum(1 for key in before if key not in after)
+        stored_fixes = head_scan.suggestions if isinstance(head_scan.suggestions, list) else []
+        review_comments = build_review_comments(stored_fixes)
         body = render_pr_comment(
-            introduced=introduced, fixed_count=fixed_count, repo=full_name, pr_number=number
+            introduced=introduced,
+            fixed_count=fixed_count,
+            repo=full_name,
+            pr_number=number,
+            validated_fixes=count_suggestable_fixes(stored_fixes),
         )
 
     installation_id = installation.get("id") if isinstance(installation, dict) else None
+    installation_id = installation_id if isinstance(installation_id, int) else None
     await app.post_or_update_comment(
-        installation_id=installation_id if isinstance(installation_id, int) else None,
+        installation_id=installation_id,
         repo_full_name=full_name,
         pr_number=number,
         body=body,
     )
+
+    # In-line one-click suggestions for the validated fixes (Task 17.2). Posted as a COMMENT review
+    # on the head commit; prunes our prior suggestions first so a synchronize updates them in place.
+    # Requires the head sha to anchor against — without it the summary comment alone is posted.
+    if isinstance(head_sha, str) and head_sha:
+        await app.post_or_update_suggestions(
+            installation_id=installation_id,
+            repo_full_name=full_name,
+            pr_number=number,
+            head_sha=head_sha,
+            comments=review_comments,
+        )
     return True
