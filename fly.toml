@@ -31,6 +31,11 @@ primary_region = "iad"   # change to your nearest region (e.g. "lhr", "sin", "fr
   # Send the browser back to the Vercel-hosted dashboard after OAuth login.
   # (Real secrets — DATABASE_URL, SECRET_KEY, GitHub creds — are set via `fly secrets`, not here.)
   DASHBOARD_URL = "https://vulnadvisor.vercel.app"
+  # This backend's own public URL, baked into the scan workflow the setup PR adds so a CI runner can
+  # upload reports. Set here (not a secret — it's public) so a plain `fly deploy` is correct by
+  # default; the setup-PR endpoint also auto-derives it from the request if this is ever unset.
+  # Change this if you rename the app or use a custom domain.
+  PUBLIC_API_URL = "https://vulnadvisor-api.fly.dev"
 
 [http_service]
   internal_port = 8080
