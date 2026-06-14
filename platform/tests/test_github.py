@@ -600,9 +600,11 @@ async def test_setup_pr_full_flow(client: AsyncClient, seeded_key: str) -> None:
     assert call["repo_full_name"] == "acme/web"
     assert call["base_branch"] == "main"
     assert call["file_path"] == ".github/workflows/vulnadvisor.yml"
-    # The proposed workflow is valid YAML and runs the upload scan.
+    # The proposed workflow is valid YAML, runs the upload scan, and posts PR fix suggestions.
     workflow = yaml.safe_load(call["file_content"])
-    assert workflow["jobs"]["vulnadvisor"]["steps"][-1]["run"] == "vulnadvisor scan . --upload"
+    steps = workflow["jobs"]["vulnadvisor"]["steps"]
+    assert steps[-2]["run"] == "vulnadvisor scan . --upload"
+    assert steps[-1]["run"] == "vulnadvisor suggest"
     assert "VULNADVISOR_API_KEY" in call["pr_body"]
 
     after = await _repo_listing(client, seeded_key)

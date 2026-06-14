@@ -13,6 +13,22 @@ from vulnadvisor_platform.pr_suggestion import (
     render_suggestion_body,
 )
 
+
+def test_platform_reexports_the_shared_renderer() -> None:
+    """Task 17.4: the renderer moved into the ``vulnadvisor`` package; the platform re-exports it.
+
+    Asserting object identity proves there is one source of truth (no copy drift) shared by the
+    CLI's ``vulnadvisor suggest`` and the GitHub App webhook.
+    """
+    from vulnadvisor.output import pr_suggestion as shared
+
+    assert build_review_comments is shared.build_review_comments
+    assert diff_to_suggestions is shared.diff_to_suggestions
+    assert render_suggestion_body is shared.render_suggestion_body
+    assert count_suggestable_fixes is shared.count_suggestable_fixes
+    assert SUGGESTION_MARKER == shared.SUGGESTION_MARKER
+
+
 # A single-hunk SQLi fix: parameterize the query. The suggestion replaces exactly the sink line.
 _SQLI_DIFF = (
     "--- a/app/db.py\n"

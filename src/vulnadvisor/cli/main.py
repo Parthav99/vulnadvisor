@@ -1,5 +1,6 @@
 """VulnAdvisor command-line entrypoint (Typer app)."""
 
+import os
 from collections.abc import Callable
 from enum import Enum
 from importlib.metadata import PackageNotFoundError
@@ -49,8 +50,16 @@ from vulnadvisor.output.credentials import (
 )
 from vulnadvisor.output.devicelogin import LoginError, poll_device_token, request_device_code
 from vulnadvisor.output.gating import parse_fail_on, should_fail
+from vulnadvisor.output.github_pr import (
+    GitHubHttp,
+    GitHubPostError,
+    UrllibGitHubHttp,
+    post_review_suggestions,
+    read_pr_context,
+)
 from vulnadvisor.output.gitmeta import detect_scan_metadata
 from vulnadvisor.output.json_report import build_report, to_json
+from vulnadvisor.output.pr_suggestion import build_review_comments
 from vulnadvisor.output.sarif import to_sarif_json
 from vulnadvisor.output.upload import UploadError, upload_report
 from vulnadvisor.sast.model import ScoredSastFinding
@@ -136,6 +145,19 @@ def build_fix_client(
     user's own key); every validation step is local.
     """
     return build_fix_client_from_env(provider_override=provider, model_override=model)
+
+
+# Zero-setup PR suggestions need only the built-in Actions token — no GitHub App (Task 17.4).
+_MISSING_GITHUB_TOKEN_MESSAGE = (
+    "vulnadvisor suggest needs a GitHub token to post PR comments. In GitHub Actions set "
+    "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} and grant 'permissions: pull-requests: write' "
+    "(the built-in token is enough - no GitHub App required)."
+)
+
+
+def build_github_http() -> GitHubHttp:
+    """Build the GitHub REST client for ``suggest`` (stdlib ``urllib``); test-substitutable."""
+    return UrllibGitHubHttp()
 
 
 def build_symbol_names_for() -> Callable[[Advisory], frozenset[str]] | None:
@@ -821,13 +843,36 @@ def _fix_suggest_json(
         typer.secho(_MISSING_FIX_KEY_MESSAGE, fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2)
 
+    suggestion_report = _validate_fixes(report, path, client=client, max_attempts=max_attempts)
+
+    try:
+        out_file.write_text(suggestion_report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        typer.secho(f"Could not write {out_file}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+
+    typer.secho(
+        f"Wrote {len(suggestion_report.fixes)} validated fix(es) to {out_file}.",
+        fg=typer.colors.GREEN,
+    )
+
+
+def _validate_fixes(
+    report: ScanReport, path: Path, *, client: LLMClient, max_attempts: int
+) -> SuggestionReport:
+    """Run the validated-fix loop over every alarming finding; return the validated patches.
+
+    Shared by ``fix --suggest-json`` (writes the document) and ``suggest`` (posts it to a PR): both
+    fix-and-validate every alarming finding with the 17.1 loop and keep only the proven patches.
+    Per-finding progress is streamed to stderr so neither caller has to.
+    """
+    baseline = report.sast_findings
+
     def source_for(rel: str) -> str | None:
         try:
             return (path / rel).read_text(encoding="utf-8")
         except OSError:
             return None
-
-    baseline = report.sast_findings
 
     def validator_for(target: ScoredSastFinding) -> object:
         return build_validator(project_root=path, target=target, baseline=baseline)
@@ -839,23 +884,119 @@ def _fix_suggest_json(
     typer.echo(
         f"Fixing {sum(1 for f in baseline if is_alarming(f))} alarming finding(s)...", err=True
     )
-    suggestion_report = generate_suggestions(
+    return generate_suggestions(
         findings=baseline,
         client=client,
         validator_for=validator_for,  # type: ignore[arg-type]
         source_for=source_for,
         tool_version=_resolve_version(),
         max_attempts=max_attempts,
+        on_result=on_result,
     )
 
+
+@app.command()
+def suggest(
+    path: Annotated[
+        Path,
+        typer.Option(
+            "--path",
+            exists=True,
+            file_okay=False,
+            dir_okay=True,
+            readable=True,
+            help="Path to the Python project to scan and fix (default: current directory).",
+        ),
+    ] = Path("."),
+    max_attempts: Annotated[
+        int,
+        typer.Option(
+            "--max-attempts",
+            min=1,
+            max=5,
+            help="How many times to retry the model with validation feedback (default: 3).",
+        ),
+    ] = 3,
+    provider: Annotated[
+        Provider | None,
+        typer.Option(
+            "--provider",
+            help="Model provider (default: detected from your key prefix). "
+            "A free OpenRouter key works.",
+        ),
+    ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            help="Model id (default: the provider's default; or set VULNADVISOR_MODEL).",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Generate and print the suggestions without posting them to the PR.",
+        ),
+    ] = False,
+) -> None:
+    """Post validated fixes as one-click in-line PR ``suggestion`` comments (CI, no App needed).
+
+    Designed to run in GitHub Actions on ``pull_request`` events: it scans first-party code,
+    machine-validates a patch for every alarming finding (the same loop as ``vulnadvisor fix``), and
+    posts the fixes as in-line ``suggestion`` review comments using the built-in ``GITHUB_TOKEN`` -
+    **no GitHub App, no webhook, no platform**. The pull request and head commit are read from the
+    Actions event payload (``GITHUB_EVENT_PATH``). The review event is always a comment - never a
+    "request changes", never an auto-commit; a developer clicks "Commit suggestion". Re-runs prune
+    and repost our own prior suggestions, so a fixed finding's suggestion disappears in place.
+
+    The only network calls are to your own model key and to GitHub; your source code stays in CI.
+    Outside a pull request (e.g. a push build) this is a clean no-op. Use ``--dry-run`` to preview.
+    """
+    ctx = read_pr_context(os.environ)
+    if ctx is None:
+        typer.echo(
+            "No pull request context found (GITHUB_EVENT_PATH); nothing to suggest.", err=True
+        )
+        return
+
+    client = build_fix_client(provider, model)
+    if client is None:
+        typer.secho(_MISSING_FIX_KEY_MESSAGE, fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    report = scan_project(path, build_matcher(), run_sca=False, run_sast=True)
+    suggestion_report = _validate_fixes(report, path, client=client, max_attempts=max_attempts)
+    comments = build_review_comments(
+        [fix.model_dump(mode="json") for fix in suggestion_report.fixes]
+    )
+
+    if dry_run:
+        typer.secho(
+            f"Dry run: {len(comments)} in-line suggestion(s) from "
+            f"{len(suggestion_report.fixes)} validated fix(es) for PR #{ctx.pr_number}.",
+            fg=typer.colors.GREEN,
+        )
+        for comment in comments:
+            typer.echo(f"\n--- {comment.path}:{comment.line} ---")
+            typer.echo(comment.body)
+        return
+
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if not token:
+        typer.secho(_MISSING_GITHUB_TOKEN_MESSAGE, fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
     try:
-        out_file.write_text(suggestion_report.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:
-        typer.secho(f"Could not write {out_file}: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2) from exc
+        posted = post_review_suggestions(
+            build_github_http(), token=token, ctx=ctx, comments=comments
+        )
+    except GitHubPostError as exc:
+        typer.secho(f"Could not post suggestions: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
 
     typer.secho(
-        f"Wrote {len(suggestion_report.fixes)} validated fix(es) to {out_file}.",
+        f"Posted {posted} in-line suggestion(s) to {ctx.repo_full_name} PR #{ctx.pr_number}.",
         fg=typer.colors.GREEN,
     )
 

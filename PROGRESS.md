@@ -4,6 +4,80 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 17.4 — Zero-setup PR suggestions (a GitHub login is enough; no App)  (2026-06-14)
+
+**Status:** **Parts 1 + 2 complete**, full automated gate passing (CLI + platform). **No new
+dependency** — the CI poster is a second stdlib (`urllib`) client beside `output/upload.py`, so the
+published wheel still has 3 runtime deps. Part 3 (hosted OAuth setup-PR) deferred to the next turn,
+and the live scratch-repo e2e stays credential-gated (prior-task precedent). The pivot's payoff now
+reaches a user **without any GitHub App**: a workflow running `vulnadvisor suggest` posts one-click
+in-line `suggestion` comments straight from Actions with the built-in `GITHUB_TOKEN`.
+
+**Scope decisions (maintainer, at task start):** (1) **new `vulnadvisor suggest` command** (not
+`fix --post-pr`) — a self-contained scan → validate → post; keeps `fix` local-first. (2) **Parts
+1+2 now** (renderer move + CI-native posting + workflow), **part 3 next** (OAuth-token setup-PR).
+(3) Live e2e deferred.
+
+**The soundness shape:** identical to 17.2 — the review event is **always `COMMENT`** (never
+`REQUEST_CHANGES`, never auto-commit), only **completely-expressible** fixes are posted in-line, and
+every run **prunes our own prior `<!-- vulnadvisor:fix -->` comments before reposting** so a fixed or
+moved line never strands a stale suggestion. The only network calls are the user's own model key and
+GitHub; source code stays in CI.
+
+**Part 1 — one renderer, two callers.** Moved the pure diff→suggestion renderer to
+**`src/vulnadvisor/output/pr_suggestion.py`** (so the CLI can post without the platform);
+`platform/vulnadvisor_platform/pr_suggestion.py` is now a **thin re-export** of it (every existing
+`from vulnadvisor_platform.pr_suggestion import …` keeps working, behaviour byte-identical). A new
+platform test asserts **object identity** between the two modules (no copy drift); the 17.2 snapshot
+tests stayed green untouched.
+
+**Part 2 — CI-native posting (`output/github_pr.py`, stdlib).**
+- **Event parsing** — pure `parse_pr_event(payload, github_sha=?, repository=?)` reads
+  `pull_request.number`/`head.sha`/`repository.full_name` with top-level `number` + `GITHUB_SHA` +
+  `GITHUB_REPOSITORY` fallbacks; `read_pr_context(env)` reads the `GITHUB_EVENT_PATH` file. Both are
+  fully defensive — a push event / missing file / bad JSON → `None` (a clean no-op, never a crash).
+- **HTTP** — `GitHubHttp` Protocol + `UrllibGitHubHttp` (urllib): an HTTP error **status is returned
+  as a `GitHubResponse`** (so a 404 on delete is tolerable), a network error raises
+  `GitHubPostError`. `post_review_suggestions(http, token, ctx, comments)` paginates + prunes our
+  marker'd comments (tolerating 404), then posts one `event:"COMMENT"` review on the head sha;
+  returns the count (pruning still runs with zero comments, so a now-fixed PR clears old ones).
+- **CLI `vulnadvisor suggest`** — `--path/--max-attempts/--provider/--model/--dry-run`. Resolves the
+  PR from the Actions env (no PR → no-op exit 0), requires a model key (exit 2, provider-agnostic
+  17.3 message), SAST-scans, runs the shared validated-fix loop (refactored `_validate_fixes`, now
+  used by both `fix --suggest-json` and `suggest`), builds the in-line comments, then needs
+  `GITHUB_TOKEN`/`GH_TOKEN` (exit 2 with a "permissions: pull-requests: write" hint) and posts.
+  `--dry-run` prints the comments without a token. `build_github_http` is module-level for test
+  substitution.
+- **Generated workflow (14.2, `setup_pr.py`)** — added `permissions: pull-requests: write` and a
+  `vulnadvisor suggest` step gated on `github.event_name == 'pull_request'`, carrying `GITHUB_TOKEN`
+  + all three provider key env vars (`OPENROUTER_/OPENAI_/ANTHROPIC_API_KEY`) so **any** BYOM secret
+  works via 17.3 prefix detection; an unset key → no suggestions, never a failed build. PR body +
+  README document the zero-setup path (no App; add one model-key secret).
+
+**Validation:** ruff + format clean (178 files) · `mypy --strict src` clean (85) / `platform` clean
+(29) / `tests/test_github_pr.py` clean · **src pytest 814 passed, 1 skipped** (+30) · **platform
+pytest 149 passed** (+1). New `tests/test_github_pr.py` (23): event parsing (number/sha/repo +
+fallbacks + 8-case malformed→None + event-file read/missing/bad-JSON); poster against a fake GitHub
+— **COMMENT review on the head sha**, Bearer token + API-version headers, **prunes only our marker'd
+comments** (human comment untouched), zero-comments still prunes + posts nothing, **404-tolerant
+delete** vs **raises on a real delete/post failure**, **pagination**; urllib transport maps an HTTP
+status to a response and raises on a network error. `tests/test_cli.py` (+6): `suggest` end-to-end
+posts one anchored COMMENT review (tree untouched), idempotent prune, `--dry-run` prints + posts
+nothing, missing-token → 2, missing-key → 2, no-PR-context → 0 no-op. `platform`: workflow snapshot
++ structure + `test_github` setup-PR updated for the new suggest step; **re-export identity** test.
+**CLI smoke:** `suggest --help` shows the flags; push build (no PR) → "nothing to suggest" exit 0;
+PR context with no model key → provider-agnostic message exit 2.
+
+**Deferred (this task, by scope):** (1) **Part 3** — hosted onboarding via the logged-in user's
+GitHub **OAuth token** opening the setup-PR (no App install), the optional upgrade path; next turn.
+(2) **Live scratch-repo e2e** — PR with a seeded vuln → Actions `GITHUB_TOKEN` posts the in-line
+suggestion → "Commit suggestion" → next run shows it fixed — GitHub-credential + funded-model-key
+gated; the posting choreography, anchoring, idempotency, and event parsing are all proven
+hermetically. (3) **`v2.1.0` tag** holds until Part 3 + the live e2e land (mirrors the v2.0 tag
+deferral). **Next:** Task 17.4 Part 3 (OAuth setup-PR), then the deferred live e2e + the v2.1.0 tag.
+
+---
+
 ## Task 17.3 — Provider-flexible `fix` (BYOM on the CLI: OpenRouter / OpenAI / Anthropic)  (2026-06-14)
 
 **Status:** complete, full automated gate passing. **No new dependency** — a second stdlib client

@@ -170,6 +170,41 @@ Override the provider with `--provider {openrouter,openai,anthropic}` and the mo
 (or the `VULNADVISOR_MODEL` env var). The single network call goes to **your own** chosen endpoint;
 every validation step is local, so your code never leaves the machine otherwise.
 
+### One-click PR suggestions (no GitHub App)
+
+`vulnadvisor suggest` posts those validated fixes as in-line GitHub **suggestion** comments — the
+ones a reviewer commits with one click — **straight from GitHub Actions using the built-in
+`GITHUB_TOKEN`**. No GitHub App, no webhook, no platform: a workflow with `pull-requests: write`
+and a model-key secret is enough.
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  vulnadvisor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install vulnadvisor
+      - name: Suggest validated fixes on the pull request
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}   # a free OpenRouter key works
+        run: vulnadvisor suggest
+```
+
+`suggest` reads the pull request and head commit from the Actions event payload, scans, validates a
+patch for each finding, and posts only the cleanly-appliable ones. The review is always a **comment**
+— never a "request changes", never an auto-commit. Re-runs prune and repost our own suggestions, so a
+finding you've fixed has its suggestion removed in place. Outside a pull request it is a no-op; use
+`--dry-run` to preview the comments without posting. The only network calls are to your model key and
+to GitHub; your source code stays in CI.
+
 ## Output formats & CI gating
 
 `vulnadvisor scan PATH --format {terminal,json,sarif}`:

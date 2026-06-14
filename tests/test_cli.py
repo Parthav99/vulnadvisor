@@ -808,3 +808,175 @@ def test_scan_upload_rejects_malformed_suggestions(
         ],
     )
     assert result.exit_code == 2  # Typer BadParameter, no traceback
+
+
+# --- suggest (zero-setup CI PR suggestions, Task 17.4) ------------------------------------------
+
+
+class _FakeGitHubHttp:
+    """Records the review the ``suggest`` command posts; serves an empty comment list by default."""
+
+    def __init__(self, existing: list[dict[str, object]] | None = None) -> None:
+        from vulnadvisor.output.github_pr import GitHubResponse  # noqa: PLC0415
+
+        self._GitHubResponse = GitHubResponse
+        self.existing = existing or []
+        self.deleted: list[int] = []
+        self.reviews: list[dict[str, object]] = []
+
+    def request(self, method, url, *, body=None, headers=None):  # type: ignore[no-untyped-def]
+        if method == "GET":
+            page = int(url.rsplit("page=", 1)[1])
+            data = self.existing if page == 1 else []
+            return self._GitHubResponse(200, json.dumps(data).encode())
+        if method == "DELETE":
+            self.deleted.append(int(url.rsplit("/", 1)[1]))
+            return self._GitHubResponse(204, b"")
+        if method == "POST":
+            self.reviews.append(json.loads(body))
+            return self._GitHubResponse(201, b"{}")
+        return self._GitHubResponse(500, b"")
+
+
+def _pr_event(tmp_path: Path) -> Path:
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps(
+            {
+                "number": 7,
+                "pull_request": {"number": 7, "head": {"sha": "headsha123"}},
+                "repository": {"full_name": "acme/web"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return event
+
+
+def _suggest_env(monkeypatch, event: Path, *, token: str | None = "ghs_test") -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    if token is None:
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("GITHUB_TOKEN", token)
+
+
+def test_suggest_posts_inline_suggestions(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    """End-to-end: scan -> validate a fix -> post one COMMENT review anchored to the sink line."""
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(diff))
+    http = _FakeGitHubHttp()
+    monkeypatch.setattr(cli_main, "build_github_http", lambda: http)
+    _suggest_env(monkeypatch, _pr_event(tmp_path))
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(app, ["suggest", "--path", str(project)])
+
+    assert result.exit_code == 0, result.output
+    assert "Posted 1 in-line suggestion" in result.output
+    assert len(http.reviews) == 1
+    review = http.reviews[0]
+    assert review["event"] == "COMMENT"  # never REQUEST_CHANGES, never auto-commit
+    assert review["commit_id"] == "headsha123"
+    assert review["comments"][0]["path"] == "app.py"
+    # The working tree is never touched.
+    assert (project / "app.py").read_text(encoding="utf-8") == _FIX_VULN
+
+
+def test_suggest_idempotent_prunes_prior_suggestions(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    from vulnadvisor.output.pr_suggestion import SUGGESTION_MARKER  # noqa: PLC0415
+
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(diff))
+    http = _FakeGitHubHttp(
+        existing=[
+            {"id": 1, "body": f"{SUGGESTION_MARKER}\nstale"},
+            {"id": 2, "body": "a human comment"},
+        ]
+    )
+    monkeypatch.setattr(cli_main, "build_github_http", lambda: http)
+    _suggest_env(monkeypatch, _pr_event(tmp_path))
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(app, ["suggest", "--path", str(project)])
+    assert result.exit_code == 0, result.output
+    assert http.deleted == [1]  # only our own prior suggestion is pruned, not the human comment
+
+
+def test_suggest_dry_run_prints_without_posting(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(diff))
+    http = _FakeGitHubHttp()
+    monkeypatch.setattr(cli_main, "build_github_http", lambda: http)
+    # No token needed for a dry run.
+    _suggest_env(monkeypatch, _pr_event(tmp_path), token=None)
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(app, ["suggest", "--path", str(project), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "Dry run" in result.output
+    assert "shlex.quote" in result.output  # the suggestion body is printed
+    assert http.reviews == []  # nothing posted
+
+
+def test_suggest_requires_github_token(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: _ScriptedFixClient(diff))
+    _suggest_env(monkeypatch, _pr_event(tmp_path), token=None)
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(app, ["suggest", "--path", str(project)])
+    assert result.exit_code == 2
+    assert "GITHUB_TOKEN" in result.output and "pull-requests: write" in result.output
+
+
+def test_suggest_requires_model_key(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: None)
+    _suggest_env(monkeypatch, _pr_event(tmp_path))
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(app, ["suggest", "--path", str(project)])
+    assert result.exit_code == 2
+    assert "ANTHROPIC_API_KEY" in result.output
+
+
+def test_suggest_no_pr_context_is_noop(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.delenv("GITHUB_SHA", raising=False)
+    monkeypatch.delenv("GITHUB_REPOSITORY", raising=False)
+    project = _fix_project(tmp_path)
+
+    result = runner.invoke(app, ["suggest", "--path", str(project)])
+    assert result.exit_code == 0
+    assert "nothing to suggest" in result.output

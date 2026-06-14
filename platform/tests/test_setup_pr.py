@@ -45,9 +45,10 @@ EXPECTED_WORKFLOW = """\
 # VulnAdvisor — reachability-aware dependency triage for Python.
 #
 # Scans on every push to main and on every pull request, then uploads the
-# JSON report to your VulnAdvisor dashboard. Only the report leaves CI — never your
-# source code. Authentication uses the VULNADVISOR_API_KEY repository secret (the
-# setup PR body explains how to add it).
+# JSON report to your VulnAdvisor dashboard. On pull requests it also posts one-click,
+# machine-validated fix suggestions in-line using the built-in GITHUB_TOKEN (no GitHub
+# App needed). Only the report leaves CI — never your source code. The setup PR body
+# explains the repository secrets.
 name: VulnAdvisor
 
 on:
@@ -57,6 +58,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   vulnadvisor:
@@ -73,6 +75,14 @@ jobs:
           VULNADVISOR_API_KEY: ${{ secrets.VULNADVISOR_API_KEY }}
           API_URL: "https://api.vulnadvisor.example"
         run: vulnadvisor scan . --upload
+      - name: Suggest validated fixes on the pull request
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: vulnadvisor suggest
 """
 
 
@@ -86,16 +96,23 @@ def test_workflow_is_valid_yaml_with_expected_structure() -> None:
     triggers = doc[True]
     assert triggers["push"]["branches"] == ["main"]
     assert "pull_request" in triggers
-    assert doc["permissions"] == {"contents": "read"}
+    # The suggest step needs pull-requests: write; the App is not required.
+    assert doc["permissions"] == {"contents": "read", "pull-requests": "write"}
     job = doc["jobs"]["vulnadvisor"]
     assert job["runs-on"] == "ubuntu-latest"
     steps = job["steps"]
     assert steps[0]["uses"] == "actions/checkout@v4"
     assert steps[1]["uses"] == "actions/setup-python@v5"
-    scan = steps[-1]
+    scan = steps[-2]
     assert scan["run"] == "vulnadvisor scan . --upload"
     assert scan["env"]["VULNADVISOR_API_KEY"] == "${{ secrets.VULNADVISOR_API_KEY }}"
     assert scan["env"]["API_URL"] == _API_URL
+    # The zero-setup PR-suggestion step: GITHUB_TOKEN only, gated to pull requests.
+    suggest = steps[-1]
+    assert suggest["run"] == "vulnadvisor suggest"
+    assert suggest["if"] == "github.event_name == 'pull_request'"
+    assert suggest["env"]["GITHUB_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
+    assert suggest["env"]["OPENROUTER_API_KEY"] == "${{ secrets.OPENROUTER_API_KEY }}"
 
 
 @pytest.mark.parametrize("branch", ["main", "master", "release/v1.0", "dev-2026"])
