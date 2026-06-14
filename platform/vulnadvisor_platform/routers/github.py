@@ -22,10 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from vulnadvisor_platform.access import require_admin, require_org, require_repo
 from vulnadvisor_platform.config import Settings, SettingsDep, get_settings
 from vulnadvisor_platform.copilot import CopilotKeyError, decrypt_api_key
-from vulnadvisor_platform.db import SessionDep
+from vulnadvisor_platform.db import SessionDep, utcnow
 from vulnadvisor_platform.github_app import GitHubApp, GitHubAppDep, GitHubAppError
 from vulnadvisor_platform.github_oauth import has_setup_scopes
+from vulnadvisor_platform.github_secrets import GitHubSecrets, GitHubSecretsDep, GitHubSecretsError
 from vulnadvisor_platform.models import (
+    ApiKey,
     Finding,
     Installation,
     Membership,
@@ -43,8 +45,9 @@ from vulnadvisor_platform.pr_suggestion import (
     count_suggestable_fixes,
 )
 from vulnadvisor_platform.schemas import SetupPrResponse
-from vulnadvisor_platform.security import CurrentUser
+from vulnadvisor_platform.security import CurrentUser, generate_api_key
 from vulnadvisor_platform.setup_pr import (
+    API_KEY_SECRET_NAME,
     PR_STATE_MERGED,
     PR_STATE_OPEN,
     SETUP_BRANCH,
@@ -84,6 +87,7 @@ async def open_setup_pr(
     user: CurrentUser,
     session: SessionDep,
     app: GitHubAppDep,
+    secrets: GitHubSecretsDep,
     settings: SettingsDep,
 ) -> SetupPrResponse:
     """Open the setup PR adding the scan workflow to a synced repo (idempotent: re-runs update).
@@ -95,6 +99,10 @@ async def open_setup_pr(
     neither credential is available, a 409 tells the user to install the App or grant repo access.
     The PR adds ``.github/workflows/vulnadvisor.yml`` on a fixed branch; clicking again updates the
     same branch and PR in place — it never opens a duplicate.
+
+    Zero-config secret (Task B): when a write-capable user OAuth token is available we also mint an
+    org API key and write it as the repo's ``VULNADVISOR_API_KEY`` secret, so the workflow runs with
+    no manual step. ``secret_set`` in the response reports whether that happened.
     """
     org, role = await require_org(session, user, org_slug)
     require_admin(role)
@@ -146,7 +154,97 @@ async def open_setup_pr(
     repo.setup_pr_url = result.url or None
     repo.setup_pr_state = PR_STATE_OPEN
     await session.commit()
-    return SetupPrResponse(pr_number=result.number, pr_url=result.url, created=result.created)
+
+    # The PR now exists regardless of what happens next, so its state is committed first. Then write
+    # the auth secret if we have a write-capable user token (the OAuth path always does; the App
+    # path does only when the user separately granted repo access).
+    secret_token = (
+        oauth_token if oauth_token is not None else _optional_user_setup_token(user, settings)
+    )
+    secret_set = await _write_api_key_secret(
+        session=session,
+        secrets=secrets,
+        org=org,
+        user=user,
+        repo_name=repo.name,
+        repo_full_name=repo_full_name,
+        token=secret_token,
+    )
+    return SetupPrResponse(
+        pr_number=result.number,
+        pr_url=result.url,
+        created=result.created,
+        secret_set=secret_set,
+    )
+
+
+def _optional_user_setup_token(user: User, settings: Settings) -> str | None:
+    """The user's decrypted write-capable OAuth token, or ``None`` — the no-raise variant.
+
+    Used for secret writing on the App path, where a missing/insufficient/unreadable token simply
+    means we skip the auto-secret (the dashboard then offers to grant access), never an error.
+    """
+    scopes = (user.github_token_scopes or "").split()
+    if user.github_token_ciphertext is None or not has_setup_scopes(scopes):
+        return None
+    try:
+        return decrypt_api_key(settings.secret_key, user.github_token_ciphertext)
+    except CopilotKeyError:
+        return None
+
+
+async def _write_api_key_secret(
+    *,
+    session: AsyncSession,
+    secrets: GitHubSecrets,
+    org: Org,
+    user: User,
+    repo_name: str,
+    repo_full_name: str,
+    token: str | None,
+) -> bool:
+    """Mint an org API key and write it as the repo's ``VULNADVISOR_API_KEY`` secret.
+
+    Returns True when the secret was written; with no write-capable ``token`` we skip and return
+    False (the dashboard then prompts for access). The fresh key is persisted only *after* GitHub
+    accepts the secret, and any prior auto-minted setup key for this repo is revoked — so re-clicks
+    never accumulate live keys. A GitHub rejection surfaces as a 502 (the PR is already open; the
+    next click retries the secret idempotently).
+    """
+    if token is None:
+        return False
+    secret, prefix, digest = generate_api_key()
+    try:
+        await secrets.put_repo_secret(
+            token=token,
+            repo_full_name=repo_full_name,
+            secret_name=API_KEY_SECRET_NAME,
+            value=secret,
+        )
+    except GitHubSecretsError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            f"the setup PR opened but writing the {API_KEY_SECRET_NAME} secret failed: {exc}",
+        ) from exc
+    name = f"setup:{repo_name}"
+    prior = (
+        (
+            await session.execute(
+                select(ApiKey).where(
+                    ApiKey.org_id == org.id,
+                    ApiKey.name == name,
+                    ApiKey.revoked_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for key in prior:
+        key.revoked_at = utcnow()
+    session.add(ApiKey(org_id=org.id, name=name, hash=digest, prefix=prefix, created_by=user.id))
+    await session.commit()
+    return True
 
 
 def _user_setup_token(user: User, settings: Settings) -> str:

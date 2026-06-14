@@ -19,6 +19,7 @@ from vulnadvisor_platform.app import app
 from vulnadvisor_platform.config import Settings, get_settings
 from vulnadvisor_platform.copilot import encrypt_api_key
 from vulnadvisor_platform.github_app import GitHubAppError, SetupPr, get_github_app
+from vulnadvisor_platform.github_secrets import GitHubSecretsError, SecretResult, get_github_secrets
 from vulnadvisor_platform.models import (
     ApiKey,
     Finding,
@@ -35,12 +36,37 @@ from vulnadvisor_platform.security import generate_api_key
 _SECRET = "whsec_test"
 
 
+class _FakeSecrets:
+    """Records repo-secret writes; can be made to fail to exercise the 502 path."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.fail = False
+
+    async def put_repo_secret(
+        self, *, token: str, repo_full_name: str, secret_name: str, value: str
+    ) -> SecretResult:
+        self.calls.append(
+            {
+                "token": token,
+                "repo_full_name": repo_full_name,
+                "secret_name": secret_name,
+                "value": value,
+            }
+        )
+        if self.fail:
+            raise GitHubSecretsError("Resource not accessible by integration")
+        return SecretResult(secret_name=secret_name, created=True)
+
+
 class _FakeApp:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.setup_calls: list[dict[str, Any]] = []
         self.suggestion_calls: list[dict[str, Any]] = []
         self.fail_setup = False
+        # The paired secrets fake, registered alongside in _overrides() and reachable from tests.
+        self.secrets = _FakeSecrets()
 
     async def post_or_update_comment(
         self, *, installation_id: int | None, repo_full_name: str, pr_number: int, body: str
@@ -100,6 +126,7 @@ def _overrides() -> _FakeApp:
     fake = _FakeApp()
     app.dependency_overrides[get_settings] = lambda: Settings(github_webhook_secret=_SECRET)
     app.dependency_overrides[get_github_app] = lambda: fake
+    app.dependency_overrides[get_github_secrets] = lambda: fake.secrets
     return fake
 
 
@@ -658,11 +685,15 @@ async def test_setup_pr_full_flow(client: AsyncClient, seeded_key: str) -> None:
     )
     assert resp.status_code == 200
     data = resp.json()
+    # App path with no user OAuth token: the PR opens but no secret is auto-written (the App is not
+    # granted secrets:write), so secret_set is False and the dashboard will offer to grant access.
     assert data == {
         "pr_number": 7,
         "pr_url": "https://github.com/acme/web/pull/7",
         "created": True,
+        "secret_set": False,
     }
+    assert fake.secrets.calls == []
 
     call = fake.setup_calls[0]
     assert call["installation_id"] == 5001
@@ -828,13 +859,104 @@ async def test_setup_pr_via_oauth_token_when_no_app(
         "pr_number": 8,
         "pr_url": "https://github.com/octocat/web/pull/8",
         "created": True,
+        "secret_set": True,
     }
     # Opened as the user via their OAuth token — not the App installation-token path.
     call = fake.setup_calls[0]
     assert "installation_id" not in call
     assert call["token"] == "gho_writetoken"
     assert call["repo_full_name"] == "octocat/web"
+    # The same OAuth token wrote VULNADVISOR_API_KEY to the repo, with a freshly minted key value.
+    secret_call = fake.secrets.calls[0]
+    assert secret_call["token"] == "gho_writetoken"
+    assert secret_call["repo_full_name"] == "octocat/web"
+    assert secret_call["secret_name"] == "VULNADVISOR_API_KEY"
+    assert secret_call["value"]  # a non-empty minted key
     assert (await _repo_listing(client, seeded_key))["setup_status"] == "pr-open"
+
+    # The minted key was persisted (so it's listable/revocable), named for the repo.
+    async with sessionmaker() as session:
+        org = (await session.execute(select(Org).where(Org.slug == "acme"))).scalar_one()
+        keys = (
+            (
+                await session.execute(
+                    select(ApiKey).where(ApiKey.org_id == org.id, ApiKey.name == "setup:web")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(keys) == 1
+        assert keys[0].revoked_at is None
+
+
+async def test_setup_pr_oauth_reclick_rotates_key(
+    client: AsyncClient,
+    seeded_key: str,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """Re-clicking writes a fresh secret each time but never leaves more than one live setup key."""
+    fake = _overrides()
+    await _seed_oauth_token(
+        sessionmaker, token="gho_writetoken", scopes="read:user user:email repo workflow"
+    )
+    headers = {"Authorization": f"Bearer {seeded_key}"}
+
+    await client.post("/v1/orgs/acme/repos/web/setup-pr", headers=headers)
+    await client.post("/v1/orgs/acme/repos/web/setup-pr", headers=headers)
+
+    # A new key value was pushed on each click...
+    assert len(fake.secrets.calls) == 2
+    assert fake.secrets.calls[0]["value"] != fake.secrets.calls[1]["value"]
+    # ...but only one live setup:web key remains; the first was revoked (no live-key sprawl).
+    async with sessionmaker() as session:
+        org = (await session.execute(select(Org).where(Org.slug == "acme"))).scalar_one()
+        keys = (
+            (
+                await session.execute(
+                    select(ApiKey).where(ApiKey.org_id == org.id, ApiKey.name == "setup:web")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        active = [k for k in keys if k.revoked_at is None]
+        assert len(keys) == 2
+        assert len(active) == 1
+
+
+async def test_setup_pr_secret_write_failure_maps_to_502(
+    client: AsyncClient,
+    seeded_key: str,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """If GitHub rejects the secret write, the endpoint 502s; the open PR stays honest."""
+    fake = _overrides()
+    fake.secrets.fail = True
+    await _seed_oauth_token(
+        sessionmaker, token="gho_writetoken", scopes="read:user user:email repo workflow"
+    )
+
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/setup-pr", headers={"Authorization": f"Bearer {seeded_key}"}
+    )
+    assert resp.status_code == 502
+    assert "VULNADVISOR_API_KEY" in resp.json()["detail"]
+    # The PR did open (its state is committed before the secret step); only the secret failed.
+    assert (await _repo_listing(client, seeded_key))["setup_status"] == "pr-open"
+    # No key is persisted on failure (it's added only after GitHub accepts the secret).
+    async with sessionmaker() as session:
+        org = (await session.execute(select(Org).where(Org.slug == "acme"))).scalar_one()
+        keys = (
+            (
+                await session.execute(
+                    select(ApiKey).where(ApiKey.org_id == org.id, ApiKey.name == "setup:web")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert keys == []
 
 
 async def test_setup_pr_oauth_insufficient_scope_409(

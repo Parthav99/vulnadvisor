@@ -11,6 +11,9 @@ import json
 # setup re-uses the same branch, which is what makes the whole flow idempotent (one branch ->
 # at most one open PR).
 WORKFLOW_PATH = ".github/workflows/vulnadvisor.yml"
+# The single repository secret the workflow authenticates with. The platform writes it
+# automatically during setup (Task B) so onboarding needs no manual "add a secret" step.
+API_KEY_SECRET_NAME = "VULNADVISOR_API_KEY"
 SETUP_BRANCH = "vulnadvisor/setup"
 SETUP_PR_TITLE = "Add VulnAdvisor reachability scanning"
 WORKFLOW_COMMIT_MESSAGE = "Add VulnAdvisor scan workflow"

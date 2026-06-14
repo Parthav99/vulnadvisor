@@ -286,11 +286,17 @@ class ResolutionResponse(BaseModel):
 
 
 class SetupPrResponse(BaseModel):
-    """Result of opening (or idempotently updating) a repo's setup PR."""
+    """Result of opening (or idempotently updating) a repo's setup PR.
+
+    ``secret_set`` is True when the workflow's ``VULNADVISOR_API_KEY`` repository secret was written
+    automatically (the zero-config path); False when no write-capable GitHub credential was
+    available, in which case the dashboard prompts the user to grant access (Task E).
+    """
 
     pr_number: int
     pr_url: str
     created: bool
+    secret_set: bool
 
 
 # --- Device-flow login (Task 14.1) ----------------------------------------------------------------

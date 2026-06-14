@@ -4,6 +4,49 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## One-click setup — Task B: auto-write the VULNADVISOR_API_KEY secret  (2026-06-14)
+
+**Status:** complete, automated gate passing (ruff + mypy --strict + full pytest 835 passed/1 skip).
+
+**What changed**
+- `setup_pr.py`: new `API_KEY_SECRET_NAME = "VULNADVISOR_API_KEY"` constant (the one secret the
+  workflow authenticates with), so the name has a single source of truth.
+- `schemas.py`: `SetupPrResponse` gains `secret_set: bool` — True when the secret was auto-written,
+  False when no write-capable credential was available (Task E will prompt for access).
+- `routers/github.py` `open_setup_pr`: after the PR's state is committed, if a write-capable user
+  OAuth token is available it mints an org API key and writes it as the repo's `VULNADVISOR_API_KEY`
+  secret via the new `GitHubSecretsDep` (Task A). Helpers:
+  - `_optional_user_setup_token` — no-raise variant of `_user_setup_token`; returns the decrypted
+    write-capable token or None. Lets the App path opportunistically auto-set the secret when the
+    user also granted repo scope, while a missing token just means `secret_set=False` (not an error).
+  - `_write_api_key_secret` — mints the key, PUTs the secret, and only **after** GitHub accepts it
+    persists the new `ApiKey` (named `setup:{repo}`) and revokes any prior live key of that name, so
+    re-clicks rotate the secret without accumulating live keys. A GitHub rejection raises 502 (the
+    PR is already open; the next click retries idempotently); no key is persisted on failure.
+
+**Why these choices (per the decisions locked before Task A)**
+- OAuth-token path is primary: writing secrets needs only the `repo` scope the setup token already
+  carries, so existing GitHub App installs are untouched (no `secrets: write` re-consent).
+- PR state is committed *before* the secret step so a secret failure never hides that the PR opened
+  (honesty over a clean-looking rollback) — and the flow is idempotent on retry.
+- Persist-after-accept ordering means a failed secret write leaves the repo's prior secret/key valid
+  and adds no orphaned key (soundness: never half-apply a credential change).
+
+**Validation evidence**
+- `ruff check platform` / `ruff format --check platform` — clean.
+- `mypy --strict src platform/vulnadvisor_platform` — Success, 115 files.
+- `pytest platform/tests/test_github.py test_setup_pr.py` — 52 passed. Full suite — 835 passed,
+  1 skipped. New endpoint tests: OAuth path sets the secret + persists one `setup:web` key; App path
+  (no user token) → `secret_set=False`, no secret call; reclick rotates the key (2 keys, 1 live);
+  secret-write failure → 502 with the PR still recorded and no key persisted.
+
+**Open questions / next**
+- Dashboard `SetupPrResponse` type doesn't yet know `secret_set` (extra field ignored at runtime —
+  no breakage); Task E will consume it for the "secret configured" copy + auto-consent retry.
+- Task C (api-url guard) and Task D (platform-proxy `suggest`) still pending.
+
+---
+
 ## One-click setup — Task A: encrypted repo-secret writer  (2026-06-14)
 
 **Status:** complete, automated gate passing (ruff + mypy --strict + full pytest).
