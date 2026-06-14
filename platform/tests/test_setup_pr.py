@@ -30,8 +30,10 @@ from vulnadvisor_platform.setup_pr import (
     WORKFLOW_COMMIT_MESSAGE,
     WORKFLOW_PATH,
     api_url_problem,
+    public_api_url_from_request,
     render_pr_body,
     render_workflow,
+    resolve_workflow_api_url,
     setup_status,
 )
 
@@ -183,6 +185,59 @@ def test_api_url_problem_rejects_unreachable_urls(url: str) -> None:
     problem = api_url_problem(url)
     assert problem is not None
     assert "PUBLIC_API_URL" in problem
+
+
+@pytest.mark.parametrize(
+    ("scheme", "host", "forwarded_proto", "expected"),
+    [
+        # X-Forwarded-Proto (set by a TLS-terminating proxy) wins over the connection scheme.
+        ("http", "vulnadvisor-api.fly.dev", "https", "https://vulnadvisor-api.fly.dev"),
+        # No forwarded header -> use the connection scheme.
+        ("https", "api.example.com", None, "https://api.example.com"),
+        ("http", "api.example.com:8000", "", "http://api.example.com:8000"),
+        # A comma-joined forwarded chain: take the first hop.
+        ("http", "api.example.com", "https, http", "https://api.example.com"),
+        # An unexpected proto falls back to https rather than producing a bad scheme.
+        ("http", "api.example.com", "ftp", "https://api.example.com"),
+        # No host -> nothing to reconstruct.
+        ("https", None, None, None),
+        ("https", "", "https", None),
+    ],
+)
+def test_public_api_url_from_request(
+    scheme: str, host: str | None, forwarded_proto: str | None, expected: str | None
+) -> None:
+    assert (
+        public_api_url_from_request(scheme=scheme, host=host, forwarded_proto=forwarded_proto)
+        == expected
+    )
+
+
+def test_resolve_workflow_api_url_prefers_configured() -> None:
+    """An explicitly-set public PUBLIC_API_URL always wins, even when a request URL is available."""
+    url, problem = resolve_workflow_api_url("https://api.vulnadvisor.io", "https://derived.example")
+    assert (url, problem) == ("https://api.vulnadvisor.io", None)
+
+
+def test_resolve_workflow_api_url_falls_back_to_request() -> None:
+    """A localhost-default config falls back to the (reachable) request-derived URL."""
+    url, problem = resolve_workflow_api_url("http://localhost:8000", "https://derived.example")
+    assert (url, problem) == ("https://derived.example", None)
+
+
+def test_resolve_workflow_api_url_reports_problem_when_neither_reachable() -> None:
+    """No usable URL anywhere (pure local dev) surfaces the actionable PUBLIC_API_URL error."""
+    url, problem = resolve_workflow_api_url("http://localhost:8000", "http://127.0.0.1:9000")
+    assert url is None
+    assert problem is not None
+    assert "PUBLIC_API_URL" in problem
+
+
+def test_resolve_workflow_api_url_problem_when_no_derived() -> None:
+    """A bad config with no derivable request URL still reports the problem."""
+    url, problem = resolve_workflow_api_url("http://localhost:8000", None)
+    assert url is None
+    assert problem is not None
 
 
 # --- setup status ---------------------------------------------------------------------------------

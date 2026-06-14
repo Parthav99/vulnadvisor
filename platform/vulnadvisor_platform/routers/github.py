@@ -54,9 +54,10 @@ from vulnadvisor_platform.setup_pr import (
     SETUP_PR_TITLE,
     WORKFLOW_COMMIT_MESSAGE,
     WORKFLOW_PATH,
-    api_url_problem,
+    public_api_url_from_request,
     render_pr_body,
     render_workflow,
+    resolve_workflow_api_url,
 )
 from vulnadvisor_platform.webhooks import verify_signature
 
@@ -85,6 +86,7 @@ async def install() -> RedirectResponse:
 async def open_setup_pr(
     org_slug: str,
     repo_name: str,
+    request: Request,
     user: CurrentUser,
     session: SessionDep,
     app: GitHubAppDep,
@@ -113,11 +115,20 @@ async def open_setup_pr(
             status.HTTP_409_CONFLICT,
             "this repository is not linked to GitHub (it only receives CLI/CI uploads)",
         )
-    # Refuse to ship a workflow baked with a URL CI can't reach (e.g. the dev localhost default).
-    # This is a platform-config error, not the caller's fault -> 500 with an operator-facing detail.
-    url_problem = api_url_problem(settings.public_api_url)
-    if url_problem is not None:
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, url_problem)
+    # The workflow needs a URL a customer's CI runner can reach. Prefer the explicitly-configured
+    # PUBLIC_API_URL; if it was left at the dev localhost default, fall back to the public URL this
+    # request arrived on (a deployed platform sits behind a public ingress), so onboarding works
+    # zero-config. Only when neither is reachable (pure local dev) do we 500 with an operator hint.
+    derived_api_url = public_api_url_from_request(
+        scheme=request.url.scheme,
+        host=request.headers.get("host"),
+        forwarded_proto=request.headers.get("x-forwarded-proto"),
+    )
+    api_url, url_problem = resolve_workflow_api_url(settings.public_api_url, derived_api_url)
+    if url_problem is not None or api_url is None:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, url_problem or "no reachable API URL configured"
+        )
     installation = (
         await session.execute(
             select(Installation)
@@ -132,7 +143,7 @@ async def open_setup_pr(
 
     owner_login = installation.account_login if installation is not None else user.login
     repo_full_name = f"{owner_login}/{repo.name}"
-    workflow = render_workflow(default_branch=repo.default_branch, api_url=settings.public_api_url)
+    workflow = render_workflow(default_branch=repo.default_branch, api_url=api_url)
     pr_body = render_pr_body(
         repo_full_name=repo_full_name, org_slug=org.slug, dashboard_url=settings.dashboard_url
     )

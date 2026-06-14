@@ -67,6 +67,42 @@ def api_url_problem(api_url: str) -> str | None:
     return None
 
 
+def public_api_url_from_request(
+    *, scheme: str, host: str | None, forwarded_proto: str | None
+) -> str | None:
+    """Reconstruct the platform's own public base URL from the request that reached it.
+
+    A deployed platform sits behind a TLS-terminating proxy (e.g. Fly), so prefer the proxy's
+    ``X-Forwarded-Proto`` for the scheme and fall back to the connection scheme; the ``Host`` header
+    carries the public hostname either way. Returns ``None`` when no host is known. The caller still
+    validates the result with :func:`api_url_problem`, so a loopback ``Host`` is rejected normally.
+    """
+    chosen_host = (host or "").strip()
+    if not chosen_host:
+        return None
+    proto = (forwarded_proto or "").split(",")[0].strip().lower() or scheme.strip().lower()
+    if proto not in ("http", "https"):
+        proto = "https"
+    return f"{proto}://{chosen_host}"
+
+
+def resolve_workflow_api_url(configured: str, derived: str | None) -> tuple[str | None, str | None]:
+    """Pick the API URL to bake into the setup workflow, with the request as a zero-config fallback.
+
+    An explicitly-configured public ``PUBLIC_API_URL`` always wins. When it was left at the
+    localhost/private default (``api_url_problem`` flags it), fall back to ``derived`` — the URL the
+    request itself arrived on — so a correctly-deployed platform that simply never set
+    ``PUBLIC_API_URL`` still opens a working setup PR instead of erroring. Returns ``(url,
+    problem)``: ``url`` is the chosen reachable URL, or ``None`` with an actionable ``problem`` when
+    neither source is usable (genuinely no public URL, i.e. pure local dev).
+    """
+    if api_url_problem(configured) is None:
+        return configured.strip(), None
+    if derived is not None and api_url_problem(derived) is None:
+        return derived, None
+    return None, api_url_problem(configured)
+
+
 def render_workflow(*, default_branch: str, api_url: str) -> str:
     """The GitHub Actions workflow the setup PR adds.
 

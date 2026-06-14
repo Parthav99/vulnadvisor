@@ -4,6 +4,45 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Setup-PR UX fix: PUBLIC_API_URL falls back to the request host  (2026-06-14)
+
+**Status:** complete. Platform gate green for the touched areas — `ruff check` + `ruff format
+--check` clean, `mypy --strict` clean (40 files), `pytest tests/test_setup_pr.py
+tests/test_github.py` 83/83. (One pre-existing, unrelated failure remains in
+`tests/test_llm.py::test_complete_without_byo_key_is_graceful_noop` — it fails identically on clean
+HEAD; not touched here.)
+
+**Symptom.** A user forked a repo, hit **Open setup PR**, and got a 500 surfaced verbatim in the
+dashboard: *"API URL points at localhost ('http://localhost:8000'); set PUBLIC_API_URL…"*. Root
+cause: the deployment never set `PUBLIC_API_URL`, so it stayed at the dev default and the Task-C
+guard hard-failed before opening any PR. Bad UX for a config the platform can usually infer itself.
+
+**What changed**
+- `setup_pr.py` (pure): added `public_api_url_from_request(scheme, host, forwarded_proto)` —
+  reconstructs the platform's own public base URL from the inbound request (prefers
+  `X-Forwarded-Proto` since we sit behind Fly's TLS proxy; `Host` carries the public hostname).
+  Added `resolve_workflow_api_url(configured, derived)` — an explicit public `PUBLIC_API_URL` always
+  wins; if it's the localhost/private default, fall back to the request-derived URL; only when
+  **neither** is reachable does it return the actionable `PUBLIC_API_URL` problem.
+- `routers/github.py`: `open_setup_pr` now takes `request: Request`, derives the fallback URL, and
+  bakes the resolved URL into the workflow. Still 500s (with the same hint) when nothing is reachable
+  — soundness preserved: we never ship a loopback workflow that CI can't reach.
+- `docs/deploy.md`: `PUBLIC_API_URL` reworded from "must be set" to "set it to pin the exact URL;
+  otherwise it's auto-derived from the request, refused only when no reachable URL exists".
+
+**Why.** A correctly-deployed platform (dashboard `/api` proxy → platform's public URL) reaches the
+backend over its real public ingress, so the request itself already carries the URL we need to bake
+in — no reason to demand a duplicate env var. The localhost guard stays for genuine local dev, where
+there *is* no public URL and a shipped workflow would silently never reach the platform.
+
+**Tests.** `test_setup_pr.py`: table tests for both new pure helpers (forwarded-proto precedence,
+proto fallback, comma chains, missing host; configured-wins / request-fallback / no-reachable-URL).
+`test_github.py`: replaced the old hard-500 test with two — localhost config now falls back to the
+request host and opens the PR (workflow bakes `https://test`, not localhost); a request arriving on
+a loopback `Host` still 500s with the `PUBLIC_API_URL` hint.
+
+---
+
 ## One-click setup — Task E: dashboard secret_set UX + one-click consent  (2026-06-14)
 
 **Status:** complete, dashboard gate green (npm test 73/73, eslint clean, `next build` compiled +

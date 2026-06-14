@@ -94,9 +94,11 @@ fly secrets set \
 
 `DASHBOARD_URL` is where the backend sends the browser after a successful GitHub login — point it at
 your Vercel URL. `PUBLIC_API_URL` is this backend's own public URL; it is baked into the scan
-workflow the setup PR adds, so a CI runner can upload reports. **It must be set** — it defaults to
-`http://localhost:8000`, and the setup-PR endpoint refuses to ship a workflow pointing at a
-loopback/private URL (it would never reach the platform).
+workflow the setup PR adds, so a CI runner can upload reports. **Set it** to pin the exact URL
+(scheme + host) — recommended. If you leave it unset, the setup-PR endpoint falls back to the public
+URL the request arrived on (the platform's own public ingress), so onboarding still works zero-config;
+it only refuses when no reachable URL exists at all (e.g. the platform is reachable only at
+`localhost`), since a loopback workflow would never reach the platform from CI.
 
 **Optional — zero-config `vulnadvisor suggest`.** The PR-suggestion step calls `/v1/llm/complete`,
 which runs the model server-side with the org's own BYO copilot key. To make suggestions work even

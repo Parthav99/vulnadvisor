@@ -1047,10 +1047,17 @@ async def test_setup_pr_cross_org_is_404(
     assert fake.setup_calls == []
 
 
-async def test_setup_pr_localhost_api_url_blocked(client: AsyncClient, seeded_key: str) -> None:
-    """A misconfigured (localhost) public_api_url is refused before any GitHub work happens."""
+async def test_setup_pr_localhost_config_falls_back_to_request_host(
+    client: AsyncClient, seeded_key: str
+) -> None:
+    """An unset PUBLIC_API_URL falls back to the public URL the request arrived on.
+
+    A correctly-deployed platform that simply never set PUBLIC_API_URL still opens a working PR:
+    the request reaches the platform over its public ingress (here the test client's https host),
+    so the workflow bakes that URL instead of erroring.
+    """
     fake = _overrides()
-    # Override the api URL back to the unreachable dev default to trip the guard.
+    # Leave PUBLIC_API_URL at the unreachable dev default; the request host should win instead.
     app.dependency_overrides[get_settings] = lambda: Settings(
         github_webhook_secret=_SECRET, public_api_url="http://localhost:8000"
     )
@@ -1058,6 +1065,27 @@ async def test_setup_pr_localhost_api_url_blocked(client: AsyncClient, seeded_ke
 
     resp = await client.post(
         "/v1/orgs/acme/repos/web/setup-pr", headers={"Authorization": f"Bearer {seeded_key}"}
+    )
+    assert resp.status_code == 200
+    # The PR was opened; the workflow baked the request's public URL (https://test), not localhost.
+    assert len(fake.setup_calls) == 1
+    workflow = fake.setup_calls[0]["file_content"]
+    assert "https://test" in workflow
+    assert "localhost" not in workflow
+
+
+async def test_setup_pr_no_reachable_api_url_blocked(client: AsyncClient, seeded_key: str) -> None:
+    """When neither config nor the request host is reachable (pure local dev), setup is refused."""
+    fake = _overrides()
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        github_webhook_secret=_SECRET, public_api_url="http://localhost:8000"
+    )
+    await _post(client, _install_payload(), "installation")
+
+    # Force the request itself to arrive on a loopback host so the fallback can't rescue it.
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/setup-pr",
+        headers={"Authorization": f"Bearer {seeded_key}", "host": "localhost"},
     )
     assert resp.status_code == 500
     assert "PUBLIC_API_URL" in resp.json()["detail"]
