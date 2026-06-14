@@ -15,9 +15,10 @@ import {
   tierClass,
   tierLabel,
 } from "@/lib/format";
+import { diffLineClass, parseDiffLines } from "@/lib/fix";
 import { EASE_AEGIS, FADE_DURATION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
-import type { AnyFinding, CodeFinding, Finding } from "@/lib/types";
+import type { AnyFinding, CodeFinding, Finding, ProposedFix } from "@/lib/types";
 
 // Call paths arrive as the engine's rendered string: "a -> b -> vuln (file:line)"
 // (model/callpath.py CallPath.render). Split into steps for the chain UI.
@@ -61,13 +62,19 @@ function CallPathChain({ path }: { path: string }) {
   );
 }
 
-function CopyFixButton({ command }: { command: string }) {
+function CopyFixButton({
+  command,
+  ariaLabel = "Copy fix command",
+}: {
+  command: string;
+  ariaLabel?: string;
+}) {
   const [copied, setCopied] = useState(false);
   return (
     <Button
       variant="outline"
       size="sm"
-      aria-label="Copy fix command"
+      aria-label={ariaLabel}
       onClick={async () => {
         try {
           await navigator.clipboard.writeText(command);
@@ -187,6 +194,45 @@ function EvidenceDrawer({
 }
 
 /**
+ * The validated, machine-checked patch for a code finding (Task 17.5): the unified diff rendered
+ * with Aegis add/remove styling, the model's rationale, a confidence chip, and a copy button. The
+ * wording keeps the soundness contract — it is a *suggested* patch committed on the PR, never
+ * auto-applied here, and it never affects the deterministic tier/score (pure presentation).
+ */
+function ProposedFixPanel({ fix }: { fix: ProposedFix }) {
+  const lines = parseDiffLines(fix.diff);
+  return (
+    <div className="rounded-lg bg-background/60 p-3 ring-1 ring-border" data-testid="proposed-fix">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          Proposed fix
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
+            {fix.confidence} confidence
+          </Badge>
+          <CopyFixButton command={fix.diff} ariaLabel="Copy patch diff" />
+        </div>
+      </div>
+      <pre className="mono overflow-x-auto rounded bg-background/80 p-2 text-xs leading-relaxed ring-1 ring-border">
+        {lines.map((line, i) => (
+          <div key={i} className={cn("px-1", diffLineClass(line.kind))}>
+            {line.text || " "}
+          </div>
+        ))}
+      </pre>
+      {fix.rationale ? (
+        <p className="mt-2 text-sm text-muted-foreground">{fix.rationale}</p>
+      ) : null}
+      <p className="mt-2 text-xs text-muted-foreground">
+        Suggested, machine-validated patch — review and commit it on the pull request. It is never
+        applied automatically and does not change this finding&rsquo;s priority.
+      </p>
+    </div>
+  );
+}
+
+/**
  * One finding with progressive disclosure: a scannable collapsed row (identity, badges,
  * one-line verdict) that expands into the signature three cards plus an evidence drawer.
  * Dispatches on the finding kind — dependency (SCA) or first-party code (SAST).
@@ -199,14 +245,24 @@ export function FindingCard({
   finding,
   defaultOpen = false,
   focus = false,
+  proposedFix,
 }: {
   finding: AnyFinding;
   defaultOpen?: boolean;
   /** When the copilot deep-links here (?finding=…), scroll this card into view on mount. */
   focus?: boolean;
+  /** The stored validated patch for a code finding (Task 17.5); ignored for dependency findings. */
+  proposedFix?: ProposedFix;
 }) {
   if (isCodeFinding(finding)) {
-    return <CodeFindingCard finding={finding} defaultOpen={defaultOpen} focus={focus} />;
+    return (
+      <CodeFindingCard
+        finding={finding}
+        defaultOpen={defaultOpen}
+        focus={focus}
+        proposedFix={proposedFix}
+      />
+    );
   }
   return <DependencyFindingCard finding={finding} defaultOpen={defaultOpen} focus={focus} />;
 }
@@ -372,10 +428,12 @@ function CodeFindingCard({
   finding,
   defaultOpen = false,
   focus = false,
+  proposedFix,
 }: {
   finding: CodeFinding;
   defaultOpen?: boolean;
   focus?: boolean;
+  proposedFix?: ProposedFix;
 }) {
   const { rule, location, flow, score, fix } = finding;
   const tier = flow.tier;
@@ -478,11 +536,19 @@ function CodeFindingCard({
             <Card3 letter="C" title="Action">
               <p>{fix.direction}</p>
               <p className="mt-2 text-xs text-muted-foreground">
-                Remediation direction — run <span className="mono">vulnadvisor fix</span> for a
-                validated patch.
+                {proposedFix ? (
+                  <>A validated patch is proposed below.</>
+                ) : (
+                  <>
+                    Remediation direction — run <span className="mono">vulnadvisor fix</span> for a
+                    validated patch.
+                  </>
+                )}
               </p>
             </Card3>
           </div>
+
+          {proposedFix ? <ProposedFixPanel fix={proposedFix} /> : null}
 
           {flow.reason || flow.path.length > 0 ? (
             <EvidenceDrawer

@@ -4,6 +4,60 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 17.5 — Proposed fix in the dashboard finding card (demo-ready)  (2026-06-14)
+
+**Status:** complete, full automated gate passing (CLI/src + platform + dashboard). **No new
+dependency, no new table, no migration** — pure surfacing of the validated fixes already stored on
+`Scan.suggestions` (17.2). The whole loop (vulnerability → source→sink evidence → machine-validated
+fix) now reads in **our own UI**: opening a SAST finding on the scan page shows its proposed patch
+inline. Dashboard-only payoff; ships independently of the v2.1.0 CLI tag (candidate `dashboard-v1.1`).
+
+**Soundness shape:** the panel is **pure presentation** — it renders stored data and changes no
+tier/score/ranking. The wording keeps the contract: a *suggested, machine-validated* patch, **never
+auto-applied** (the commit happens on the GitHub PR). A finding with no stored fix renders **no
+panel** (most won't have one). Read access rides the existing org-scoped findings endpoint, so the
+stored patch inherits the same tenant isolation (no separate leak path).
+
+**Join model (maintainer choice: sibling list, not per-finding attach):** the read API returns a
+scan's stored fixes as a **`suggestions` list on the findings response**; the dashboard joins each to
+its code finding by **`finding_id` = `<file>:<line>:<kind>`** — exactly the id the CLI assigns
+(`llm/fix.sast_finding_id`) and the platform stores. No new table; the stored rows are reused.
+
+**The pieces:**
+- **Platform read API (`schemas.py` + `routers/read.py`).** New `ProposedFix` response model
+  (`finding_id`/`diff`/`rationale`/`confidence`). `FindingsResponse` gains `suggestions:
+  list[ProposedFix] = []`. `list_findings` builds it via a **defensive** `_proposed_fixes(scan)` —
+  the rows were cleaned at ingest, but a row lacking a `finding_id` or a non-empty `diff` is skipped
+  (never an empty panel), confidence coerced to a safe default. No filtering: all stored fixes are
+  returned and the client join naturally limits what renders.
+- **Dashboard.** `types.ts`: mirror `ProposedFix` + optional `suggestions` on `FindingsResponse`.
+  New pure `lib/fix.ts`: `codeFindingId(finding)` (the join key) + `parseDiffLines(diff)` (a
+  defensive unified-diff parser — any string parses, never throws) + `diffLineClass` (**Aegis**
+  mapping: removed/vulnerable line = risk-red, added/fixed line = safe-teal, headers muted). The
+  expanded `CodeFindingCard` gains a **"Proposed fix" panel** — the diff with add/remove styling, a
+  confidence chip, a **copy-diff** button (generalized `CopyFixButton` with an `ariaLabel`), the
+  model's rationale, and the "never auto-applied" note; Card C's action line flips to "A validated
+  patch is proposed below." when a fix is present. The scan page joins `findings.suggestions` to each
+  code finding by `codeFindingId` and threads it as `proposedFix`. The demo dataset (dependency-only)
+  and the diff page are untouched — `proposedFix` defaults undefined → no panel.
+
+**Validation:** ruff + format clean (190 files) · `mypy --strict src` clean (85) / `platform` clean
+(29) · **pytest 823 passed, 1 skipped** (+3 in `platform/tests/test_read.py`: the findings response
+**carries the fix joined by the recomputed `<file>:<line>:<kind>` id** — diff/rationale/confidence
+surfaced; a scan with no uploaded fixes returns `suggestions == []`; an unauthorized caller 401/404s
+on the findings endpoint, so the stored patch never leaks). **Dashboard:** `npm run lint` clean ·
+`npm test` **68/68** (+4 `lib/fix.test.ts`: `codeFindingId` == the CLI id; diff classification of
+headers/add/del/context; defensive empty/non-diff parsing; Aegis add=safe / del=risk, del never
+safe) · `npm run build` compiled + typecheck clean.
+
+**Deferred (prior-task precedent):** live browser e2e of a seeded SAST finding with a stored fix
+rendering the panel + clipboard copy (the data path is proven hermetically: ingest stores the rows,
+the read joins+returns them, the diff parser/styling and join key are unit-tested, the component
+builds). **Next:** the optional `dashboard-v1.1` tag + that live spot-check, the deferred
+v2.0.0/v2.1.0 live checks, or M18 (launch/benchmark/pitch).
+
+---
+
 ## Audit — Release auditor pass before M18 (M12–M17)  (2026-06-14)
 
 **Status:** **audit complete, no code changes needed.** Acted as release auditor for M12–M17 (no

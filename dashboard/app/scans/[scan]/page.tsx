@@ -7,8 +7,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { FindingCard } from "@/components/finding-card";
 import { matchesFocus } from "@/lib/copilot-ui";
-import { bandClass, findingKey, formatDate, shortRef, shortSha } from "@/lib/format";
-import type { FindingsResponse, ScanDetail } from "@/lib/types";
+import { codeFindingId } from "@/lib/fix";
+import { bandClass, findingKey, formatDate, isCodeFinding, shortRef, shortSha } from "@/lib/format";
+import type { FindingsResponse, ProposedFix, ScanDetail } from "@/lib/types";
 
 const TIERS = ["imported-and-called", "imported", "dynamic-unknown", "not-imported"];
 const BANDS = ["critical", "high", "medium", "low", "info"];
@@ -37,6 +38,11 @@ export default async function ScanPage({
   const suffix = query.toString() ? `?${query.toString()}` : "";
   const findings = await apiGetOrNull<FindingsResponse>(`/v1/scans/${scanId}/findings${suffix}`);
   const items = findings?.findings ?? [];
+  // Validated patches (Task 17.5) are joined to their code finding by finding_id client-side; a
+  // finding without a stored fix simply gets none (no panel rendered).
+  const fixesById = new Map<string, ProposedFix>(
+    (findings?.suggestions ?? []).map((s) => [s.finding_id, s]),
+  );
 
   const filterLink = (next: { tier?: string; band?: string }) => {
     const q = new URLSearchParams();
@@ -133,12 +139,16 @@ export default async function ScanPage({
         <div className="space-y-4">
           {items.map((finding) => {
             const focused = focus !== undefined && matchesFocus(finding, focus);
+            const proposedFix = isCodeFinding(finding)
+              ? fixesById.get(codeFindingId(finding))
+              : undefined;
             return (
               <FindingCard
                 key={findingKey(finding)}
                 finding={finding}
                 defaultOpen={focused}
                 focus={focused}
+                proposedFix={proposedFix}
               />
             );
           })}

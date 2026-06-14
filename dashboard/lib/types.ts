@@ -115,10 +115,22 @@ export interface CodeFinding {
 // A finding of either kind — the dashboard renders both from one ranked list.
 export type AnyFinding = Finding | CodeFinding;
 
+// A validated, suggested patch for a code finding (Task 17.5), surfaced read-only from the scan's
+// stored suggestions. Joined to its CodeFinding by `finding_id` (`<file>:<line>:<kind>`). It is a
+// suggested patch — the commit happens on the GitHub PR, never here.
+export interface ProposedFix {
+  finding_id: string;
+  diff: string;
+  rationale: string;
+  confidence: string;
+}
+
 export interface FindingsResponse {
   scan_id: string;
   count: number;
   findings: AnyFinding[];
+  // Empty unless the scan was uploaded with `fix --suggest-json` validated patches.
+  suggestions?: ProposedFix[];
 }
 
 export interface TrendPoint {

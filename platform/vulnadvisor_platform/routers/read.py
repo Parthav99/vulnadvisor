@@ -24,6 +24,7 @@ from vulnadvisor_platform.schemas import (
     FindingsResponse,
     OrgDetailOut,
     OrgOut,
+    ProposedFix,
     RepoOut,
     ScanDetailOut,
     ScanListItem,
@@ -85,6 +86,37 @@ async def _finding_payloads(
         )
     ).all()
     return {(package, advisory_id): payload for package, advisory_id, payload in rows}
+
+
+def _proposed_fixes(scan: Scan) -> list[ProposedFix]:
+    """Build the read-only validated-fix list from a scan's stored suggestions (Task 17.5).
+
+    Defensive (CLAUDE.md): the stored rows were already cleaned at ingest (``parse_suggestions``),
+    but a row missing the fields a fix card needs — a ``finding_id`` to join on and a non-empty
+    ``diff`` to render — is skipped rather than surfaced as an empty panel. Confidence falls back to
+    "medium" for any unexpected value, mirroring the ingest coercion.
+    """
+    fixes: list[ProposedFix] = []
+    for row in scan.suggestions or []:
+        if not isinstance(row, dict):
+            continue
+        finding_id = row.get("finding_id")
+        diff = row.get("diff")
+        if not isinstance(finding_id, str) or not finding_id:
+            continue
+        if not isinstance(diff, str) or not diff.strip():
+            continue
+        rationale = row.get("rationale")
+        confidence = row.get("confidence")
+        fixes.append(
+            ProposedFix(
+                finding_id=finding_id,
+                diff=diff,
+                rationale=rationale if isinstance(rationale, str) else "",
+                confidence=confidence if confidence in ("high", "medium", "low") else "medium",
+            )
+        )
+    return fixes
 
 
 # --- orgs ---------------------------------------------------------------------------------------
@@ -277,7 +309,12 @@ async def list_findings(
     stmt = stmt.order_by(Finding.priority.desc())
     findings = (await session.execute(stmt)).scalars().all()
     payloads = [finding.payload for finding in findings]
-    return FindingsResponse(scan_id=scan.id, count=len(payloads), findings=payloads)
+    return FindingsResponse(
+        scan_id=scan.id,
+        count=len(payloads),
+        findings=payloads,
+        suggestions=_proposed_fixes(scan),
+    )
 
 
 @router.get("/v1/scans/{from_id}/diff/{to_id}", response_model=DiffResponse)

@@ -152,6 +152,126 @@ async def test_diff_two_scans(client: AsyncClient, seeded_key: str) -> None:
     assert diff["unchanged"] == 1
 
 
+# --- proposed fixes on the findings response (Task 17.5) ----------------------------------------
+
+
+def _code_report_with_fix() -> tuple[dict[str, Any], dict[str, Any]]:
+    """A 1.2 report with one code finding + a matching validated-fix suggestions document."""
+    code_finding = {
+        "finding_type": "code",
+        "rule": {"cwe": "CWE-78", "kind": "command-injection", "title": "OS command injection"},
+        "location": {"file": "app/run.py", "line": 12, "column": 4},
+        "flow": {
+            "tier": "confirmed-flow",
+            "reason": "tainted query parameter reaches os.system",
+            "source": {"kind": "http-parameter", "file": "app/run.py", "line": 8},
+            "sink": {"kind": "command-injection", "file": "app/run.py", "line": 12},
+            "path": ["run -> os.system (app/run.py:12)"],
+            "sanitizers": [],
+        },
+        "score": {
+            "value": 95.0,
+            "band": "critical",
+            "verdict": "Fix now",
+            "rationale": "CWE-78 CONFIRMED-FLOW",
+            "cvss_known": False,
+        },
+        "fix": {"direction": "Avoid shell=True.", "has_fix": False},
+    }
+    report = {
+        "schema_version": "1.2",
+        "tool": {"name": "vulnadvisor", "version": "2.0.0"},
+        "degraded_sources": [],
+        "summary": {"total": 1, "by_band": {"critical": 1}},
+        "findings": [code_finding],
+    }
+    suggestions = {
+        "schema_version": "1.0",
+        "tool_version": "2.0.0",
+        "fixes": [
+            {
+                # The id is <file>:<line>:<kind> — exactly what the dashboard recomputes to join.
+                "finding_id": "app/run.py:12:command-injection",
+                "file": "app/run.py",
+                "line": 12,
+                "cwe": "CWE-78",
+                "kind": "command-injection",
+                "title": "OS command injection",
+                "tier": "CONFIRMED-FLOW",
+                "flow": "run -> os.system (app/run.py:12)",
+                "rationale": "Pass an argument list instead of a shell string.",
+                "confidence": "high",
+                "diff": (
+                    "--- a/app/run.py\n+++ b/app/run.py\n@@ -12 +12 @@\n"
+                    "-os.system(cmd)\n+subprocess.run(cmd)\n"
+                ),
+            }
+        ],
+    }
+    return report, suggestions
+
+
+async def test_findings_response_carries_proposed_fix(client: AsyncClient, seeded_key: str) -> None:
+    report, suggestions = _code_report_with_fix()
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans",
+        headers=_auth(seeded_key),
+        json={
+            "commit_sha": "c1",
+            "ref": "refs/heads/main",
+            "report": report,
+            "suggestions": suggestions,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    scan_id = resp.json()["scan_id"]
+
+    findings = (await client.get(f"/v1/scans/{scan_id}/findings", headers=_auth(seeded_key))).json()
+    assert findings["count"] == 1
+    fixes = findings["suggestions"]
+    assert len(fixes) == 1
+    fix = fixes[0]
+    # The fix joins to its code finding by the recomputed <file>:<line>:<kind> id.
+    code = findings["findings"][0]
+    join_id = f"{code['location']['file']}:{code['location']['line']}:{code['rule']['kind']}"
+    assert fix["finding_id"] == join_id
+    assert "subprocess.run(cmd)" in fix["diff"]
+    assert fix["rationale"].startswith("Pass an argument list")
+    assert fix["confidence"] == "high"
+
+
+async def test_findings_response_no_fix_when_none_uploaded(
+    client: AsyncClient, seeded_key: str
+) -> None:
+    scan_id = await _ingest(client, seeded_key, [("jinja2", "GHSA-1")])
+    findings = (await client.get(f"/v1/scans/{scan_id}/findings", headers=_auth(seeded_key))).json()
+    # A scan uploaded without validated fixes exposes an empty list — no panel client-side.
+    assert findings["suggestions"] == []
+
+
+async def test_proposed_fix_not_leaked_to_unauthorized_caller(
+    client: AsyncClient, seeded_key: str
+) -> None:
+    report, suggestions = _code_report_with_fix()
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans",
+        headers=_auth(seeded_key),
+        json={
+            "commit_sha": "c2",
+            "ref": "refs/heads/main",
+            "report": report,
+            "suggestions": suggestions,
+        },
+    )
+    assert resp.status_code == 201
+    scan_id = resp.json()["scan_id"]
+
+    # The fix rides on the org-scoped findings endpoint (require_scan enforces membership), so a
+    # caller without access never sees it — no separate leak path for the stored patch.
+    resp2 = await client.get(f"/v1/scans/{scan_id}/findings", headers={_HDR: "Bearer nope"})
+    assert resp2.status_code in (401, 404)
+
+
 # --- trend (per-day, from each day's latest scan) -----------------------------------------------
 
 

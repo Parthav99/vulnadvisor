@@ -163,12 +163,33 @@ class ScanDetailOut(BaseModel):
     created_at: datetime
 
 
+class ProposedFix(BaseModel):
+    """A validated, suggested patch for a first-party (SAST) code finding (Task 17.5).
+
+    Surfaced read-only from the scan's stored ``suggestions`` (produced by ``fix --suggest-json``
+    and uploaded with the report, Task 17.2). The dashboard joins it to its code finding by
+    ``finding_id`` (``<file>:<line>:<kind>``, the same id the CLI prints). It is a *suggested*,
+    machine-validated patch — the commit happens on the GitHub PR, never via this surface, so the
+    deterministic tier/score/ranking is untouched (pure presentation).
+    """
+
+    finding_id: str
+    diff: str
+    rationale: str
+    confidence: str
+
+
 class FindingsResponse(BaseModel):
-    """Findings for a scan; each entry is the engine's JSON-report finding object verbatim."""
+    """Findings for a scan; each entry is the engine's JSON-report finding object verbatim.
+
+    ``suggestions`` carries any validated fixes stored on the scan, joined client-side to their
+    code finding by ``finding_id``. A scan with no uploaded fixes returns an empty list.
+    """
 
     scan_id: uuid.UUID
     count: int
     findings: list[dict[str, Any]]
+    suggestions: list[ProposedFix] = []
 
 
 class TrendPoint(BaseModel):
