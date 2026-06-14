@@ -4,6 +4,22 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## v1.0.5: ship suggest + graceful upload skip  (2026-06-15)
+
+**Status:** complete. 891 passed, 1 skipped. Published to PyPI. Pushed to main (`f99510a`).
+
+**What happened.** After the setup PR was opened for `parthav-san/pygoat`, the generated CI workflow failed twice:
+1. `scan --upload` exited 1 when `VULNADVISOR_API_KEY` secret wasn't set yet → fixed: missing-key upload now warns + exits 0.
+2. `vulnadvisor suggest` was "no such command" → `suggest` existed in source but hadn't been published; fixed by bumping to 1.0.5.
+
+**CI result after fix.** Workflow passed end-to-end: scan ran, `suggest` ran, posted 0 in-line suggestions (22 findings all "no safe fix" — pygoat is intentionally vulnerable). `VULNADVISOR_API_KEY` + `API_URL` confirmed working on render.com deployment.
+
+**What changed**
+- `pyproject.toml`: 1.0.4 → 1.0.5
+- `src/vulnadvisor/cli/main.py`: `_do_upload` returns early with yellow warning when no API key/URL instead of `Exit(code=1)`
+
+---
+
 ## Setup-PR fix: resolve the repo's real default branch from GitHub  (2026-06-14)
 
 **Status:** complete. `ruff` + `ruff format --check` clean, `mypy --strict` clean (40 files),
