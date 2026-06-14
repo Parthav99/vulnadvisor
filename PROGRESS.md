@@ -4,6 +4,70 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 17.4 Part 3 — Hosted onboarding: setup-PR via the user's OAuth token (no App)  (2026-06-14)
+
+**Status:** **Part 3 complete**, full automated gate passing (CLI + platform), migration applied to
+**live Postgres** with `alembic check` = no drift. **No new dependency** — token encryption reuses
+the 15.1 Fernet helper (`cryptography` already present). With this, all of Task 17.4 is done: the
+PR-suggestion payoff now reaches a user with **no GitHub App at all** — either CI posts via
+`GITHUB_TOKEN` (Parts 1–2) **or** "Sign in with GitHub → set up repo" opens the setup-PR as the
+logged-in user (Part 3).
+
+**Maintainer UX decision (at task start): incremental authorization.** Login stays least-privilege
+(`read:user user:email`); the elevated `repo`/`workflow` scopes are requested **only** when the user
+clicks "set up repo" and we don't already hold a write-capable token. This protects the trust
+posture — most users never grant write — at the cost of one re-auth round-trip + a "needs
+authorization" 409 the dashboard surfaces (chosen over requesting broad write scope at every login).
+
+**The four pieces:**
+- **Scope-aware OAuth (`github_oauth.py`).** `authorize_url(state, *, write_access=False)` selects
+  `read:user user:email` vs. `…repo workflow`. `exchange_code` now returns an **`OAuthToken`**
+  (`access_token` + the **granted** `scopes`, parsed defensively from GitHub's comma-separated
+  `scope` field → `()` when absent). `has_setup_scopes(scopes)` answers "write-capable?" by requiring
+  both `repo` and `workflow` (the latter is mandatory to commit a `.github/workflows/*.yml` file).
+- **Encrypted-at-rest persistence (`auth.py` + `models.py` + migration).** The OAuth callback now
+  persists the freshest token on the `User` via `_store_oauth_token`, **reusing 15.1's
+  `encrypt_api_key`/`decrypt_api_key`** (Fernet keyed by `SECRET_KEY` — no second secret). Two new
+  additive nullable `User` columns: `github_token_ciphertext` (String(1024)) + `github_token_scopes`
+  (space-joined granted scopes, **in clear** so the setup path checks write-capability without
+  decrypting). `/v1/auth/github/login?setup=1` triggers the write-scope authorize; the callback
+  persists whatever scopes GitHub grants, so a setup login **upgrades the stored token in place**.
+  Alembic `e2d5a8f3c6b1` (revises `c3b9e7d1f4a8`) — applied live, `alembic check` no drift. The token
+  is never returned by any endpoint.
+- **OAuth branch in `github_app.py`.** Extracted the REST PR choreography into a private
+  `_open_setup_pr(token=…)`; `open_setup_pr(installation_id=…)` (mints the installation token, App
+  path) and the new **`open_setup_pr_with_token(token=…)`** (user OAuth path) both delegate to it —
+  identical idempotent branch/commit/PR logic, only the credential differs.
+- **Router wiring (`routers/github.py`).** The setup-PR endpoint now **prefers an App installation**
+  (org-wide, bot identity) and **falls back to the user's write-scoped OAuth token** when none is
+  installed: `repo_full_name` owner = `installation.account_login` (App) or `user.login` (OAuth).
+  `_user_setup_token(user, settings)` decrypts the token or raises a **409** (missing/insufficient
+  scope → "install the App, or sign in and grant repo access at `…/login?setup=1`"; an unreadable
+  ciphertext after a `SECRET_KEY` rotation → re-auth 409). The existing
+  `test_setup_pr_requires_installation` still passes (the 409 message still says "install").
+
+**Validation:** ruff + format clean (src 85 / platform 55) · `mypy --strict src` clean (85) /
+`vulnadvisor_platform` clean (38) · **src pytest 819 passed, 1 skipped** · **platform pytest 154
+passed** (+5). New platform tests: `test_auth.py` +3 — `?setup=1` requests `repo+workflow` scope
+(plain login doesn't); the callback **stores the token encrypted** (ciphertext ≠ plaintext, decrypts
+back, read-only scopes recorded); a setup callback **upgrades the stored scopes** to include
+repo/workflow. `test_github.py` +2 — **no App + a write-scoped OAuth token opens the PR via
+`open_setup_pr_with_token`** (owner = `octocat`, the token threaded, not the App path) and the status
+chip flips to `pr-open`; a **read-only token → 409** ("grant repository access") with no GitHub call.
+**Live Postgres:** `alembic upgrade head` (`c3b9e7d1f4a8 → e2d5a8f3c6b1`) + `alembic check` → no drift.
+
+**Deferred (by prior-task precedent / scope):** (1) **Live spot-check** of the OAuth setup-PR against
+a real scratch repo (a logged-in user with `setup=1` opening a real PR) — the choreography, scope
+upgrade, encryption, and credential-selection are all proven hermetically with a faked client.
+(2) **Dashboard wiring** of the `needs-authorization` 409 → a "Connect GitHub to set up" button
+linking `…/login?setup=1` (the API contract is in place; the UI is a follow-up). (3) **Cosmetic:**
+`render_pr_body`'s footer still reads "Opened by the VulnAdvisor GitHub App" even on the OAuth path —
+left unparameterized to avoid snapshot churn; worth a small `opened_by` tweak later. (4) The **live
+e2e** (Parts 1–2) + the **v2.1.0 tag** still hold for the next turn. **Next:** the deferred live
+checks + v2.1.0 tag, or Task 17.5 (proposed fix in the dashboard finding card).
+
+---
+
 ## Task 17.4 — Zero-setup PR suggestions (a GitHub login is enough; no App)  (2026-06-14)
 
 **Status:** **Parts 1 + 2 complete**, full automated gate passing (CLI + platform). **No new

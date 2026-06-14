@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from vulnadvisor_platform.app import app
 from vulnadvisor_platform.config import Settings, get_settings
+from vulnadvisor_platform.copilot import encrypt_api_key
 from vulnadvisor_platform.github_app import GitHubAppError, SetupPr, get_github_app
 from vulnadvisor_platform.models import (
     ApiKey,
@@ -80,6 +81,16 @@ class _FakeApp:
         return SetupPr(
             number=7,
             url="https://github.com/acme/web/pull/7",
+            created=len(self.setup_calls) == 1,
+        )
+
+    async def open_setup_pr_with_token(self, **kwargs: Any) -> SetupPr:
+        if self.fail_setup:
+            raise GitHubAppError("github is down")
+        self.setup_calls.append(kwargs)
+        return SetupPr(
+            number=8,
+            url=f"https://github.com/{kwargs['repo_full_name']}/pull/8",
             created=len(self.setup_calls) == 1,
         )
 
@@ -724,6 +735,65 @@ async def test_setup_pr_requires_installation(
     )
     assert resp.status_code == 409
     assert "install" in resp.json()["detail"].lower()
+
+
+async def _seed_oauth_token(
+    sessionmaker: async_sessionmaker[AsyncSession], *, token: str, scopes: str
+) -> None:
+    """Give the seeded owner (octocat) a stored GitHub OAuth token + scopes, and a GitHub repo."""
+    async with sessionmaker() as session:
+        org = (await session.execute(select(Org).where(Org.slug == "acme"))).scalar_one()
+        session.add(Repository(org_id=org.id, name="web", github_repo_id=777))
+        owner = (await session.execute(select(User).where(User.github_user_id == 1))).scalar_one()
+        owner.github_token_ciphertext = encrypt_api_key(Settings().secret_key, token)
+        owner.github_token_scopes = scopes
+        await session.commit()
+
+
+async def test_setup_pr_via_oauth_token_when_no_app(
+    client: AsyncClient,
+    seeded_key: str,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """No App installed, but the user signed in with repo/workflow scope -> PR opens via OAuth."""
+    fake = _overrides()
+    await _seed_oauth_token(
+        sessionmaker, token="gho_writetoken", scopes="read:user user:email repo workflow"
+    )
+
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/setup-pr", headers={"Authorization": f"Bearer {seeded_key}"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {
+        "pr_number": 8,
+        "pr_url": "https://github.com/octocat/web/pull/8",
+        "created": True,
+    }
+    # Opened as the user via their OAuth token — not the App installation-token path.
+    call = fake.setup_calls[0]
+    assert "installation_id" not in call
+    assert call["token"] == "gho_writetoken"
+    assert call["repo_full_name"] == "octocat/web"
+    assert (await _repo_listing(client, seeded_key))["setup_status"] == "pr-open"
+
+
+async def test_setup_pr_oauth_insufficient_scope_409(
+    client: AsyncClient,
+    seeded_key: str,
+    sessionmaker: async_sessionmaker[AsyncSession],
+) -> None:
+    """A read-only OAuth token (no repo/workflow) -> 409 directing the user to (re-)authorize."""
+    fake = _overrides()
+    await _seed_oauth_token(sessionmaker, token="gho_readonly", scopes="read:user user:email")
+
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/setup-pr", headers={"Authorization": f"Bearer {seeded_key}"}
+    )
+    assert resp.status_code == 409
+    assert "grant repository access" in resp.json()["detail"]
+    assert fake.setup_calls == []
 
 
 async def test_setup_pr_requires_admin_role(

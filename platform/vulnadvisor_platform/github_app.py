@@ -156,7 +156,7 @@ class GitHubApp:
         pr_title: str,
         pr_body: str,
     ) -> SetupPr:
-        """Open the setup PR adding ``file_path``, or update the existing one — never a duplicate.
+        """Open the setup PR as the GitHub App (installation token) — the org-wide bot path.
 
         Idempotency comes from the fixed branch name (:data:`SETUP_BRANCH`): the branch is created
         once from the base branch's head, the file commit is skipped when the branch already holds
@@ -164,6 +164,60 @@ class GitHubApp:
         opening a second one.
         """
         token = await self._installation_token(installation_id)
+        return await self._open_setup_pr(
+            token=token,
+            repo_full_name=repo_full_name,
+            base_branch=base_branch,
+            file_path=file_path,
+            file_content=file_content,
+            commit_message=commit_message,
+            pr_title=pr_title,
+            pr_body=pr_body,
+        )
+
+    async def open_setup_pr_with_token(
+        self,
+        *,
+        token: str,
+        repo_full_name: str,
+        base_branch: str,
+        file_path: str,
+        file_content: str,
+        commit_message: str,
+        pr_title: str,
+        pr_body: str,
+    ) -> SetupPr:
+        """Open the setup PR as the logged-in user via their OAuth ``token`` — no App needed.
+
+        The zero-App onboarding path (Task 17.4 Part 3): "Sign in with GitHub → set up repo" opens
+        the PR under the user's own identity. Same idempotent branch/commit/PR logic as the App
+        path; only the credential differs (a ``repo``/``workflow``-scoped OAuth token instead of an
+        installation token).
+        """
+        return await self._open_setup_pr(
+            token=token,
+            repo_full_name=repo_full_name,
+            base_branch=base_branch,
+            file_path=file_path,
+            file_content=file_content,
+            commit_message=commit_message,
+            pr_title=pr_title,
+            pr_body=pr_body,
+        )
+
+    async def _open_setup_pr(
+        self,
+        *,
+        token: str,
+        repo_full_name: str,
+        base_branch: str,
+        file_path: str,
+        file_content: str,
+        commit_message: str,
+        pr_title: str,
+        pr_body: str,
+    ) -> SetupPr:
+        """Open or idempotently update the setup PR using an already-minted ``token``."""
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
         owner = repo_full_name.split("/", 1)[0]
         async with httpx.AsyncClient(timeout=10.0) as client:

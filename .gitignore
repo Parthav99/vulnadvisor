@@ -28,6 +28,9 @@ htmlcov/
 .env.*
 !.env.example
 
+# Local-only friendly guide (not for git)
+GUIDE.md
+
 # Editors / OS
 .idea/
 .vscode/

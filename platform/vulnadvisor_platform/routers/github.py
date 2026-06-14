@@ -20,9 +20,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vulnadvisor_platform.access import require_admin, require_org, require_repo
-from vulnadvisor_platform.config import SettingsDep, get_settings
+from vulnadvisor_platform.config import Settings, SettingsDep, get_settings
+from vulnadvisor_platform.copilot import CopilotKeyError, decrypt_api_key
 from vulnadvisor_platform.db import SessionDep
 from vulnadvisor_platform.github_app import GitHubApp, GitHubAppDep, GitHubAppError
+from vulnadvisor_platform.github_oauth import has_setup_scopes
 from vulnadvisor_platform.models import (
     Finding,
     Installation,
@@ -86,9 +88,13 @@ async def open_setup_pr(
 ) -> SetupPrResponse:
     """Open the setup PR adding the scan workflow to a synced repo (idempotent: re-runs update).
 
-    Requires owner/admin on the org, a GitHub App installation, and a GitHub-synced repo. The PR
-    adds ``.github/workflows/vulnadvisor.yml`` on a fixed branch; clicking again updates the same
-    branch and PR in place — it never opens a duplicate.
+    Requires owner/admin on the org and a GitHub-synced repo. Two credential paths share one
+    renderer (Task 17.4 Part 3): if the org has a **GitHub App** installation we open the PR as the
+    App (org-wide, bot identity); otherwise we fall back to the **logged-in user's OAuth token** if
+    it carries ``repo``/``workflow`` scope — so "Sign in with GitHub → set up repo" needs no App. If
+    neither credential is available, a 409 tells the user to install the App or grant repo access.
+    The PR adds ``.github/workflows/vulnadvisor.yml`` on a fixed branch; clicking again updates the
+    same branch and PR in place — it never opens a duplicate.
     """
     org, role = await require_org(session, user, org_slug)
     require_admin(role)
@@ -106,27 +112,33 @@ async def open_setup_pr(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if installation is None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, "install the VulnAdvisor GitHub App for this org first"
-        )
 
-    repo_full_name = f"{installation.account_login}/{repo.name}"
+    # Resolve the no-App OAuth token up front (it can 409) so the try below only wraps GitHub calls.
+    oauth_token = _user_setup_token(user, settings) if installation is None else None
+
+    owner_login = installation.account_login if installation is not None else user.login
+    repo_full_name = f"{owner_login}/{repo.name}"
     workflow = render_workflow(default_branch=repo.default_branch, api_url=settings.public_api_url)
     pr_body = render_pr_body(
         repo_full_name=repo_full_name, org_slug=org.slug, dashboard_url=settings.dashboard_url
     )
+    common = {
+        "repo_full_name": repo_full_name,
+        "base_branch": repo.default_branch,
+        "file_path": WORKFLOW_PATH,
+        "file_content": workflow,
+        "commit_message": WORKFLOW_COMMIT_MESSAGE,
+        "pr_title": SETUP_PR_TITLE,
+        "pr_body": pr_body,
+    }
     try:
-        result = await app.open_setup_pr(
-            installation_id=installation.github_installation_id,
-            repo_full_name=repo_full_name,
-            base_branch=repo.default_branch,
-            file_path=WORKFLOW_PATH,
-            file_content=workflow,
-            commit_message=WORKFLOW_COMMIT_MESSAGE,
-            pr_title=SETUP_PR_TITLE,
-            pr_body=pr_body,
-        )
+        if installation is not None:
+            result = await app.open_setup_pr(
+                installation_id=installation.github_installation_id, **common
+            )
+        else:
+            assert oauth_token is not None  # guaranteed by _user_setup_token (raises otherwise)
+            result = await app.open_setup_pr_with_token(token=oauth_token, **common)
     except GitHubAppError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"GitHub App error: {exc}") from exc
 
@@ -135,6 +147,30 @@ async def open_setup_pr(
     repo.setup_pr_state = PR_STATE_OPEN
     await session.commit()
     return SetupPrResponse(pr_number=result.number, pr_url=result.url, created=result.created)
+
+
+def _user_setup_token(user: User, settings: Settings) -> str:
+    """The user's decrypted, write-capable OAuth token, or a 409 asking them to (re-)authorize.
+
+    The no-App fallback (Task 17.4 Part 3): we can only open the PR as the user if they signed in
+    with the elevated ``repo``/``workflow`` scopes. A missing/insufficient/unreadable token is a
+    409 directing them to install the App or re-authorize at ``/v1/auth/github/login?setup=1``.
+    """
+    scopes = (user.github_token_scopes or "").split()
+    if user.github_token_ciphertext is None or not has_setup_scopes(scopes):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "no GitHub App is installed for this org; either install it, or sign in with GitHub "
+            "and grant repository access (/v1/auth/github/login?setup=1) to open the setup PR",
+        )
+    try:
+        return decrypt_api_key(settings.secret_key, user.github_token_ciphertext)
+    except CopilotKeyError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "your stored GitHub authorization could not be read; sign in with GitHub again "
+            "(/v1/auth/github/login?setup=1) to re-grant repository access",
+        ) from exc
 
 
 @router.post("/v1/github/webhook")

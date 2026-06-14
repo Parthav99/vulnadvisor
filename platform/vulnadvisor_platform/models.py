@@ -81,6 +81,12 @@ class User(Base):
     login: Mapped[str] = mapped_column(String(100))
     email: Mapped[str | None] = mapped_column(String(320))
     avatar_url: Mapped[str | None] = mapped_column(String(500))
+    # GitHub OAuth access token, encrypted at rest with the same Fernet helper as the copilot BYO
+    # key (key derived from SECRET_KEY) — Task 17.4 Part 3. ``github_token_scopes`` is the
+    # space-joined granted scopes, kept in clear so the setup-PR path can tell whether the token is
+    # write-capable (repo/workflow) without decrypting. Never returned by any endpoint.
+    github_token_ciphertext: Mapped[str | None] = mapped_column(String(1024))
+    github_token_scopes: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[CreatedAt]
 
 

@@ -13,8 +13,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from vulnadvisor_platform.config import get_settings
+from vulnadvisor_platform.copilot import encrypt_api_key
 from vulnadvisor_platform.db import SessionDep
-from vulnadvisor_platform.github_oauth import OAuthDep
+from vulnadvisor_platform.github_oauth import OAuthDep, OAuthToken
 from vulnadvisor_platform.models import Membership, Org, Role, User
 from vulnadvisor_platform.sessions import (
     OAUTH_STATE_COOKIE,
@@ -26,11 +27,17 @@ router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 
 @router.get("/github/login")
-async def github_login(oauth: OAuthDep) -> RedirectResponse:
-    """Begin the OAuth flow: redirect to GitHub with a fresh CSRF state."""
+async def github_login(oauth: OAuthDep, setup: bool = False) -> RedirectResponse:
+    """Begin the OAuth flow: redirect to GitHub with a fresh CSRF state.
+
+    ``setup=1`` requests the elevated ``repo``/``workflow`` scopes the zero-App setup PR needs
+    (Task 17.4 Part 3); the default login stays read-only. The callback persists whatever scopes
+    GitHub grants, so a ``setup`` login upgrades the stored token in place.
+    """
     state = secrets.token_urlsafe(24)
     response = RedirectResponse(
-        oauth.authorize_url(state), status_code=status.HTTP_307_TEMPORARY_REDIRECT
+        oauth.authorize_url(state, write_access=setup),
+        status_code=status.HTTP_307_TEMPORARY_REDIRECT,
     )
     response.set_cookie(OAUTH_STATE_COOKIE, state, max_age=600, httponly=True, samesite="lax")
     return response
@@ -50,7 +57,7 @@ async def github_callback(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid OAuth state")
 
     token = await oauth.exchange_code(code)
-    profile = await oauth.fetch_user(token)
+    profile = await oauth.fetch_user(token.access_token)
 
     user = (
         await session.execute(select(User).where(User.github_user_id == profile.id))
@@ -67,6 +74,7 @@ async def github_callback(
         user.login = profile.login
         user.email = profile.email
         user.avatar_url = profile.avatar_url
+    _store_oauth_token(user, token)
     await session.commit()
     await session.refresh(user)
     await _backfill_personal_memberships(session, user)
@@ -77,6 +85,17 @@ async def github_callback(
     set_session_cookie(response, user.id)
     response.delete_cookie(OAUTH_STATE_COOKIE)
     return response
+
+
+def _store_oauth_token(user: User, token: OAuthToken) -> None:
+    """Persist the freshest OAuth token on the user, encrypted at rest (Task 17.4 Part 3).
+
+    The plaintext token is encrypted with the same Fernet helper that guards the copilot BYO key
+    (keyed by ``SECRET_KEY``); only the granted scopes are kept in clear, so the setup-PR path can
+    tell whether the token is write-capable without decrypting it.
+    """
+    user.github_token_ciphertext = encrypt_api_key(get_settings().secret_key, token.access_token)
+    user.github_token_scopes = " ".join(token.scopes)
 
 
 async def _backfill_personal_memberships(session: AsyncSession, user: User) -> None:
