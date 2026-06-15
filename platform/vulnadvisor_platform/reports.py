@@ -282,6 +282,11 @@ def _clean_suggestion(entry: Any) -> dict[str, Any] | None:
         return None
     confidence = entry.get("confidence")
     row["confidence"] = confidence if confidence in ("high", "medium", "low") else "medium"
+    # How the patch was produced (Task 19.3): a deterministic quick-fix vs the model. Advisory only
+    # — both kinds cleared the same validator before being emitted — but the dashboard badges them
+    # distinctly (Task 19.4). Any unexpected/absent value defaults to "model" (back-compat).
+    provenance = entry.get("provenance")
+    row["provenance"] = provenance if provenance in ("deterministic", "model") else "model"
     return row
 
 

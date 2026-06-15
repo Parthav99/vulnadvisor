@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { FindingCard } from "@/components/finding-card";
 import { matchesFocus } from "@/lib/copilot-ui";
-import { codeFindingId } from "@/lib/fix";
+import { codeFindingId, dependencyFindingId } from "@/lib/fix";
 import { bandClass, findingKey, formatDate, isCodeFinding, shortRef, shortSha } from "@/lib/format";
 import type { FindingsResponse, ProposedFix, ScanDetail } from "@/lib/types";
 
@@ -141,7 +141,7 @@ export default async function ScanPage({
             const focused = focus !== undefined && matchesFocus(finding, focus);
             const proposedFix = isCodeFinding(finding)
               ? fixesById.get(codeFindingId(finding))
-              : undefined;
+              : fixesById.get(dependencyFindingId(finding));
             return (
               <FindingCard
                 key={findingKey(finding)}

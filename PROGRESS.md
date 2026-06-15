@@ -4,6 +4,69 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 19.4 — Fix-centric finding card (the centrepiece redesign)  (2026-06-15)
+
+**Status:** complete (**dashboard-v1.2**). **No new dependency.** Gate green: `ruff check` clean
+(src + tests + platform), `ruff format --check` clean (189 files), `mypy --strict src
+platform/vulnadvisor_platform` clean (118 files), **src pytest 917 passed / 1 skipped**, **platform
+pytest 217 passed** (+1 new). Dashboard: **lib tests 79 passed** (`node --test`), `eslint` clean
+(exit 0), **`npm run build` succeeded**.
+
+**Maintainer decisions (asked up front):** (1) **defer decline tracking** — the platform stores only
+*validated* fixes, so the card cannot yet honestly distinguish "genuinely declined" from "never
+attempted"; this task is **positive-only** (hero panel + "Fix ready" badge when a fix exists; a
+neutral *"No validated fix in this scan — run `vulnadvisor fix`"* when none, never asserting the loop
+declined). Real decline tracking (suggestions doc + ingest + read) is a follow-up so "No safe fix
+found" is only ever shown when truly declined. (2) **Plumb `provenance`** (19.3's
+deterministic-vs-model field) through the platform so the badge has real data.
+
+**What changed**
+- **Provenance plumb (platform).** `reports.py: _clean_suggestion` now keeps `provenance`
+  (coerced to `deterministic`/`model`, default `model` — back-compat with pre-19.3 uploads);
+  `schemas.py: ProposedFix` gains `provenance: str = "model"`; `routers/read.py: _proposed_fixes`
+  surfaces it. Additive and defensive — a garbage value coerces to `model`, never surfaced verbatim.
+- **Dashboard lib (`lib/fix.ts`, pure + unit-tested).** New `dependencyFindingId` (the SCA join key
+  `<package>:<advisory_id>`, mirror of the CLI's `sca_finding_id`); `fixedCodeFromDiff` (reconstructs
+  the post-fix hunk for **copy-fixed-code** — context + added lines, drops removed/headers, defensive
+  so any string yields a string); `fixProvenanceLabel`/`fixProvenanceClass` (Deterministic = trusted
+  safe-teal badge, AI-generated = neutral; absent → AI-generated, never claims determinism it can't
+  prove); `FIX_VALIDATION_STEPS` (the proven-steps line). `ProposedFix` type gains optional
+  `provenance`.
+- **Fix-centric card (`components/finding-card.tsx`).** `ProposedFixPanel` is now the **hero** — it
+  **leads** the expanded view (evidence/story sit below), styled with the safe-teal accent, a
+  **deterministic-vs-model** badge, a confidence chip, the rationale, **copy-diff + copy-fixed-code**
+  buttons, and an honest provenance line *"validated: applied · ruff · mypy · tests · re-scan clean"*
+  (true for any emitted patch — the 17.1 loop never surfaces one that skipped a step). The collapsed
+  row gains a **"Fix ready"** badge when a validated patch exists; the no-fix Action note is now the
+  neutral *"No validated fix in this scan"* wording. Works for **both SAST and SCA** findings (the
+  dependency card now takes `proposedFix` too). Soundness wording unchanged: *suggested,
+  machine-validated, never auto-applied — you commit it on the PR*; pure presentation, no
+  tier/score/ranking touched.
+- **Joins + demo.** `app/scans/[scan]/page.tsx` now joins **SCA** fixes (`dependencyFindingId`) as
+  well as SAST. The `/demo` scan page joins seeded fixes too: two deterministic `requirements.txt`
+  version-bump patches (pyyaml, jinja2) seeded on the latest payments scan so the public
+  dashboard-v1.2 face shows the hero. `DemoScan` gains a `suggestions` list.
+
+**Tests**
+- `lib/fix.test.ts` (+5): `dependencyFindingId` parity with the CLI id; `fixedCodeFromDiff` exact
+  reconstruction + defensive cases; provenance label/class (deterministic = safe, model/undefined =
+  neutral); the validation-steps order.
+- `lib/demo.test.ts` (+1): every seeded fix joins to a finding in its scan, non-empty diff, valid
+  provenance.
+- `platform/tests/test_read.py` (+1, +1 assertion): a `provenance: "deterministic"` round-trips to
+  the read API; a garbage value coerces to `model`; the existing SAST fix defaults to `model`.
+- `platform/tests/test_ingest.py` (+1 assertion): absent provenance defaults to `model` at ingest.
+
+**Soundness/scope:** pure presentation — the panel never changes the deterministic verdict; the
+provenance badge is advisory (both kinds cleared the *same* validator). Detection/scoring untouched.
+**Deferred:** decline tracking (honest "No safe fix found" state) per maintainer decision (1); SAST
+seeding in `/demo` (the seed dataset is SCA-only — a SAST CodeFinding needs the demo scan type
+widened to `AnyFinding`, out of scope here); live e2e (real PR → fix uploaded → card hero) stays
+credential-gated by prior-task precedent — every join hop is proven hermetically (platform tests +
+lib joins).
+
+---
+
 ## Task 19.3 — Raise fix yield with deterministic quick-fixes  (2026-06-15)
 
 **Status:** complete. **No new dependency.** Gate green: `ruff check` clean (src + tests + platform),

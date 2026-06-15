@@ -187,6 +187,9 @@ def test_parse_suggestions_is_defensive() -> None:
     assert rows[0]["finding_id"] == "a:1:x"
     assert rows[0]["confidence"] == "medium"  # unknown confidence coerced to a safe default
     assert rows[0]["title"] == ""  # absent string fields default to empty
+    assert (
+        rows[0]["provenance"] == "model"
+    )  # absent provenance defaults to "model" (Task 19.3/19.4)
 
     for bad in ([], "x", {"schema_version": "1.0", "tool_version": "1", "fixes": "no"}):
         try:

@@ -126,6 +126,10 @@ export interface ProposedFix {
   diff: string;
   rationale: string;
   confidence: string;
+  // How the patch was produced (Task 19.3): a deterministic quick-fix rewrite or the language
+  // model. Both cleared the same validator — advisory only — but the card badges them distinctly
+  // (Task 19.4). Optional so a pre-19.4 platform response still types; the UI defaults to "model".
+  provenance?: "deterministic" | "model";
 }
 
 export interface FindingsResponse {

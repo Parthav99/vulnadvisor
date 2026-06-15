@@ -13,11 +13,18 @@ import type {
   Finding,
   OrgDetail,
   PackageRisk,
+  ProposedFix,
   Repo,
   ResolutionResponse,
   ScanDetail,
   TrendPoint,
 } from "./types";
+
+// The SCA fix join key (`<package>:<advisory_id>`, sca_finding_id in src/vulnadvisor/llm/fix.py and
+// dependencyFindingId in lib/fix.ts). Inlined here so this seed module stays import-free at runtime.
+function depFixId(f: Finding): string {
+  return `${f.dependency.name}:${f.advisory.id}`;
+}
 
 export const DEMO_ORG: OrgDetail = {
   id: "demo-org",
@@ -420,6 +427,9 @@ export interface DemoScan {
   detail: ScanDetail;
   findings: Finding[];
   repo: string;
+  // Validated patches (Task 17.5/19.4) keyed by finding_id, exactly as the platform stores them;
+  // the demo scan page joins them to their finding so the fix-centric card renders in /demo too.
+  suggestions: ProposedFix[];
 }
 
 function demoScan(
@@ -428,10 +438,12 @@ function demoScan(
   sha: string,
   createdDaysAgo: number,
   findings: Finding[],
+  suggestions: ProposedFix[] = [],
 ): DemoScan {
   return {
     repo,
     findings,
+    suggestions,
     detail: {
       id,
       repo_id: `demo-${repo}`,
@@ -448,12 +460,41 @@ function demoScan(
   };
 }
 
+// Two seeded validated patches for the latest payments scan, so the fix-centric card (Task 19.4)
+// has a hero to show in /demo. Both are deterministic requirements.txt version bumps — the honest
+// provenance for an SCA upgrade — and each joins to its finding by `<package>:<advisory_id>`.
+const PAYMENTS_FIXES: ProposedFix[] = [
+  {
+    finding_id: depFixId(PYYAML_CALLED),
+    diff:
+      "--- a/requirements.txt\n+++ b/requirements.txt\n@@ -4 +4 @@\n" +
+      "-pyyaml==5.3.1\n+pyyaml==5.4\n",
+    rationale:
+      "Upgrade PyYAML to 5.4, where full_load no longer constructs arbitrary Python objects from " +
+      "untrusted input. No call sites change — the loader API is source-compatible.",
+    confidence: "high",
+    provenance: "deterministic",
+  },
+  {
+    finding_id: depFixId(JINJA2_KEV),
+    diff:
+      "--- a/requirements.txt\n+++ b/requirements.txt\n@@ -1 +1 @@\n" +
+      "-jinja2==2.10\n+jinja2==2.10.1\n",
+    rationale:
+      "Pin jinja2 to 2.10.1, the first release with the sandbox-escape fix for CVE-2019-10906. " +
+      "Drop-in: the template API is unchanged.",
+    confidence: "high",
+    provenance: "deterministic",
+  },
+];
+
 const PAYMENTS_LATEST = demoScan(
   "demo-scan-payments-2",
   "payments-api",
   "8f4e2a17c9b35d60a1e8f72b4c5d9013a6b8e2f4",
   1,
   [JINJA2_KEV, PYYAML_CALLED, REQUESTS_IMPORTED, URLLIB3_NOT_IMPORTED, CERTIFI_NOT_IMPORTED],
+  PAYMENTS_FIXES,
 );
 
 const PAYMENTS_PREVIOUS = demoScan(

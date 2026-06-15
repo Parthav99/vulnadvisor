@@ -80,6 +80,22 @@ test("scan summaries match their findings", () => {
   }
 });
 
+test("every seeded fix joins to a finding in its scan (the fix-centric card has a hero)", () => {
+  const findingIds = (scan: (typeof DEMO_SCANS)[number]) =>
+    new Set(scan.findings.map((f) => `${f.dependency.name}:${f.advisory.id}`));
+  let total = 0;
+  for (const scan of DEMO_SCANS) {
+    const ids = findingIds(scan);
+    for (const fix of scan.suggestions) {
+      assert.ok(ids.has(fix.finding_id), `${scan.detail.id}: orphan fix ${fix.finding_id}`);
+      assert.ok(fix.diff.trim().length > 0, `${fix.finding_id}: empty diff`);
+      assert.ok(["deterministic", "model"].includes(fix.provenance ?? "model"));
+      total += 1;
+    }
+  }
+  assert.ok(total >= 1, "the demo must show at least one validated fix");
+});
+
 test("the derived overview is internally consistent", () => {
   assert.equal(
     DEMO_OVERVIEW.actionable + DEMO_OVERVIEW.deprioritized,

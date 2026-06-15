@@ -108,12 +108,14 @@ def _proposed_fixes(scan: Scan) -> list[ProposedFix]:
             continue
         rationale = row.get("rationale")
         confidence = row.get("confidence")
+        provenance = row.get("provenance")
         fixes.append(
             ProposedFix(
                 finding_id=finding_id,
                 diff=diff,
                 rationale=rationale if isinstance(rationale, str) else "",
                 confidence=confidence if confidence in ("high", "medium", "low") else "medium",
+                provenance=provenance if provenance in ("deterministic", "model") else "model",
             )
         )
     return fixes

@@ -8,7 +8,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FindingCard } from "@/components/finding-card";
 import { demoScanById } from "@/lib/demo-data";
-import { bandClass, findingKey, formatDate, shortRef, shortSha } from "@/lib/format";
+import { codeFindingId, dependencyFindingId } from "@/lib/fix";
+import { bandClass, findingKey, formatDate, isCodeFinding, shortRef, shortSha } from "@/lib/format";
+import type { ProposedFix } from "@/lib/types";
 
 const TIERS = ["imported-and-called", "imported", "dynamic-unknown", "not-imported"];
 const BANDS = ["critical", "high", "medium", "low", "info"];
@@ -35,6 +37,8 @@ export default async function DemoScanPage({
     (f) =>
       (!tier || (f.reachability?.tier ?? "unknown") === tier) && (!band || f.score.band === band),
   );
+  // Join seeded validated patches to their finding by finding_id, exactly as the product page does.
+  const fixesById = new Map<string, ProposedFix>(scan.suggestions.map((s) => [s.finding_id, s]));
 
   const base = `/demo/scans/${scanId}`;
   const filterLink = (next: { tier?: string; band?: string }) => {
@@ -106,9 +110,18 @@ export default async function DemoScanPage({
         </EmptyState>
       ) : (
         <div className="space-y-4">
-          {items.map((finding) => (
-            <FindingCard key={findingKey(finding)} finding={finding} />
-          ))}
+          {items.map((finding) => {
+            const proposedFix = isCodeFinding(finding)
+              ? fixesById.get(codeFindingId(finding))
+              : fixesById.get(dependencyFindingId(finding));
+            return (
+              <FindingCard
+                key={findingKey(finding)}
+                finding={finding}
+                proposedFix={proposedFix}
+              />
+            );
+          })}
         </div>
       )}
     </div>

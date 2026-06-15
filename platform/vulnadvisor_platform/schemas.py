@@ -177,6 +177,9 @@ class ProposedFix(BaseModel):
     diff: str
     rationale: str
     confidence: str
+    # "deterministic" (a quick-fix rewrite, Task 19.3) or "model"; the dashboard badges them
+    # distinctly (Task 19.4). Both cleared the same validator — advisory only, never a verdict.
+    provenance: str = "model"
 
 
 class FindingsResponse(BaseModel):

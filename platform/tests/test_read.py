@@ -238,6 +238,46 @@ async def test_findings_response_carries_proposed_fix(client: AsyncClient, seede
     assert "subprocess.run(cmd)" in fix["diff"]
     assert fix["rationale"].startswith("Pass an argument list")
     assert fix["confidence"] == "high"
+    # No provenance in the uploaded doc → defaults to "model" (back-compat with pre-19.3 uploads).
+    assert fix["provenance"] == "model"
+
+
+async def test_findings_response_surfaces_deterministic_provenance(
+    client: AsyncClient, seeded_key: str
+) -> None:
+    """A quick-fix's ``provenance: "deterministic"`` (Task 19.3) round-trips to the read API so the
+    dashboard can badge it distinctly from a model-authored patch (Task 19.4)."""
+    report, suggestions = _code_report_with_fix()
+    suggestions["fixes"][0]["provenance"] = "deterministic"
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans",
+        headers=_auth(seeded_key),
+        json={
+            "commit_sha": "det1",
+            "ref": "refs/heads/main",
+            "report": report,
+            "suggestions": suggestions,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    scan_id = resp.json()["scan_id"]
+    findings = (await client.get(f"/v1/scans/{scan_id}/findings", headers=_auth(seeded_key))).json()
+    assert findings["suggestions"][0]["provenance"] == "deterministic"
+    # A garbage value is coerced back to the safe default, never surfaced verbatim.
+    suggestions["fixes"][0]["provenance"] = "wishful-thinking"
+    resp2 = await client.post(
+        "/v1/orgs/acme/repos/web/scans",
+        headers=_auth(seeded_key),
+        json={
+            "commit_sha": "det2",
+            "ref": "refs/heads/main",
+            "report": report,
+            "suggestions": suggestions,
+        },
+    )
+    scan_id2 = resp2.json()["scan_id"]
+    f2 = (await client.get(f"/v1/scans/{scan_id2}/findings", headers=_auth(seeded_key))).json()
+    assert f2["suggestions"][0]["provenance"] == "model"
 
 
 async def test_findings_response_carries_sca_proposed_fix(

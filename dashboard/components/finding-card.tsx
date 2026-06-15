@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { motion, useReducedMotion } from "motion/react";
-import { Check, ChevronDown, Copy } from "lucide-react";
+import { Check, ChevronDown, Copy, ShieldCheck, Wrench } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -15,7 +15,14 @@ import {
   tierClass,
   tierLabel,
 } from "@/lib/format";
-import { diffLineClass, parseDiffLines } from "@/lib/fix";
+import {
+  diffLineClass,
+  FIX_VALIDATION_STEPS,
+  fixProvenanceClass,
+  fixProvenanceLabel,
+  fixedCodeFromDiff,
+  parseDiffLines,
+} from "@/lib/fix";
 import { EASE_AEGIS, FADE_DURATION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import type { AnyFinding, CodeFinding, Finding, ProposedFix } from "@/lib/types";
@@ -65,9 +72,12 @@ function CallPathChain({ path }: { path: string }) {
 function CopyFixButton({
   command,
   ariaLabel = "Copy fix command",
+  label = "Copy",
 }: {
   command: string;
   ariaLabel?: string;
+  /** Visible button text; the copied state always reads "Copied". */
+  label?: string;
 }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -86,8 +96,18 @@ function CopyFixButton({
       }}
     >
       {copied ? <Check aria-hidden className="text-safe" /> : <Copy aria-hidden />}
-      <span aria-live="polite">{copied ? "Copied" : "Copy"}</span>
+      <span aria-live="polite">{copied ? "Copied" : label}</span>
     </Button>
+  );
+}
+
+/** Collapsed-row chip shown when a validated patch exists for this finding (Task 19.4). */
+function FixReadyBadge() {
+  return (
+    <Badge variant="outline" className="border-safe/40 bg-safe/10 text-safe">
+      <ShieldCheck aria-hidden className="size-3" />
+      Fix ready
+    </Badge>
   );
 }
 
@@ -194,24 +214,40 @@ function EvidenceDrawer({
 }
 
 /**
- * The validated, machine-checked patch for a code finding (Task 17.5): the unified diff rendered
- * with Aegis add/remove styling, the model's rationale, a confidence chip, and a copy button. The
- * wording keeps the soundness contract — it is a *suggested* patch committed on the PR, never
- * auto-applied here, and it never affects the deterministic tier/score (pure presentation).
+ * The hero of the finding card (Task 19.4): the validated, machine-checked patch leads the expanded
+ * view. Renders the unified diff with Aegis add/remove styling, a **deterministic vs model**
+ * provenance badge (Task 19.3), a confidence chip, the rationale, copy-diff and copy-fixed-code
+ * buttons, and the provenance line proving the patch earned trust (every emitted patch cleared the
+ * full 17.1 validator). Wording keeps the soundness contract — it is a *suggested* patch committed
+ * on the PR, never auto-applied here, and it never affects the deterministic tier/score.
  */
 function ProposedFixPanel({ fix }: { fix: ProposedFix }) {
   const lines = parseDiffLines(fix.diff);
+  const provenance = fix.provenance ?? "model";
   return (
-    <div className="rounded-lg bg-background/60 p-3 ring-1 ring-border" data-testid="proposed-fix">
+    <div
+      className="rounded-lg bg-safe/5 p-3 ring-1 ring-safe/30"
+      data-testid="proposed-fix"
+      data-provenance={provenance}
+    >
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-          Proposed fix
-        </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Wrench aria-hidden className="size-4 text-safe" />
+          <span className="text-sm font-semibold">Proposed fix</span>
+          <Badge variant="outline" className={fixProvenanceClass(provenance)}>
+            {fixProvenanceLabel(provenance)}
+          </Badge>
           <Badge variant="outline" className="border-muted-foreground/40 text-muted-foreground">
             {fix.confidence} confidence
           </Badge>
-          <CopyFixButton command={fix.diff} ariaLabel="Copy patch diff" />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <CopyFixButton command={fix.diff} ariaLabel="Copy patch diff" label="Copy diff" />
+          <CopyFixButton
+            command={fixedCodeFromDiff(fix.diff)}
+            ariaLabel="Copy fixed code"
+            label="Copy code"
+          />
         </div>
       </div>
       <pre className="mono overflow-x-auto rounded bg-background/80 p-2 text-xs leading-relaxed ring-1 ring-border">
@@ -224,6 +260,10 @@ function ProposedFixPanel({ fix }: { fix: ProposedFix }) {
       {fix.rationale ? (
         <p className="mt-2 text-sm text-muted-foreground">{fix.rationale}</p>
       ) : null}
+      <p className="mono mt-2 flex flex-wrap items-center gap-1.5 text-xs text-safe">
+        <ShieldCheck aria-hidden className="size-3.5 shrink-0" />
+        <span>validated: {FIX_VALIDATION_STEPS.join(" · ")}</span>
+      </p>
       <p className="mt-2 text-xs text-muted-foreground">
         Suggested, machine-validated patch — review and commit it on the pull request. It is never
         applied automatically and does not change this finding&rsquo;s priority.
@@ -251,7 +291,7 @@ export function FindingCard({
   defaultOpen?: boolean;
   /** When the copilot deep-links here (?finding=…), scroll this card into view on mount. */
   focus?: boolean;
-  /** The stored validated patch for a code finding (Task 17.5); ignored for dependency findings. */
+  /** The stored validated patch for this finding (Task 17.5/19.2); SAST or SCA. */
   proposedFix?: ProposedFix;
 }) {
   if (isCodeFinding(finding)) {
@@ -264,17 +304,26 @@ export function FindingCard({
       />
     );
   }
-  return <DependencyFindingCard finding={finding} defaultOpen={defaultOpen} focus={focus} />;
+  return (
+    <DependencyFindingCard
+      finding={finding}
+      defaultOpen={defaultOpen}
+      focus={focus}
+      proposedFix={proposedFix}
+    />
+  );
 }
 
 function DependencyFindingCard({
   finding,
   defaultOpen = false,
   focus = false,
+  proposedFix,
 }: {
   finding: Finding;
   defaultOpen?: boolean;
   focus?: boolean;
+  proposedFix?: ProposedFix;
 }) {
   const { dependency, advisory, score, reachability, fix, epss, in_kev } = finding;
   const tier = reachability?.tier ?? "unknown";
@@ -327,6 +376,7 @@ function DependencyFindingCard({
               KEV
             </Badge>
           ) : null}
+          {proposedFix ? <FixReadyBadge /> : null}
         </span>
         <ChevronDown
           aria-hidden
@@ -349,6 +399,9 @@ function DependencyFindingCard({
           <Badge variant="outline" className={cn("sm:hidden", tierClass(tier))}>
             {tierLabel(tier)}
           </Badge>
+
+          {/* The validated patch leads the card (Task 19.4): the fix is the hero, evidence follows. */}
+          {proposedFix ? <ProposedFixPanel fix={proposedFix} /> : null}
 
           <Card3 letter="A" title="Attack story">
             <p className="leading-relaxed">{story}</p>
@@ -481,6 +534,7 @@ function CodeFindingCard({
           >
             {sastTierLabel(tier)}
           </Badge>
+          {proposedFix ? <FixReadyBadge /> : null}
         </span>
         <ChevronDown
           aria-hidden
@@ -503,6 +557,9 @@ function CodeFindingCard({
           <Badge variant="outline" className={cn("sm:hidden", sastTierClass(tier))}>
             {sastTierLabel(tier)}
           </Badge>
+
+          {/* The validated patch leads the card (Task 19.4): the fix is the hero, evidence follows. */}
+          {proposedFix ? <ProposedFixPanel fix={proposedFix} /> : null}
 
           <Card3 letter="A" title="Attack story">
             <p className="leading-relaxed">{story}</p>
@@ -537,18 +594,16 @@ function CodeFindingCard({
               <p>{fix.direction}</p>
               <p className="mt-2 text-xs text-muted-foreground">
                 {proposedFix ? (
-                  <>A validated patch is proposed below.</>
+                  <>A validated patch is proposed above.</>
                 ) : (
                   <>
-                    Remediation direction — run <span className="mono">vulnadvisor fix</span> for a
-                    validated patch.
+                    No validated fix in this scan — run <span className="mono">vulnadvisor fix</span>{" "}
+                    for a validated patch.
                   </>
                 )}
               </p>
             </Card3>
           </div>
-
-          {proposedFix ? <ProposedFixPanel fix={proposedFix} /> : null}
 
           {flow.reason || flow.path.length > 0 ? (
             <EvidenceDrawer
