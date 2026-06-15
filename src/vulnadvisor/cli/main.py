@@ -891,27 +891,65 @@ def _fix_suggest_json(
     """Fix-and-validate every alarming finding and write the validated patches to ``out_file``.
 
     This is the non-interactive CI half of ``vulnadvisor fix``: it never prints code and never
-    touches the working tree — it produces the JSON the platform's GitHub App turns into in-line
-    PR suggestions. Exit 0 even when no safe fix is found (an empty document is still valid to
-    upload); exit 2 only when the model key is missing or the file cannot be written.
+    touches the working tree — it produces the JSON that ``scan --upload --suggestions`` carries to
+    the platform (so the dashboard finding card can render each fix) and that ``suggest --from``
+    posts in-line on a PR. Like ``suggest``, the model call uses a direct key when one is set (the
+    code stays on the runner) or the VulnAdvisor platform proxy via ``VULNADVISOR_API_KEY`` (no
+    model-key secret needed in CI). Exit 0 even when no safe fix is found, and — so a not-yet-keyed
+    CI run never fails the build — when no client is available at all it writes an empty (still
+    valid) document; exit 2 only when the file cannot be written.
     """
-    client = build_fix_client(provider, model)
+    client = build_suggest_client(provider, model)
     if client is None:
-        typer.secho(_MISSING_FIX_KEY_MESSAGE, fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2)
+        # Graceful, like `scan --upload`'s missing-key skip: write a valid empty document so the
+        # downstream `scan --upload --suggestions` step still finds its file and the build is green.
+        empty = SuggestionReport(tool_version=_resolve_version())
+        _write_suggestions_doc(empty, out_file)
+        typer.secho(
+            "No model key or platform credentials found; wrote an empty suggestions document "
+            "(no fixes generated). Set OPENROUTER_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY, or "
+            "VULNADVISOR_API_KEY + API_URL, to enable fixes.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+        return
 
     suggestion_report = _validate_fixes(report, path, client=client, max_attempts=max_attempts)
-
-    try:
-        out_file.write_text(suggestion_report.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:
-        typer.secho(f"Could not write {out_file}: {exc}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2) from exc
-
+    _write_suggestions_doc(suggestion_report, out_file)
     typer.secho(
         f"Wrote {len(suggestion_report.fixes)} validated fix(es) to {out_file}.",
         fg=typer.colors.GREEN,
     )
+
+
+def _write_suggestions_doc(report: SuggestionReport, out_file: Path) -> None:
+    """Serialize a suggestions document to ``out_file``; a write error is a clean exit 2."""
+    try:
+        out_file.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        typer.secho(f"Could not write {out_file}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+
+
+def _read_suggestions_doc(from_file: Path) -> SuggestionReport:
+    """Load a ``fix --suggest-json`` document for ``suggest --from``, or fail cleanly.
+
+    Defensive (CLAUDE.md): an unreadable or wrong-shaped file is a ``BadParameter`` (no traceback),
+    so a corrupt artifact from an earlier step never crashes the PR-suggestion run.
+    """
+    try:
+        raw = from_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise typer.BadParameter(
+            f"could not read suggestions file: {exc}", param_hint="--from"
+        ) from exc
+    try:
+        return SuggestionReport.model_validate_json(raw)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"suggestions file is not a valid fix --suggest-json document: {exc}",
+            param_hint="--from",
+        ) from exc
 
 
 def _validate_fixes(
@@ -989,6 +1027,19 @@ def suggest(
             help="Model id (default: the provider's default; or set VULNADVISOR_MODEL).",
         ),
     ] = None,
+    from_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--from",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            help="Post the validated fixes from this 'fix --suggest-json' document instead of "
+            "re-scanning and re-validating. The generated CI workflow uses this so one fix loop "
+            "feeds both the dashboard upload and the in-line PR suggestions (single source of truth).",
+        ),
+    ] = None,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -1007,13 +1058,16 @@ def suggest(
     changes", never an auto-commit; a developer clicks "Commit suggestion". Re-runs prune and repost
     our own prior suggestions, so a fixed finding's suggestion disappears in place.
 
-    The model call uses a direct key when one is set (``OPENROUTER_/OPENAI_/ANTHROPIC_API_KEY`` -
-    source stays on the runner), otherwise the VulnAdvisor platform runs it via
-    ``VULNADVISOR_API_KEY`` + ``API_URL`` (so CI needs no model-key secret; the fix-prompt's code
-    context is sent to *your* platform, which calls the model with the org's key). If no model key
-    is available the build is never failed - ``suggest`` simply posts nothing. Validation (apply,
-    lint, type-check, tests, rescan) always runs in your own runner. Outside a pull request (e.g. a
-    push build) this is a clean no-op. Use ``--dry-run`` to preview.
+    With ``--from <file>`` the validated fixes are read from a ``fix --suggest-json`` document
+    instead of re-scanning and re-validating - the generated CI workflow uses this so a single fix
+    loop feeds both the dashboard upload (``scan --upload --suggestions``) and these in-line
+    suggestions. Without ``--from``, the model call uses a direct key when one is set
+    (``OPENROUTER_/OPENAI_/ANTHROPIC_API_KEY`` - source stays on the runner), otherwise the
+    VulnAdvisor platform runs it via ``VULNADVISOR_API_KEY`` + ``API_URL`` (so CI needs no model-key
+    secret; the fix-prompt's code context is sent to *your* platform, which calls the model with the
+    org's key). If no model key is available the build is never failed - ``suggest`` simply posts
+    nothing. Validation (apply, lint, type-check, tests, rescan) always runs in your own runner.
+    Outside a pull request (e.g. a push build) this is a clean no-op. Use ``--dry-run`` to preview.
     """
     ctx = read_pr_context(os.environ)
     if ctx is None:
@@ -1022,13 +1076,16 @@ def suggest(
         )
         return
 
-    client = build_suggest_client(provider, model)
-    if client is None:
-        typer.secho(_MISSING_SUGGEST_KEY_MESSAGE, fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2)
+    if from_file is not None:
+        suggestion_report = _read_suggestions_doc(from_file)
+    else:
+        client = build_suggest_client(provider, model)
+        if client is None:
+            typer.secho(_MISSING_SUGGEST_KEY_MESSAGE, fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        report = scan_project(path, build_matcher(), run_sca=False, run_sast=True)
+        suggestion_report = _validate_fixes(report, path, client=client, max_attempts=max_attempts)
 
-    report = scan_project(path, build_matcher(), run_sca=False, run_sast=True)
-    suggestion_report = _validate_fixes(report, path, client=client, max_attempts=max_attempts)
     comments = build_review_comments(
         [fix.model_dump(mode="json") for fix in suggestion_report.fixes]
     )

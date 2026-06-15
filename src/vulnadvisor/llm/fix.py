@@ -42,6 +42,7 @@ __all__ = [
     "resolve_sast_finding",
     "sast_finding_id",
     "sast_signature",
+    "sca_finding_id",
 ]
 
 # A validator proves a candidate patch; it is injected so the loop runs offline in tests.
@@ -80,6 +81,18 @@ def sast_finding_id(scored: ScoredSastFinding) -> str:
     """The human-facing id for a SAST finding: ``<file>:<line>:<kind>`` (matches scan output)."""
     finding = scored.finding
     return f"{finding.file}:{finding.line}:{finding.kind}"
+
+
+def sca_finding_id(package: str, advisory_id: str) -> str:
+    """The stable join id for a dependency (SCA) finding: ``<package>:<advisory_id>``.
+
+    The SCA analogue of :func:`sast_finding_id`. A validated fix for a dependency vulnerability is
+    keyed by it so the platform stores it on ``Scan.suggestions`` and the dashboard joins it to the
+    finding (Task 19.2), exactly as a SAST fix joins by ``<file>:<line>:<kind>``. ``advisory_id`` is
+    the engine's canonical advisory id (the same id the JSON report carries), so the key is stable
+    across runs regardless of which alias the UI displays.
+    """
+    return f"{package}:{advisory_id}"
 
 
 def is_alarming(scored: ScoredSastFinding) -> bool:

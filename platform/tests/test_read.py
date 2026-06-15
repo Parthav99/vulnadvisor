@@ -240,6 +240,66 @@ async def test_findings_response_carries_proposed_fix(client: AsyncClient, seede
     assert fix["confidence"] == "high"
 
 
+async def test_findings_response_carries_sca_proposed_fix(
+    client: AsyncClient, seeded_key: str
+) -> None:
+    """A validated fix for a *dependency* (SCA) finding persists and joins too, not only SAST.
+
+    The 19.2 pipeline keys an SCA fix by ``<package>:<advisory_id>`` (``sca_finding_id``), the
+    dependency analogue of the SAST ``<file>:<line>:<kind>`` id, and the read API surfaces it on the
+    same findings response. (Generating SCA fixes is deferred to 19.3; here the fix is seeded to
+    prove the persist+join hop the visibility gap left broken only for SAST.)
+    """
+    from vulnadvisor.llm.fix import sca_finding_id  # noqa: PLC0415
+
+    report = build_report_doc([("jinja2", "GHSA-1")])
+    advisory_id = report["findings"][0]["advisory"]["id"]
+    join_id = sca_finding_id("jinja2", advisory_id)
+    suggestions = {
+        "schema_version": "1.0",
+        "tool_version": "2.0.0",
+        "fixes": [
+            {
+                "finding_id": join_id,
+                "file": "requirements.txt",
+                "line": 3,
+                "cwe": "",
+                "kind": "dependency",
+                "title": "jinja2 vulnerability",
+                "tier": "IMPORTED-AND-CALLED",
+                "flow": "requirements.txt:3",
+                "rationale": "Upgrade jinja2 past the fixed version.",
+                "confidence": "high",
+                "diff": (
+                    "--- a/requirements.txt\n+++ b/requirements.txt\n@@ -3 +3 @@\n"
+                    "-jinja2==2.11.2\n+jinja2==2.11.3\n"
+                ),
+            }
+        ],
+    }
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans",
+        headers=_auth(seeded_key),
+        json={
+            "commit_sha": "sca1",
+            "ref": "refs/heads/main",
+            "report": report,
+            "suggestions": suggestions,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    scan_id = resp.json()["scan_id"]
+
+    findings = (await client.get(f"/v1/scans/{scan_id}/findings", headers=_auth(seeded_key))).json()
+    fixes = findings["suggestions"]
+    assert len(fixes) == 1
+    fix = fixes[0]
+    # Parity: the stored fix joins to the dependency finding by <package>:<advisory_id>.
+    dep = findings["findings"][0]
+    assert fix["finding_id"] == sca_finding_id(dep["dependency"]["name"], dep["advisory"]["id"])
+    assert "jinja2==2.11.3" in fix["diff"]
+
+
 async def test_findings_response_no_fix_when_none_uploaded(
     client: AsyncClient, seeded_key: str
 ) -> None:

@@ -19,6 +19,10 @@ WORKFLOW_PATH = ".github/workflows/vulnadvisor.yml"
 # The single repository secret the workflow authenticates with. The platform writes it
 # automatically during setup (Task B) so onboarding needs no manual "add a secret" step.
 API_KEY_SECRET_NAME = "VULNADVISOR_API_KEY"
+# Where the workflow writes the validated-fix document. It is the single source of truth for the
+# run: the fix step generates it, the scan step uploads it (so it reaches the dashboard finding
+# card via Scan.suggestions), and the PR step posts it in-line — no fix loop runs twice (Task 19.2).
+FIXES_DOC = "vulnadvisor-fixes.json"
 SETUP_BRANCH = "vulnadvisor/setup"
 SETUP_PR_TITLE = "Add VulnAdvisor reachability scanning"
 WORKFLOW_COMMIT_MESSAGE = "Add VulnAdvisor scan workflow"
@@ -109,11 +113,14 @@ def render_workflow(*, default_branch: str, api_url: str) -> str:
     ``default_branch`` and ``api_url`` are interpolated as JSON strings — a strict subset of YAML
     double-quoted scalars — so any legal git branch name or URL stays valid YAML.
 
-    On pull requests the workflow also runs ``vulnadvisor suggest``, which posts machine-validated
-    one-click fix suggestions in-line using the built-in ``GITHUB_TOKEN`` — **no GitHub App
-    required** (Task 17.4). The model call is run by the platform via ``VULNADVISOR_API_KEY`` —
-    **no model-key secret** (Task D); when the platform has no model key for the org the step posts
-    nothing, never failing the build. It needs ``pull-requests: write`` to post.
+    The fix step generates machine-validated patches once and writes them to ``{FIXES_DOC}``; the
+    scan step uploads that document **with** the report so the validated fixes reach the dashboard
+    finding card (``Scan.suggestions``, Task 19.2); on pull requests the suggest step posts the
+    *same* document in-line as one-click ``GITHUB_TOKEN`` suggestions — **no GitHub App required**
+    (Task 17.4), no second fix loop. The model call is run by the platform via
+    ``VULNADVISOR_API_KEY`` — **no model-key secret** (Task D); with no model key the fix step
+    writes an empty document and the build never fails. ``pull-requests: write`` lets the PR step
+    post.
     """
     branch = json.dumps(default_branch)
     url = json.dumps(api_url)
@@ -121,11 +128,12 @@ def render_workflow(*, default_branch: str, api_url: str) -> str:
 # VulnAdvisor — reachability-aware dependency triage for Python.
 #
 # Scans on every push to {default_branch} and on every pull request, then uploads the
-# JSON report to your VulnAdvisor dashboard. On pull requests it also posts one-click,
-# machine-validated fix suggestions in-line using the built-in GITHUB_TOKEN (no GitHub
-# App needed). The scan never sends source code; the suggest step runs the model call on
-# the VulnAdvisor platform (it sends the code around each finding to your own platform),
-# so no model-key secret is needed. The setup PR body explains the details.
+# JSON report — together with machine-validated fix suggestions — to your VulnAdvisor
+# dashboard. On pull requests it also posts those same one-click fixes in-line using the
+# built-in GITHUB_TOKEN (no GitHub App needed). The scan never sends source code; the fix
+# step runs the model call on the VulnAdvisor platform (it sends the code around each
+# finding to your own platform), so no model-key secret is needed. The setup PR body
+# explains the details.
 name: VulnAdvisor
 
 on:
@@ -147,18 +155,24 @@ jobs:
           python-version: "3.12"
       - name: Install VulnAdvisor
         run: pip install vulnadvisor
+      - name: Generate validated fixes
+        env:
+          VULNADVISOR_API_KEY: ${{{{ secrets.VULNADVISOR_API_KEY }}}}
+          API_URL: {url}
+          OPENROUTER_API_KEY: ${{{{ secrets.OPENROUTER_API_KEY }}}}
+          OPENAI_API_KEY: ${{{{ secrets.OPENAI_API_KEY }}}}
+          ANTHROPIC_API_KEY: ${{{{ secrets.ANTHROPIC_API_KEY }}}}
+        run: vulnadvisor fix --suggest-json {FIXES_DOC} --path .
       - name: Scan and upload the report
         env:
           VULNADVISOR_API_KEY: ${{{{ secrets.VULNADVISOR_API_KEY }}}}
           API_URL: {url}
-        run: vulnadvisor scan . --upload
+        run: vulnadvisor scan . --upload --suggestions {FIXES_DOC}
       - name: Suggest validated fixes on the pull request
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{{{ secrets.GITHUB_TOKEN }}}}
-          VULNADVISOR_API_KEY: ${{{{ secrets.VULNADVISOR_API_KEY }}}}
-          API_URL: {url}
-        run: vulnadvisor suggest
+        run: vulnadvisor suggest --from {FIXES_DOC}
 """
 
 
@@ -185,23 +199,26 @@ secret named `VULNADVISOR_API_KEY` with that value.
 
 ### One-click fix suggestions on your pull requests
 
-On every pull request the workflow also runs `vulnadvisor suggest`: it machine-validates a patch \
-for each finding and posts it as an in-line GitHub **suggestion** you can commit with one click — \
-using the built-in `GITHUB_TOKEN`, **no GitHub App required**. The model call is run for you by \
-the VulnAdvisor platform with the same `VULNADVISOR_API_KEY` — **no model-key secret to add**. If \
-your org has no model key configured this step simply posts nothing and never fails your build.
+The workflow machine-validates a patch for each finding once (`vulnadvisor fix --suggest-json`), \
+**uploads those validated fixes with the report** so they appear on your dashboard finding cards, \
+and on every pull request posts the same patches as in-line GitHub **suggestions** you can commit \
+with one click — using the built-in `GITHUB_TOKEN`, **no GitHub App required**. The model call is \
+run for you by the VulnAdvisor platform with the same `VULNADVISOR_API_KEY` — **no model-key \
+secret to add**. If your org has no model key configured the fix step writes an empty document and \
+never fails your build.
 
 > Prefer to keep source on the runner? Add a model-key repository secret (`OPENROUTER_API_KEY`, \
-`OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`) and pass it to the suggest step; `vulnadvisor suggest` \
-then calls the model directly from CI instead of via the platform.
+`OPENAI_API_KEY`, or `ANTHROPIC_API_KEY`); the fix step then calls the model directly from CI \
+instead of via the platform.
 
 ### What leaves CI
 
-The scan uploads only the JSON report (package names, advisory ids, reachability evidence) — never \
-source code. The suggest step additionally sends the code **around each finding** to your \
-VulnAdvisor platform so it can generate a fix with the org's model key; the fix is then validated \
-(apply, lint, type-check, tests, rescan) entirely inside your own runner. Outbound calls are the \
-report upload, the suggest request to your platform, and GitHub.
+The scan uploads only the JSON report (package names, advisory ids, reachability evidence) and the \
+validated fix patches — never source code. The fix step sends the code **around each finding** to \
+your VulnAdvisor platform so it can generate a patch with the org's model key (skip this by adding \
+a direct model-key secret, above); every patch is then validated (apply, lint, type-check, tests, \
+rescan) entirely inside your own runner. Outbound calls are the fix request to your platform, the \
+report upload, and GitHub.
 
 By default the scan never fails your build; add `--fail-on <tier|score>` to the scan step \
 when you're ready to gate merges.

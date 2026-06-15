@@ -720,11 +720,13 @@ async def test_setup_pr_full_flow(client: AsyncClient, seeded_key: str) -> None:
     assert call["repo_full_name"] == "acme/web"
     assert call["base_branch"] == "main"
     assert call["file_path"] == ".github/workflows/vulnadvisor.yml"
-    # The proposed workflow is valid YAML, runs the upload scan, and posts PR fix suggestions.
+    # The proposed workflow is valid YAML, uploads the report with its validated fixes (so they
+    # reach the dashboard finding card, Task 19.2), and posts those same fixes in-line on a PR.
     workflow = yaml.safe_load(call["file_content"])
     steps = workflow["jobs"]["vulnadvisor"]["steps"]
-    assert steps[-2]["run"] == "vulnadvisor scan . --upload"
-    assert steps[-1]["run"] == "vulnadvisor suggest"
+    assert steps[-3]["run"] == "vulnadvisor fix --suggest-json vulnadvisor-fixes.json --path ."
+    assert steps[-2]["run"] == "vulnadvisor scan . --upload --suggestions vulnadvisor-fixes.json"
+    assert steps[-1]["run"] == "vulnadvisor suggest --from vulnadvisor-fixes.json"
     assert "VULNADVISOR_API_KEY" in call["pr_body"]
 
     after = await _repo_listing(client, seeded_key)

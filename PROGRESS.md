@@ -4,6 +4,80 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 19.2 — Repair the fix→dashboard visibility pipeline  (2026-06-15)
+
+**Status:** complete. **No new dependency.** Gate green: `ruff check` clean, `ruff format --check`
+clean (60 files), `mypy --strict src platform/vulnadvisor_platform` clean (117 files), **src pytest
+897 passed / 1 skipped / 1 xfailed**, **platform pytest 215 passed / 1 pre-existing unrelated fail**
+(`test_llm.py::test_complete_without_byo_key_is_graceful_noop` — 502≠200, fails identically with my
+production changes stashed; the LLM-proxy router is untouched here). The remaining src `xfailed` is
+19.1's **yield** test (`tests/test_fix_gap.py`), which stays red until 19.3.
+
+**Maintainer decisions (asked up front):** (1) single source of truth = **`scan --upload
+--suggestions <file>`** (reuse the existing tested plumbing; works on push *and* PR) over a unified
+`suggest --upload`; (2) SCA scope = **pipeline only** — make the schema/ingest/read-join carry+join
+an SCA fix (proven with a seeded fix), defer real SCA fix *generation* (deterministic version-bump
+patches) to 19.3.
+
+**Root of the visibility gap (19.1):** the generated workflow ran `scan . --upload` **without**
+`--suggestions` and a separate `suggest` that only posted to GitHub — so `Scan.suggestions` stayed
+empty and 17.5's read join surfaced nothing, independent of yield. Join-key parity was already fine.
+
+**What changed**
+- **Generated workflow (`setup_pr.py: render_workflow`).** Now three steps wired to one document
+  (`FIXES_DOC = "vulnadvisor-fixes.json"`): (1) **Generate validated fixes** — `vulnadvisor fix
+  --suggest-json vulnadvisor-fixes.json --path .` (runs the loop **once**); (2) **Scan and upload**
+  — `vulnadvisor scan . --upload --suggestions vulnadvisor-fixes.json` (carries the report **and**
+  the fixes to `Scan.suggestions`, on push and PR); (3) **Suggest** (PR-only) — `vulnadvisor suggest
+  --from vulnadvisor-fixes.json` posts the *same* document in-line (no second fix loop). The fix
+  step carries the platform proxy creds (`VULNADVISOR_API_KEY`/`API_URL`) **and** the three optional
+  direct model-key secrets (a direct key keeps source on the runner); the suggest step now carries
+  only `GITHUB_TOKEN`. `render_pr_body` updated honestly: the fix step sends per-finding code context
+  to the platform (or a direct key if set); the scan uploads report **+ validated fixes**; the PR
+  step posts them.
+- **CLI (`cli/main.py`).** `_fix_suggest_json` now builds its client with **`build_suggest_client`**
+  (direct key wins, else the platform proxy — so the CI fix step needs no model-key secret) and is
+  **graceful** when no client is available at all: it writes an empty (valid) `SuggestionReport` and
+  exits 0, so a not-yet-keyed repo onboards green and the downstream `--suggestions` file always
+  exists (mirrors `scan --upload`'s v1.0.5 missing-key skip). New `--from <file>` on **`suggest`**
+  loads a pre-generated document and posts it **without re-scanning/re-validating** (the workflow's
+  single-source-of-truth seam); defensive load → `BadParameter` on a corrupt artifact. Extracted
+  `_write_suggestions_doc` / `_read_suggestions_doc` helpers.
+- **SCA join id (`llm/fix.py`).** New pure `sca_finding_id(package, advisory_id) -> "<pkg>:<adv>"`
+  (added to `__all__`) — the dependency analogue of `sast_finding_id`'s `<file>:<line>:<kind>`, so a
+  validated SCA fix persists on `Scan.suggestions` and the read API joins it. The existing
+  `parse_suggestions`/`_proposed_fixes` already carry any well-formed fix row verbatim (an SCA fix
+  anchors on its manifest `file:line`), so no ingest/read change was needed — only a defined key + a
+  round-trip test.
+
+**Tests**
+- `platform/tests/test_fix_gap.py` — the 19.1 **visibility** xfail is now a **plain green**
+  regression: the workflow uploads `--suggestions`, generates the doc once (`fix --suggest-json`),
+  and reuses it (`suggest --from`).
+- `platform/tests/test_setup_pr.py` — `EXPECTED_WORKFLOW` snapshot + structure test rewritten for
+  the three-step layout (fix env carries proxy + direct keys; scan uploads `--suggestions`; suggest
+  carries only `GITHUB_TOKEN`, no API/model creds).
+- `platform/tests/test_github.py` — setup-PR assertion updated to the new three runs.
+- `platform/tests/test_read.py` — new `test_findings_response_carries_sca_proposed_fix`: a seeded
+  **SCA** fix keyed by `sca_finding_id` round-trips ingest→read and joins to its dependency finding
+  by `<package>:<advisory_id>` (the SAST join test + cross-org 404 leak test still green).
+- `tests/test_cli.py` — `fix --suggest-json` no-key test rewritten to assert the **graceful empty
+  doc + exit 0**; new proxy-fallback test (no direct key → platform proxy validates a fix); three
+  `suggest --from` tests (posts without re-scanning/re-validating — `build_matcher`/`build_suggest_client`
+  raise if called; dry-run needs no token; malformed doc → exit 2). `scan --upload --suggestions`
+  local-upload e2e (`test_scan_upload_attaches_suggestions`) unchanged and green.
+
+**Soundness/scope:** pure presentation — no tier/score/ranking touched; the fix never changes the
+deterministic verdict. Privacy copy kept honest about what each path sends. **Dashboard untouched**
+(no `npm` gate needed); SCA *rendering* on the card is 19.4, SCA fix *generation* is 19.3.
+
+**Deferred / next:** 19.3 (raise fix yield with deterministic quick-fixes — turns the remaining
+`tests/test_fix_gap.py` yield xfail green and produces real SCA version-bump fixes for this pipeline
+to carry). A live CI e2e (real PR → fixes uploaded → card renders) stays credential-gated by
+prior-task precedent; every hop is proven hermetically here.
+
+---
+
 ## Task 19.1 — Root-cause trace: why zero fixes *and* why none were visible (diagnosis)  (2026-06-15)
 
 **Status:** complete. **Diagnosis only — no production code touched.** Full gate green with the two

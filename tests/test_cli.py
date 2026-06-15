@@ -695,18 +695,45 @@ def test_fix_suggest_json_writes_validated_fixes(
     assert (project / "app.py").read_text(encoding="utf-8") == _FIX_VULN
 
 
-def test_fix_suggest_json_requires_model_key(
+def test_fix_suggest_json_graceful_when_no_client(
     tmp_path: Path,
     monkeypatch,  # type: ignore[no-untyped-def]
     fake_matcher: Callable[..., AdvisoryMatcher],
 ) -> None:
+    """No model key and no platform creds: write an empty valid doc + exit 0 (never fail CI).
+
+    The generated workflow's scan step then still finds its ``--suggestions`` file and uploads it,
+    so a not-yet-keyed repo onboards green (mirrors ``scan --upload``'s missing-key skip, v1.0.5).
+    """
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
-    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: None)
+    monkeypatch.setattr(cli_main, "build_suggest_client", lambda *a, **k: None)
     project = _fix_project(tmp_path)
     out = tmp_path / "suggestions.json"
     result = runner.invoke(app, ["fix", "--suggest-json", str(out), "--path", str(project)])
-    assert result.exit_code == 2
-    assert "ANTHROPIC_API_KEY" in result.output
+    assert result.exit_code == 0, result.output
+    assert "empty suggestions document" in result.output
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["schema_version"] == "1.0" and doc["fixes"] == []
+
+
+def test_fix_suggest_json_falls_back_to_platform_proxy(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    """With no direct model key, the CI fix loop uses the platform proxy (no model-key secret)."""
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    diff = _fix_diff("app.py", _FIX_VULN, _FIX_FIXED)
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli_main, "build_platform_suggest_client", lambda *a, **k: _ScriptedFixClient(diff)
+    )
+    project = _fix_project(tmp_path)
+    out = tmp_path / "suggestions.json"
+    result = runner.invoke(app, ["fix", "--suggest-json", str(out), "--path", str(project)])
+    assert result.exit_code == 0, result.output
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert len(doc["fixes"]) == 1 and "shlex.quote" in doc["fixes"][0]["diff"]
 
 
 def test_fix_without_id_or_suggest_json_is_usage_error(
@@ -1006,3 +1033,85 @@ def test_suggest_no_pr_context_is_noop(
     result = runner.invoke(app, ["suggest", "--path", str(project)])
     assert result.exit_code == 0
     assert "nothing to suggest" in result.output
+
+
+def _suggestions_doc(tmp_path: Path) -> Path:
+    """A valid ``fix --suggest-json`` document with one anchorable validated fix for app.py."""
+    doc = tmp_path / "fixes.json"
+    doc.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "tool_version": "1",
+                "fixes": [
+                    {
+                        "finding_id": "app.py:5:command-injection",
+                        "file": "app.py",
+                        "line": 5,
+                        "cwe": "CWE-78",
+                        "kind": "command-injection",
+                        "title": "t",
+                        "tier": "CONFIRMED-FLOW",
+                        "flow": "run -> os.system (app.py:5)",
+                        "rationale": "quote it",
+                        "confidence": "high",
+                        "diff": _fix_diff("app.py", _FIX_VULN, _FIX_FIXED),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return doc
+
+
+def test_suggest_from_posts_without_revalidating(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    """``suggest --from <doc>`` posts the pre-generated fixes — no scan, no model call (19.2)."""
+
+    def _no_scan() -> object:
+        raise AssertionError("suggest --from must not re-scan or re-validate")
+
+    monkeypatch.setattr(cli_main, "build_matcher", _no_scan)
+    monkeypatch.setattr(cli_main, "build_suggest_client", _no_scan)
+    http = _FakeGitHubHttp()
+    monkeypatch.setattr(cli_main, "build_github_http", lambda: http)
+    _suggest_env(monkeypatch, _pr_event(tmp_path))
+
+    result = runner.invoke(app, ["suggest", "--from", str(_suggestions_doc(tmp_path))])
+
+    assert result.exit_code == 0, result.output
+    assert "Posted 1 in-line suggestion" in result.output
+    assert len(http.reviews) == 1
+    assert http.reviews[0]["event"] == "COMMENT"
+    assert http.reviews[0]["comments"][0]["path"] == "app.py"
+
+
+def test_suggest_from_dry_run_needs_no_token(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: (_ for _ in ()).throw(AssertionError()))
+    http = _FakeGitHubHttp()
+    monkeypatch.setattr(cli_main, "build_github_http", lambda: http)
+    _suggest_env(monkeypatch, _pr_event(tmp_path), token=None)
+
+    result = runner.invoke(
+        app, ["suggest", "--from", str(_suggestions_doc(tmp_path)), "--dry-run"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Dry run" in result.output and "shlex.quote" in result.output
+    assert http.reviews == []
+
+
+def test_suggest_from_rejects_malformed_document(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    _suggest_env(monkeypatch, _pr_event(tmp_path))
+    result = runner.invoke(app, ["suggest", "--from", str(bad)])
+    assert result.exit_code == 2  # Typer BadParameter, no traceback

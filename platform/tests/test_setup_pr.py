@@ -48,11 +48,12 @@ EXPECTED_WORKFLOW = """\
 # VulnAdvisor — reachability-aware dependency triage for Python.
 #
 # Scans on every push to main and on every pull request, then uploads the
-# JSON report to your VulnAdvisor dashboard. On pull requests it also posts one-click,
-# machine-validated fix suggestions in-line using the built-in GITHUB_TOKEN (no GitHub
-# App needed). The scan never sends source code; the suggest step runs the model call on
-# the VulnAdvisor platform (it sends the code around each finding to your own platform),
-# so no model-key secret is needed. The setup PR body explains the details.
+# JSON report — together with machine-validated fix suggestions — to your VulnAdvisor
+# dashboard. On pull requests it also posts those same one-click fixes in-line using the
+# built-in GITHUB_TOKEN (no GitHub App needed). The scan never sends source code; the fix
+# step runs the model call on the VulnAdvisor platform (it sends the code around each
+# finding to your own platform), so no model-key secret is needed. The setup PR body
+# explains the details.
 name: VulnAdvisor
 
 on:
@@ -74,18 +75,24 @@ jobs:
           python-version: "3.12"
       - name: Install VulnAdvisor
         run: pip install vulnadvisor
+      - name: Generate validated fixes
+        env:
+          VULNADVISOR_API_KEY: ${{ secrets.VULNADVISOR_API_KEY }}
+          API_URL: "https://api.vulnadvisor.example"
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: vulnadvisor fix --suggest-json vulnadvisor-fixes.json --path .
       - name: Scan and upload the report
         env:
           VULNADVISOR_API_KEY: ${{ secrets.VULNADVISOR_API_KEY }}
           API_URL: "https://api.vulnadvisor.example"
-        run: vulnadvisor scan . --upload
+        run: vulnadvisor scan . --upload --suggestions vulnadvisor-fixes.json
       - name: Suggest validated fixes on the pull request
         if: github.event_name == 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VULNADVISOR_API_KEY: ${{ secrets.VULNADVISOR_API_KEY }}
-          API_URL: "https://api.vulnadvisor.example"
-        run: vulnadvisor suggest
+        run: vulnadvisor suggest --from vulnadvisor-fixes.json
 """
 
 
@@ -106,20 +113,29 @@ def test_workflow_is_valid_yaml_with_expected_structure() -> None:
     steps = job["steps"]
     assert steps[0]["uses"] == "actions/checkout@v4"
     assert steps[1]["uses"] == "actions/setup-python@v5"
+    # The fix step generates the validated patches once, into the shared document (Task 19.2). It
+    # can use the platform proxy (VULNADVISOR_API_KEY) or any direct model-key secret if present.
+    fix = steps[-3]
+    assert fix["run"] == "vulnadvisor fix --suggest-json vulnadvisor-fixes.json --path ."
+    assert fix["env"]["VULNADVISOR_API_KEY"] == "${{ secrets.VULNADVISOR_API_KEY }}"
+    assert fix["env"]["API_URL"] == _API_URL
+    assert fix["env"]["OPENROUTER_API_KEY"] == "${{ secrets.OPENROUTER_API_KEY }}"
+    # The scan step uploads the report *and* the validated fixes, so they reach Scan.suggestions and
+    # the dashboard finding card (the 19.2 visibility fix). Runs on push and PR alike.
     scan = steps[-2]
-    assert scan["run"] == "vulnadvisor scan . --upload"
+    assert scan["run"] == "vulnadvisor scan . --upload --suggestions vulnadvisor-fixes.json"
     assert scan["env"]["VULNADVISOR_API_KEY"] == "${{ secrets.VULNADVISOR_API_KEY }}"
     assert scan["env"]["API_URL"] == _API_URL
-    # The zero-config PR-suggestion step: no model-key secret — the platform runs the model call
-    # via VULNADVISOR_API_KEY (Task D). Gated to pull requests; GITHUB_TOKEN posts the suggestions.
+    # The PR-suggestion step posts the *same* document (no second fix loop): just GITHUB_TOKEN, no
+    # model-key secret. Gated to pull requests.
     suggest = steps[-1]
-    assert suggest["run"] == "vulnadvisor suggest"
+    assert suggest["run"] == "vulnadvisor suggest --from vulnadvisor-fixes.json"
     assert suggest["if"] == "github.event_name == 'pull_request'"
     assert suggest["env"]["GITHUB_TOKEN"] == "${{ secrets.GITHUB_TOKEN }}"
-    assert suggest["env"]["VULNADVISOR_API_KEY"] == "${{ secrets.VULNADVISOR_API_KEY }}"
-    assert suggest["env"]["API_URL"] == _API_URL
+    # The suggest step neither calls the model nor uploads, so it carries no API/model credentials.
+    assert "VULNADVISOR_API_KEY" not in suggest["env"]
+    assert "API_URL" not in suggest["env"]
     assert "OPENROUTER_API_KEY" not in suggest["env"]
-    assert "ANTHROPIC_API_KEY" not in suggest["env"]
 
 
 @pytest.mark.parametrize("branch", ["main", "master", "release/v1.0", "dev-2026"])
