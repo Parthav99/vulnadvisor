@@ -22,11 +22,17 @@ from vulnadvisor.llm.fix import (
     is_alarming,
     sast_finding_id,
 )
-from vulnadvisor.model.fix import FixConfidence, FixOutcome
+from vulnadvisor.llm.quickfix import QUICK_FIX_CWES
+from vulnadvisor.model.fix import FixConfidence, FixOutcome, FixProvenance
 from vulnadvisor.model.suggestion import SuggestionReport, ValidatedFix
 from vulnadvisor.sast.model import ScoredSastFinding
 
-__all__ = ["build_validated_fix", "generate_suggestions"]
+__all__ = [
+    "build_validated_fix",
+    "deterministic_fixable",
+    "fix_yield",
+    "generate_suggestions",
+]
 
 # A validator factory binds the impure validator to one target finding (17.1 ``build_validator``).
 ValidatorFor = Callable[[ScoredSastFinding], Validator]
@@ -43,7 +49,11 @@ def _flow_text(scored: ScoredSastFinding) -> str:
 
 
 def build_validated_fix(
-    scored: ScoredSastFinding, diff: str, rationale: str, confidence: object
+    scored: ScoredSastFinding,
+    diff: str,
+    rationale: str,
+    confidence: object,
+    provenance: object = FixProvenance.MODEL,
 ) -> ValidatedFix:
     """Assemble the uploadable :class:`ValidatedFix` from a finding and its validated patch."""
     finding = scored.finding
@@ -59,7 +69,28 @@ def build_validated_fix(
         rationale=rationale,
         confidence=confidence if isinstance(confidence, FixConfidence) else FixConfidence.MEDIUM,
         diff=diff,
+        provenance=provenance if isinstance(provenance, FixProvenance) else FixProvenance.MODEL,
     )
+
+
+def deterministic_fixable(scored: ScoredSastFinding) -> bool:
+    """Whether ``scored`` is an alarming finding a deterministic quick-fix targets (Task 19.3).
+
+    Used by the fix-yield metric to count the findings that *should* come back with an offline
+    validated fix — the denominator the quick-fix set is held against.
+    """
+    finding = scored.finding
+    return is_alarming(scored) and (finding.cwe, finding.kind) in QUICK_FIX_CWES
+
+
+def fix_yield(*, validated: int, fixable: int) -> float:
+    """Fix yield: the fraction of fixable findings that produced a validated patch (Task 19.3).
+
+    ``0.0`` when there is nothing to fix (an empty suite is not a regression); clamped to ``[0,1]``.
+    """
+    if fixable <= 0:
+        return 0.0
+    return max(0.0, min(1.0, validated / fixable))
 
 
 def generate_suggestions(
@@ -90,6 +121,7 @@ def generate_suggestions(
             client=client,
             validate=validator_for(scored),
             max_attempts=max_attempts,
+            source_for=source_for,
         )
         validated = result.outcome is FixOutcome.VALIDATED and result.suggestion is not None
         if validated and result.suggestion is not None:
@@ -99,6 +131,7 @@ def generate_suggestions(
                     result.suggestion.diff,
                     result.suggestion.rationale,
                     result.suggestion.confidence,
+                    result.suggestion.provenance,
                 )
             )
         if on_result is not None:

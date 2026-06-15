@@ -4,6 +4,79 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 19.3 — Raise fix yield with deterministic quick-fixes  (2026-06-15)
+
+**Status:** complete. **No new dependency.** Gate green: `ruff check` clean (src + tests + platform),
+`ruff format --check` clean (129 files), `mypy --strict src platform/vulnadvisor_platform` clean (118
+files), **src pytest 916 passed / 1 skipped**, **platform pytest 216 passed**. SAST soundness gate
+re-run (`python -m benchmarks --sast`): **PASS, 0 missed vulns**, exit 0 (detection untouched).
+
+**Maintainer decision (asked up front):** scope the quick-fix set to the **three CWEs the engine
+detects today** (CWE-502 yaml, CWE-78 subprocess-shell, CWE-94 eval) rather than pulling M20/M23
+*detection* work forward. The task lists six CWEs, but weak-hash (327/328), insecure-RNG (330) and
+`verify=False` (295) have **no sink rule yet** — a quick-fix for a vuln the engine never flags is
+dead code (no finding to rewrite, no rescan to prove it). Those land in M23 once their detections do.
+
+**The yield gap (19.1):** the fix loop was **model-only** — no deterministic path — so an offline run
+(no key, or a model that returns nothing the validator accepts) declined *everything*. The decline
+reasons were correct (soundness held); the low **yield** was the bug.
+
+**What changed**
+- **New pure module `llm/quickfix.py`.** `quick_fix_candidates(finding, source_for)` returns 0–1
+  AST-targeted patch candidates for the three CWEs, as a git-appliable unified diff (built with
+  `difflib`, byte-offset span surgery so `col_offset` is handled correctly, aliases like `import
+  yaml as y` preserved by renaming only the `.attr`). Builders: **yaml** `load`/`load_all`/`unsafe_*`
+  → `safe_load`/`safe_load_all` (drops a `Loader=` arg — that *is* the safe form); **subprocess**
+  `shell=True`→`shlex.split(cmd)` + `shell=False` (only when `shell` is a *literal* `True`, adds
+  `import shlex`); **eval** single-arg → `ast.literal_eval` (adds `import ast`, declines exec/compile
+  and the globals/locals form). Each builder is **gated on the engine's resolved `finding.callee`**,
+  so `pickle.load`/`marshal.load` (same CWE-502/kind, no safe drop-in) and `os.system` (CWE-78, no
+  `shell=`) correctly **decline** instead of being mangled. Fully defensive: unreadable/oversized/
+  unparseable source, a missing call, or any shape it can't map cleanly → `[]` (no candidate).
+- **`generate_fix` (`llm/fix.py`) runs quick-fixes first.** New optional `source_for` param: when
+  given, each quick-fix candidate is run through the **same injected validator** (apply → ruff →
+  mypy → tests → re-scan clean); a passing one returns `VALIDATED` immediately with **no model call**.
+  `client` is now `LLMClient | None` — a quick-fix that validates needs no key; when none validates
+  and `client is None` the outcome is `NO_SAFE_FIX`. The quality bar is identical: an unproven patch
+  is never emitted, whatever produced it.
+- **Provenance plumbing (for 19.4's badge).** New `FixProvenance` enum (`deterministic`/`model`) on
+  `FixSuggestion` (default `model`, so the parsed model path is unchanged) and on `ValidatedFix`
+  (additive — the platform `parse_suggestions` ignores unknown fields, so old/new docs both ingest).
+  `build_validated_fix` and `generate_suggestions` thread it through.
+- **Fix-yield metric (`llm/suggest.py`).** `deterministic_fixable(scored)` (the denominator) +
+  `fix_yield(validated, fixable)` (clamped `[0,1]`). **Documented target: 1.0 for the quick-fix CWEs
+  offline** — proven by `test_fix_yield_is_total_for_the_quickfix_cwes` (3 CWEs in one project, all 3
+  come back validated with no model call).
+- **CLI `fix` (`cli/main.py`).** No longer exits 2 when no model key — it runs quick-fixes offline
+  first; only when none apply does it report `NO_SAFE_FIX` (exit 1) with the missing-key hint. Output
+  now badges the origin: "Validated patch found (deterministic quick-fix)" vs "(model, confidence: …)".
+- **README.** New paragraph in the *Validated fixes* section: the three deterministic quick-fixes
+  work with **no model key**, run before the model, and are accepted only after the same validator.
+
+**Tests**
+- `tests/test_fix_gap.py` — 19.1's yield `xfail(strict)` **marker removed**; now a plain green
+  regression (offline `yaml.load` → validated `safe_load`, provenance `deterministic`).
+- `tests/test_quickfix.py` (new, 17 tests) — **pure** (the exact rewrite per CWE; alias preserved;
+  Loader dropped; and the five **decline** shapes: pickle/os.system/non-literal-shell/eval-with-
+  globals/non-quickfix-CWE/unreadable source) + **end-to-end** (a `_NeverCalledClient` proves the
+  quick-fix needs no model call; real validator via git/ruff/rescan; pickle declines then the
+  key-less model yields nothing; fix-yield = 1.0 over a 3-CWE project; metric bounds).
+- `tests/test_cli.py` — `test_fix_requires_model_key` rewritten to the new contract (os.system, no
+  key → exit 1 "no safe fix" + key hint); new `test_fix_deterministic_quickfix_works_offline`
+  (yaml, no key → exit 0, "deterministic quick-fix", `yaml.safe_load`).
+
+**Soundness/scope:** detection untouched (benchmark recall still 0-missed); the quick-fix changes
+*how a fix is produced*, never a tier/score/ranking. Every emitted patch — deterministic or model —
+clears the identical 17.1 validator, so "never bogus" holds.
+
+**Deferred / next:** **19.4** (fix-centric card redesign — surface the new `provenance` as a
+"deterministic vs model" badge + "Fix ready" state, `dashboard-v1.2`). The remaining CWE quick-fix
+templates (weak hash, insecure RNG, `verify=False`) wait on their **detections** in M20/M23, then
+generalize this exact set. Live e2e (real PR → offline quick-fix suggested → card renders) stays
+credential-gated by prior-task precedent; every hop is proven hermetically here.
+
+---
+
 ## Task 19.2 — Repair the fix→dashboard visibility pipeline  (2026-06-15)
 
 **Status:** complete. **No new dependency.** Gate green: `ruff check` clean, `ruff format --check`

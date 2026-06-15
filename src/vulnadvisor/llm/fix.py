@@ -18,6 +18,7 @@ import json
 from collections.abc import Callable, Sequence
 
 from vulnadvisor.llm.client import LLMClient, LLMError
+from vulnadvisor.llm.quickfix import SourceFor, quick_fix_candidates
 from vulnadvisor.model.fix import (
     FixAttempt,
     FixConfidence,
@@ -345,19 +346,39 @@ def generate_fix(
     *,
     finding: SastFinding,
     code_context: str,
-    client: LLMClient,
+    client: LLMClient | None,
     validate: Validator,
     max_attempts: int = 3,
+    source_for: SourceFor | None = None,
 ) -> FixResult:
-    """Drive the propose->validate->retry loop and return the validated patch, or "no safe fix".
+    """Drive the (quick-fix ->) propose->validate->retry loop, returning a validated patch or none.
 
-    Each iteration asks ``client`` for a patch, parses it, and runs the injected ``validate``. On
-    success the validated :class:`FixSuggestion` is returned immediately. On failure the validation
-    feedback is fed into the next prompt. After ``max_attempts`` without a passing patch the outcome
-    is :attr:`~vulnadvisor.model.fix.FixOutcome.NO_SAFE_FIX` and ``suggestion`` is ``None`` — an
-    unvalidated patch is never returned.
+    When ``source_for`` is supplied, **deterministic quick-fixes run first** (Task 19.3): for a CWE
+    with an unambiguous safe rewrite (``yaml.load`` -> ``yaml.safe_load`` and friends) the patch is
+    generated offline by an AST edit and run through the *same* ``validate``; a passing candidate is
+    returned immediately, with no model call. A quick-fix that fails validation (or none exists) is
+    recorded as an attempt and the loop falls through to the model.
+
+    Each model iteration asks ``client`` for a patch, parses it, and runs ``validate``. On success
+    the validated :class:`FixSuggestion` is returned; on failure the feedback is fed into the next
+    prompt. After ``max_attempts`` without a passing patch — or when ``client`` is ``None`` and no
+    quick-fix validated — the outcome is :attr:`~vulnadvisor.model.fix.FixOutcome.NO_SAFE_FIX` and
+    ``suggestion`` is ``None``. An unvalidated patch is never returned, however it was produced.
     """
     attempts: list[FixAttempt] = []
+
+    if source_for is not None:
+        for candidate in quick_fix_candidates(finding, source_for):
+            report = validate(candidate)
+            attempts.append(FixAttempt(suggestion=candidate, report=report))
+            if report.ok:
+                return FixResult(
+                    outcome=FixOutcome.VALIDATED, suggestion=candidate, attempts=tuple(attempts)
+                )
+
+    if client is None:
+        return FixResult(outcome=FixOutcome.NO_SAFE_FIX, suggestion=None, attempts=tuple(attempts))
+
     feedback: str | None = None
     for _ in range(max(1, max_attempts)):
         system, user = build_fix_messages(finding, code_context, feedback)

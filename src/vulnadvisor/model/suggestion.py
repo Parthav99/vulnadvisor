@@ -13,7 +13,7 @@ engine facts needed to render the 3-card story PR-side) so the platform never re
 
 from pydantic import BaseModel, ConfigDict
 
-from vulnadvisor.model.fix import FixConfidence
+from vulnadvisor.model.fix import FixConfidence, FixProvenance
 
 __all__ = ["SUGGESTION_SCHEMA_VERSION", "SuggestionReport", "ValidatedFix"]
 
@@ -42,6 +42,9 @@ class ValidatedFix(BaseModel):
     rationale: str
     confidence: FixConfidence
     diff: str
+    # How the patch was produced (deterministic quick-fix vs model). Both passed the same validator
+    # (19.3); the dashboard badges them distinctly (19.4). Defaults to model for back-compat.
+    provenance: FixProvenance = FixProvenance.MODEL
 
 
 class SuggestionReport(BaseModel):

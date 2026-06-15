@@ -154,6 +154,13 @@ parsing/linting/type-checking, pass your tests, and make the finding disappear f
 without introducing a new one. Only a fully validated patch is shown; otherwise you get an honest
 "no safe fix found". The working tree is never touched unless you pass `--apply`.
 
+For the common vulnerabilities with an unambiguous safe rewrite — `yaml.load` → `yaml.safe_load`
+(CWE-502), `subprocess(..., shell=True)` → `shlex.split(...)` + `shell=False` (CWE-78), and
+`eval(...)` → `ast.literal_eval(...)` (CWE-94) — VulnAdvisor produces a **deterministic quick-fix
+with no model key at all**: an AST-targeted rewrite that runs *before* the model and is accepted
+only after passing the very same validation loop. A quick-fix that can't be made safely declines to
+the model; an unproven patch is never emitted either way.
+
 The fix loop is **provider-flexible** — any OpenAI-compatible key works, so a **free OpenRouter
 key is enough**; an Anthropic key is no longer required. The provider is detected from the key
 prefix (`sk-or-` → OpenRouter, `sk-ant-` → Anthropic, `sk-`/`sk-proj-` → OpenAI), read in this

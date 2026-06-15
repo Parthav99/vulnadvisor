@@ -581,16 +581,19 @@ def _fix_project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_fix_requires_model_key(
+def test_fix_without_a_key_and_no_quickfix_reports_the_missing_key(
     tmp_path: Path,
     monkeypatch,  # type: ignore[no-untyped-def]
     fake_matcher: Callable[..., AdvisoryMatcher],
 ) -> None:
+    # _FIX_VULN is os.system (no deterministic quick-fix), so with no model key the loop genuinely
+    # declines (Task 19.3): exit 1 ("no safe fix"), with the missing-key hint to enable the model.
     monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
     monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: None)
     project = _fix_project(tmp_path)
     result = runner.invoke(app, ["fix", "app.py", "--path", str(project)])
-    assert result.exit_code == 2
+    assert result.exit_code == 1
+    assert "No safe fix found" in result.output
     assert "ANTHROPIC_API_KEY" in result.output
 
 
@@ -605,6 +608,25 @@ def test_fix_unknown_finding_id_is_usage_error(
     result = runner.invoke(app, ["fix", "nope.py", "--path", str(project)])
     assert result.exit_code == 2
     assert "no first-party finding matches" in result.output
+
+
+def test_fix_deterministic_quickfix_works_offline(
+    tmp_path: Path,
+    monkeypatch,  # type: ignore[no-untyped-def]
+    fake_matcher: Callable[..., AdvisoryMatcher],
+) -> None:
+    # No model key at all: a yaml.load finding is fixed by the deterministic quick-fix (Task 19.3),
+    # validated locally, and reported as a quick-fix — never touching the (None) client.
+    monkeypatch.setattr(cli_main, "build_matcher", lambda: fake_matcher())
+    monkeypatch.setattr(cli_main, "build_fix_client", lambda *a, **k: None)
+    (tmp_path / "app.py").write_text(
+        "import yaml\n\n\ndef load_config(data):\n    return yaml.load(data)\n", encoding="utf-8"
+    )
+
+    result = runner.invoke(app, ["fix", "app.py", "--path", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert "deterministic quick-fix" in result.output
+    assert "yaml.safe_load" in result.output
 
 
 def test_fix_prints_validated_diff_without_applying(
@@ -1098,9 +1120,7 @@ def test_suggest_from_dry_run_needs_no_token(
     monkeypatch.setattr(cli_main, "build_github_http", lambda: http)
     _suggest_env(monkeypatch, _pr_event(tmp_path), token=None)
 
-    result = runner.invoke(
-        app, ["suggest", "--from", str(_suggestions_doc(tmp_path)), "--dry-run"]
-    )
+    result = runner.invoke(app, ["suggest", "--from", str(_suggestions_doc(tmp_path)), "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "Dry run" in result.output and "shlex.quote" in result.output
     assert http.reviews == []

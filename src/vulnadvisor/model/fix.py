@@ -19,6 +19,7 @@ __all__ = [
     "FixAttempt",
     "FixConfidence",
     "FixOutcome",
+    "FixProvenance",
     "FixResult",
     "FixSuggestion",
     "StepStatus",
@@ -35,6 +36,19 @@ class FixConfidence(str, Enum):
     LOW = "low"
 
 
+class FixProvenance(str, Enum):
+    """Where a patch came from — a deterministic quick-fix rewrite or the language model.
+
+    Both kinds clear the *same* validation loop before they are ever emitted (Task 19.3); this only
+    records *how* the candidate was produced so the dashboard can badge a high-confidence
+    deterministic rewrite distinctly from a model-authored one (Task 19.4). It never affects
+    validation or the deterministic verdict.
+    """
+
+    DETERMINISTIC = "deterministic"
+    MODEL = "model"
+
+
 class FixSuggestion(BaseModel):
     """One candidate patch from the model: a unified diff plus prose, strictly validated.
 
@@ -44,6 +58,8 @@ class FixSuggestion(BaseModel):
         rationale: Plain-English explanation of what the patch changes and why it is safe.
         confidence: The model's self-reported confidence — advisory only; the validation loop, not
             this value, decides whether a patch is emitted.
+        provenance: How the candidate was produced — a deterministic quick-fix or the model
+            (Task 19.3). Advisory only; both kinds pass the same validator before being emitted.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -51,6 +67,7 @@ class FixSuggestion(BaseModel):
     diff: str
     rationale: str
     confidence: FixConfidence = FixConfidence.MEDIUM
+    provenance: FixProvenance = FixProvenance.MODEL
 
 
 class StepStatus(str, Enum):

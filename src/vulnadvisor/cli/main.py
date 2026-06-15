@@ -39,7 +39,7 @@ from vulnadvisor.llm.fix_validate import PatchApplyError, apply_patch_to_tree, b
 from vulnadvisor.llm.proxy import PlatformSuggestClient
 from vulnadvisor.llm.suggest import generate_suggestions
 from vulnadvisor.model.advisory import Advisory
-from vulnadvisor.model.fix import FixOutcome
+from vulnadvisor.model.fix import FixOutcome, FixProvenance
 from vulnadvisor.model.score import ScoredFinding
 from vulnadvisor.model.suggestion import SuggestionReport
 from vulnadvisor.output.credentials import (
@@ -824,10 +824,9 @@ def fix(
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(code=2) from exc
 
+    # A direct model key (or platform proxy) handles the long tail; deterministic quick-fixes
+    # (Task 19.3) still run offline for the common CWEs, so a missing key is no longer fatal here.
     client = build_fix_client(provider, model)
-    if client is None:
-        typer.secho(_MISSING_FIX_KEY_MESSAGE, fg=typer.colors.RED, err=True)
-        raise typer.Exit(code=2)
 
     def source_for(rel: str) -> str | None:
         try:
@@ -844,6 +843,7 @@ def fix(
         client=client,
         validate=validate,
         max_attempts=max_attempts,
+        source_for=source_for,
     )
 
     if result.outcome is not FixOutcome.VALIDATED or result.suggestion is None:
@@ -858,11 +858,18 @@ def fix(
             else:
                 reason = attempt.note or "no patch produced"
             typer.echo(f"  Attempt {index}: {reason}", err=True)
+        if client is None:
+            typer.secho(_MISSING_FIX_KEY_MESSAGE, fg=typer.colors.YELLOW, err=True)
         raise typer.Exit(code=1)
 
     suggestion = result.suggestion
+    origin = (
+        "deterministic quick-fix"
+        if suggestion.provenance is FixProvenance.DETERMINISTIC
+        else f"model, confidence: {suggestion.confidence.value}"
+    )
     typer.secho(
-        f"Validated patch found (model confidence: {suggestion.confidence.value}).",
+        f"Validated patch found ({origin}).",
         fg=typer.colors.GREEN,
     )
     typer.echo(f"Rationale: {suggestion.rationale}\n")
@@ -1037,7 +1044,7 @@ def suggest(
             readable=True,
             help="Post the validated fixes from this 'fix --suggest-json' document instead of "
             "re-scanning and re-validating. The generated CI workflow uses this so one fix loop "
-            "feeds both the dashboard upload and the in-line PR suggestions (single source of truth).",
+            "feeds both the dashboard upload and the in-line PR suggestions (one source of truth).",
         ),
     ] = None,
     dry_run: Annotated[
