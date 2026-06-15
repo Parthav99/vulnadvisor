@@ -51,6 +51,13 @@ _FLASK_REQUEST_FQN = "flask.request"
 # Calls whose presence on a tainted value's provenance blocks certainty (docs §4 DYNAMIC_UNKNOWN).
 _DYNAMIC_NAMES = frozenset({"eval", "exec", "__import__", "getattr"})
 
+# In-place container mutators: ``c.append(t)`` / ``c.update(t)`` etc. taint the receiver ``c`` with
+# the argument's taint (the result is usually discarded, so the effect is on the container, not a
+# return value). Whole-container conservatism — a tainted element taints the whole container.
+_MUTATION_METHODS = frozenset(
+    {"append", "extend", "insert", "add", "update", "setdefault", "__setitem__"}
+)
+
 # Framework -> the source-kind label reported for an entry-point parameter.
 _FRAMEWORK_SOURCE_KIND: dict[str, str] = {
     "fastapi": "http-parameter",
@@ -134,7 +141,13 @@ def _param_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str
 
 
 def _target_names(target: ast.expr) -> list[str]:
-    """The simple ``Name`` ids bound by an assignment target (recursing tuple/list unpacking)."""
+    """The simple ``Name`` ids that receive an assignment's value taint.
+
+    Recurses tuple/list unpacking and ``*starred`` targets. A subscript target ``c[k] = v`` taints
+    the *whole container* ``c`` (Task 20.1: index-sensitivity is not tracked, so a tainted element
+    conservatively taints the container — a sound over-approximation, never a downgrade). ``x.y =``
+    attribute writes are still untracked here (object/field taint is Task 20.3).
+    """
     if isinstance(target, ast.Name):
         return [target.id]
     if isinstance(target, ast.Tuple | ast.List):
@@ -144,7 +157,22 @@ def _target_names(target: ast.expr) -> list[str]:
         return names
     if isinstance(target, ast.Starred):
         return _target_names(target.value)
-    return []  # x.y = / x[i] = : field/index taint is not tracked (a known under-approximation)
+    if isinstance(target, ast.Subscript):
+        return _base_name_ids(target.value)  # c[k] = v -> taint container c (whole-container)
+    return []  # x.y = : attribute/field taint is Task 20.3, not tracked here
+
+
+def _base_name_ids(node: ast.expr) -> list[str]:
+    """The root ``Name`` id of a subscript chain (``c[i][j]`` -> ``['c']``), else ``[]``.
+
+    Used for whole-container taint on subscript writes and in-place mutation: the base local that
+    holds the container is the thing taint attaches to. An attribute base (``self.items[i]``) is not
+    a local name, so it yields ``[]`` (object/field taint is Task 20.3).
+    """
+    cur: ast.expr = node
+    while isinstance(cur, ast.Subscript):
+        cur = cur.value
+    return [cur.id] if isinstance(cur, ast.Name) else []
 
 
 class _Analyzer:
@@ -409,9 +437,40 @@ class _Analyzer:
                     value = self._eval(stmt.context_expr, tainted)
                     for name in _target_names(stmt.optional_vars):
                         changed |= self._add(tainted, name, value)
+                elif isinstance(stmt, ast.ListComp | ast.SetComp | ast.GeneratorExp | ast.DictComp):
+                    # Bind each comprehension loop variable to its iterable's taint, so a sink that
+                    # consumes the element (``[os.system(x) for x in tainted]``) is seen. Names leak
+                    # into the shared state -> at worst an over-taint, never a downgrade.
+                    for gen in stmt.generators:
+                        value = self._eval(gen.iter, tainted)
+                        for name in _target_names(gen.target):
+                            changed |= self._add(tainted, name, value)
+                elif isinstance(stmt, ast.Call):
+                    target_name, value = self._mutation_effect(stmt, tainted)
+                    if target_name is not None:
+                        changed |= self._add(tainted, target_name, value)
             if not changed:
                 break
         return tainted
+
+    def _mutation_effect(
+        self, call: ast.Call, tainted: dict[str, _Taint]
+    ) -> tuple[str | None, _Taint | None]:
+        """Taint carried into a container by an in-place mutator (``c.append(t)`` -> taint ``c``).
+
+        Returns ``(receiver_name, taint)`` when ``call`` is a recognized mutation method on a local
+        container and an argument carries taint, else ``(None, None)``. The receiver is the base
+        local of the (possibly subscripted) chain; an attribute receiver is left to Task 20.3.
+        """
+        func = call.func
+        if not isinstance(func, ast.Attribute) or func.attr not in _MUTATION_METHODS:
+            return None, None
+        bases = _base_name_ids(func.value)
+        if not bases:
+            return None, None
+        parts = [self._eval(a, tainted) for a in call.args]
+        parts += [self._eval(k.value, tainted) for k in call.keywords]
+        return bases[0], self._combine(parts)
 
     def _add(self, tainted: dict[str, _Taint], name: str, value: _Taint | None) -> bool:
         """Merge ``value`` into ``tainted[name]`` (taint only grows); return whether it changed."""

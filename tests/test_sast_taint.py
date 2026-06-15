@@ -331,6 +331,131 @@ def test_local_non_source_value_is_not_confirmed() -> None:
     )
 
 
+# --- Task 20.1: container & data-structure taint --------------------------------------------
+
+_ENTRY = "import os\nfrom fastapi import FastAPI\napp = FastAPI()\n"
+
+
+def _route(body: str, *, imports: str = "") -> str:
+    """A FastAPI route whose parameters are taint sources, wrapping ``body`` (4-space indented)."""
+    sig = "def r(cmd):\n"
+    return f"{_ENTRY}{imports}@app.get('/r')\n{sig}{body}"
+
+
+def test_container_list_append_to_sink() -> None:
+    f = _one(_route("    parts = []\n    parts.append(cmd)\n    os.system(parts[0])\n"))
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.cwe == "CWE-78"
+
+
+def test_container_list_extend_to_sink() -> None:
+    f = _one(
+        _ENTRY + "@app.get('/r')\n"
+        "def r(args):\n"
+        "    cmds = []\n"
+        "    cmds.extend(args)\n"
+        "    os.system(cmds[0])\n"
+    )
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_container_dict_value_to_sink() -> None:
+    f = _one(_route("    d = {}\n    d['k'] = cmd\n    os.system(d['k'])\n"))
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_container_dict_update_to_sink() -> None:
+    f = _one(
+        _ENTRY + "@app.get('/r')\n"
+        "def r(extra):\n"
+        "    cfg = {}\n"
+        "    cfg.update(extra)\n"
+        "    os.system(cfg['cmd'])\n"
+    )
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_container_set_add_to_sink() -> None:
+    f = _one(_route("    s = set()\n    s.add(cmd)\n    for v in s:\n        os.system(v)\n"))
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_container_comprehension_sink_on_element() -> None:
+    # The sink consumes the comprehension loop variable bound to a tainted iterable.
+    f = _one(_ENTRY + "@app.get('/r')\ndef r(items):\n    [os.system(x) for x in items]\n")
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_container_comprehension_result_to_sink() -> None:
+    f = _one(
+        _ENTRY + "@app.get('/r')\n"
+        "def r(names):\n"
+        "    cmds = [n for n in names]\n"
+        "    os.system(cmds[0])\n"
+    )
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_container_tuple_unpack_to_sink() -> None:
+    f = _one(_ENTRY + "@app.get('/r')\ndef r(pair):\n    a, b = pair\n    os.system(a)\n")
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_string_join_to_sink() -> None:
+    f = _one(_ENTRY + "@app.get('/r')\ndef r(args):\n    os.system(' '.join(args))\n")
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_os_path_join_to_sink() -> None:
+    f = _one(_ENTRY + "@app.get('/f')\ndef f(name):\n    open(os.path.join('/data', name))\n")
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.cwe == "CWE-22"
+
+
+def test_nested_container_to_sink() -> None:
+    f = _one(_route("    d = {}\n    d['x'] = [cmd]\n    os.system(d['x'][0])\n"))
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_sanitized_in_container_is_not_escalated() -> None:
+    # shlex.quote survives the container round-trip -> CWE-78 stays cleared, no escalation.
+    findings = _findings(
+        _route(
+            "    parts = []\n    parts.append(shlex.quote(cmd))\n    os.system(parts[0])\n",
+            imports="import shlex\n",
+        )
+    )
+    assert findings == ()
+
+
+def test_dynamic_index_is_blocked_not_dropped() -> None:
+    # A dynamic value stored in and read from a container keeps its dynamic flag -> DYNAMIC_UNKNOWN,
+    # never silently cleared.
+    f = _one(
+        _ENTRY + "@app.get('/r')\n"
+        "def r(name, payload, builders):\n"
+        "    params = {}\n"
+        "    params['cmd'] = getattr(builders, name)(payload)\n"
+        "    os.system(params['cmd'])\n"
+    )
+    assert f.tier is SastTier.DYNAMIC_UNKNOWN
+    assert f.cwe == "CWE-78"
+
+
+def test_clean_container_yields_no_escalation() -> None:
+    # A literal element appended to a container is not tainted -> no escalation (soundness floor).
+    assert (
+        _findings(
+            _ENTRY + "@app.get('/r')\n"
+            "def r():\n"
+            "    parts = []\n"
+            "    parts.append('ls')\n"
+            "    os.system(parts[0])\n"
+        )
+        == ()
+    )
+
+
 # --- merge semantics over a real project (analyze_taint) ------------------------------------
 
 

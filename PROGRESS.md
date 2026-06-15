@@ -4,6 +4,47 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 20.1 — Container & data-structure taint propagation  (2026-06-15)
+
+**Status:** complete. **No new dependency.** Gate green: `ruff check src tests` clean, `ruff format
+--check` clean (129 files), `mypy --strict src` clean (87 files), **full pytest 931 passed / 1
+skipped** (+14 new taint fixtures). SAST soundness gate re-run (`python -m benchmarks --sast`):
+**PASS, 0 missed vulns**, exit 0 (detection/scoring untouched).
+
+**What changed** (all in `sast/taint.py`, pure, no I/O — three sound additions, each an
+over-approximation that can only *raise* concern, never downgrade a real flow):
+- **In-place mutation methods.** New `_MUTATION_METHODS` (`append`/`extend`/`insert`/`add`/`update`/
+  `setdefault`/`__setitem__`). `_local_state` now visits bare `ast.Call` nodes: `_mutation_effect`
+  detects `c.append(t)`-style mutators whose receiver is a local (or subscript-of-local) container
+  and taints that receiver with the argument taint — closing the `lst=[]; lst.append(cmd);
+  sink(lst[0])` false-negative. Sanitizer `cleared` sets survive (args are `_eval`'d directly, so
+  `parts.append(shlex.quote(cmd))` keeps CWE-78 cleared).
+- **Subscript-assignment.** `_target_names` now returns the base local of a `Subscript` target
+  (`c[k] = v` taints the whole container `c`) via new `_base_name_ids` (root `Name` of a subscript
+  chain; an attribute base yields `[]` — object/field taint is Task 20.3). Whole-container
+  conservatism: index-sensitivity is deliberately not tracked.
+- **Comprehension loop-vars.** `_local_state` binds each `ListComp`/`SetComp`/`GeneratorExp`/
+  `DictComp` generator target to its iterable's taint, so a sink *inside* a comprehension
+  (`[os.system(x) for x in tainted]`) is seen. Names leak into the shared per-function state — at
+  worst an over-taint, never a miss.
+- `.join` / `os.path.join` / `+` chains already propagated (via the existing unknown-call arg-merge
+  and `BinOp` handling); 20.1 adds fixtures proving it rather than new code.
+
+**Tests** (`tests/test_sast_taint.py`, +14): list-append, list-extend, dict-value, dict-update,
+set-add, comprehension-element-sink, comprehension-result, tuple-unpack, `str.join`, `os.path.join`
+(CWE-22), nested container, **sanitized-in-container** (negative — `shlex.quote` survives the
+round-trip), **dynamic-index-blocked** (a `getattr`-built element stored/read through a dict stays
+`DYNAMIC_UNKNOWN`, never silently cleared), and a clean-container negative (literal element → no
+escalation).
+
+**Soundness/scope:** whole-container conservatism — a tainted element taints the container; reads off
+a tainted container are tainted; dynamic provenance is preserved through containers. Over-tainting
+(e.g. a non-container `.append`) only over-reports, the safe direction. Perf within the existing 10 s
+budget (the `test_performance_budget_under_10s` gate stayed green). **Deferred:** attribute/field
+taint (`self.x`, `x.y =`) is Task 20.3; cross-module summaries are Task 20.2.
+
+---
+
 ## Task 19.4 — Fix-centric finding card (the centrepiece redesign)  (2026-06-15)
 
 **Status:** complete (**dashboard-v1.2**). **No new dependency.** Gate green: `ruff check` clean
