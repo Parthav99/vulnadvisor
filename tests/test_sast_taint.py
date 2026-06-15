@@ -484,6 +484,76 @@ def test_no_confirmed_flow_is_dropped_below_possible() -> None:
     assert len(findings) == 3
 
 
+# --- cross-module / cross-file taint (Task 20.2) --------------------------------------------
+
+
+def _xmodule() -> dict[tuple[str, int], SastFinding]:
+    return {(f.file, f.line): f for f in analyze_taint(PROJECTS / "taint_xmodule")}
+
+
+def test_xmodule_direct_flow_into_imported_helper() -> None:
+    # A tainted entry-point param flows into a sink in *another* module via ``from helpers import``.
+    f = _xmodule()[("helpers.py", 10)]
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.source_kind == "http-parameter"
+    assert f.flow is not None
+    assert f.flow.render() == "r_direct -> run_cmd -> os.system (helpers.py:10)"
+
+
+def test_xmodule_flow_via_reexport() -> None:
+    # ``from pkg import reexported_sink`` resolves through pkg/__init__'s ``from .impl import``.
+    f = _xmodule()[("pkg/impl.py", 8)]
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.flow is not None
+    assert f.flow.render() == "r_reexport -> reexported_sink -> os.system (pkg/impl.py:8)"
+
+
+def test_xmodule_flow_via_wrapper_chain() -> None:
+    # Two module hops: entry -> helpers.wrap1 -> deeper.wrap2 -> os.system.
+    f = _xmodule()[("deeper.py", 8)]
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.flow is not None
+    assert f.flow.render() == "r_wrapper -> wrap1 -> wrap2 -> os.system (deeper.py:8)"
+
+
+def test_xmodule_sanitized_in_another_module_is_not_confirmed() -> None:
+    # safe.sanitize() wraps shlex.quote; the cleared CWE crosses the boundary, so the entry sink
+    # stays POSSIBLE_FLOW (never escalated). Soundness: a real partial sanitizer is honored.
+    f = _xmodule()[("entry.py", 43)]
+    assert f.tier is SastTier.POSSIBLE_FLOW
+
+
+def test_xmodule_class_method_across_modules() -> None:
+    # ``Service().run(tainted)`` — instance method resolved in another module, self skipped.
+    f = _xmodule()[("service.py", 9)]
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.flow is not None
+    assert f.flow.render() == "r_method -> Service.run -> os.system (service.py:9)"
+
+
+def test_xmodule_not_reachable_stays_possible() -> None:
+    # The orphan helper is only called with a literal, never the tainted param -> not CONFIRMED.
+    f = _xmodule()[("helpers.py", 20)]
+    assert f.tier is SastTier.POSSIBLE_FLOW
+
+
+def test_xmodule_zero_missed_cross_module_flows() -> None:
+    # Release-blocking soundness: every genuinely reachable cross-module sink is CONFIRMED.
+    by_loc = _xmodule()
+    confirmed = {loc for loc, f in by_loc.items() if f.tier is SastTier.CONFIRMED_FLOW}
+    assert confirmed == {
+        ("helpers.py", 10),
+        ("pkg/impl.py", 8),
+        ("deeper.py", 8),
+        ("service.py", 9),
+    }
+
+
+def test_xmodule_summaries_order_independent_and_deterministic() -> None:
+    # Per-function summaries must not depend on module/discovery order: repeated runs are identical.
+    assert analyze_taint(PROJECTS / "taint_xmodule") == analyze_taint(PROJECTS / "taint_xmodule")
+
+
 # --- robustness: whole-tree, determinism, performance ---------------------------------------
 
 

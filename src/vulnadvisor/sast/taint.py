@@ -1,22 +1,31 @@
 # File: src/vulnadvisor/sast/taint.py
-"""Demand-driven taint propagation: prove a flow from a real source to a sink (Task 16.3).
+"""Demand-driven taint propagation: prove a flow from a real source to a sink (Task 16.3 / 20.2).
 
 This is the SAST differentiator. Task 16.2 finds every sink and classifies it *intra-procedurally*
 (literal -> ``SANITIZED``, non-literal -> ``POSSIBLE_FLOW``). Task 16.3 takes those as a floor and
-**escalates** the ones it can tie to a recognized taint source:
+**escalates** the ones it can tie to a recognized taint source; Task 20.2 carries that escalation
+*across module boundaries* so a source in module A reaching a sink in module B via an imported
+callable is still ``CONFIRMED_FLOW``.
 
 * **Sources** seed taint — framework entry-point parameters (FastAPI/Flask routes, Django views and
-  signals, Celery tasks — the breadth expansion this task adds), the Flask ``request`` global, and
-  ``stdin`` / ``argv`` / the process environment.
-* **Propagation** is conservative and intra-/inter-procedural over the *same per-file call graph the
-  SCA reachability engine uses*: assignments, calls passing a tainted value to a first-party helper
-  (taint flows to the parameter), returns, f-strings / ``%`` / ``+`` concatenation, and containers.
-  When unsure, a value is treated as tainted (over-report, then let the tier speak) — never the
-  reverse.
+  signals, Celery tasks), the Flask ``request`` global, and ``stdin`` / ``argv`` / the environment.
+* **Propagation** is conservative and inter-procedural over the project's import/call graph:
+  assignments, calls passing a tainted value to a first-party helper (taint flows to the parameter),
+  returns, f-strings / ``%`` / ``+`` concatenation, and containers. **Cross-module** calls are
+  resolved through imports — ``from pkg.helpers import f`` (incl. relative imports and re-export
+  chains), ``pkg.helpers.f(...)``, and class methods reached via ``Cls()``/``Cls.static`` — and a
+  reused **per-function taint summary** (does a tainted parameter taint the return value?) keeps the
+  search tractable. When unsure, a value is treated as tainted (over-report, then let the tier
+  speak) — never the reverse.
 * **Sinks** are the §3 rule pack. A tainted value reaching a sink's dangerous argument with no
   CWE-matching sanitizer on the path -> ``CONFIRMED_FLOW`` with the source->sink :class:`CallPath`
   as evidence. A path crossing a dynamic construct (``eval``/``exec``/``getattr`` dispatch, a
   computed callee) -> ``DYNAMIC_UNKNOWN`` — escalated, never quietly dropped.
+
+**FFI boundary policy** (docs/sast-design.md): a call into a callable the engine cannot resolve —
+a third-party function, a C/Rust native extension, or any unparsed module — falls to
+:meth:`_Analyzer._unknown_call`, which *keeps* the value tainted (dropping any sanitizer claims). A
+crossing into native code therefore escalates the taint, never silently terminates the trace.
 
 Soundness direction is always *toward* a finding (docs/sast-design.md §4): a sink the engine cannot
 tie to a source keeps its intra-procedural tier; the taint pass only ever raises concern. The
@@ -27,7 +36,7 @@ branch). The per-source function is pure; the only I/O is reading the project's 
 
 import ast
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from vulnadvisor.callgraph.frameworks import DEFAULT_PLUGINS, FrameworkPlugin
@@ -67,6 +76,11 @@ _FRAMEWORK_SOURCE_KIND: dict[str, str] = {
 }
 _DEFAULT_ENTRY_SOURCE_KIND = "entry-parameter"
 
+# A summary/emit memo key: a function is identified project-wide by its module and qualname, and an
+# analysis is parameterized by *which* of its parameters carry taint (the source identity is an
+# over-approximation kept out of the key — the first reaching flow supplies the evidence).
+_SummaryKey = tuple[str, str, frozenset[str]]
+
 
 def _sanitizer_map() -> dict[str, frozenset[str]]:
     """Build ``sanitizer-name -> {cleared CWEs}`` from the rule pack (a sanitizer is CWE-scoped)."""
@@ -78,6 +92,27 @@ def _sanitizer_map() -> dict[str, frozenset[str]]:
 
 
 _SANITIZERS: dict[str, frozenset[str]] = _sanitizer_map()
+
+
+def _module_fqn(rel: str) -> str:
+    """Map a project-relative POSIX path to its importable dotted module name.
+
+    ``pkg/helpers.py`` -> ``pkg.helpers``; ``pkg/__init__.py`` -> ``pkg``; ``m.py`` -> ``m``. A
+    leading ``src/`` segment (the standard src-layout) is stripped so the name matches how the code
+    imports it (``src/pkg/x.py`` is imported as ``pkg.x``). This is a best-effort mapping used only
+    to resolve first-party imports; an unresolved import simply falls back to the conservative
+    unknown-call handling, so a wrong guess never causes a missed flow.
+    """
+    parts = [p for p in rel.split("/") if p]
+    if len(parts) > 1 and parts[0] == "src":
+        parts = parts[1:]
+    if not parts:
+        return ""
+    last = parts[-1]
+    if last.endswith(".py"):
+        last = last[:-3]
+    parts = parts[:-1] if last == "__init__" else [*parts[:-1], last]
+    return ".".join(parts)
 
 
 @dataclass(frozen=True)
@@ -126,6 +161,7 @@ class _FuncInfo:
     params: list[str]  # all parameter names (for entry-point seeding)
     positional: list[str]  # positional parameter names (for call-argument mapping)
     class_name: str | None = None
+    method_kind: str | None = None  # 'instance' | 'class' | 'static' for methods, else None
 
 
 def _param_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], list[str]]:
@@ -138,6 +174,25 @@ def _param_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str
     if a.kwarg is not None:
         allp.append(a.kwarg.arg)
     return allp, positional
+
+
+def _method_kind(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Classify a method by its decorators: ``static`` / ``class`` / plain ``instance``.
+
+    Used to decide whether a bound call (``Cls.static(x)`` / ``inst.method(x)``) implicitly consumes
+    the leading ``self``/``cls`` parameter when mapping call arguments to parameters.
+    """
+    for dec in node.decorator_list:
+        name: str | None = None
+        if isinstance(dec, ast.Name):
+            name = dec.id
+        elif isinstance(dec, ast.Attribute):
+            name = dec.attr
+        if name == "staticmethod":
+            return "static"
+        if name == "classmethod":
+            return "class"
+    return "instance"
 
 
 def _target_names(target: ast.expr) -> list[str]:
@@ -175,16 +230,101 @@ def _base_name_ids(node: ast.expr) -> list[str]:
     return [cur.id] if isinstance(cur, ast.Name) else []
 
 
+@dataclass
+class _ModuleUnit:
+    """One first-party module registered with the project: its fqn and its analyzer."""
+
+    fqn: str
+    analyzer: "_Analyzer"
+
+
+class _Project:
+    """The project-wide taint analysis: every module's :class:`_Analyzer` and the shared caches.
+
+    Cross-module resolution (imported callables, re-export chains, class methods) and the
+    per-function summary/emit memos live here so a function analyzed via one entry point is reused
+    by another and the search across the whole import graph stays tractable. Findings accumulate;
+    :meth:`run` seeds every module's roots and returns them deterministically ordered by discovery.
+    """
+
+    def __init__(self) -> None:
+        self.modules: dict[str, _ModuleUnit] = {}
+        self.findings: list[SastFinding] = []
+        self._return_memo: dict[_SummaryKey, _Taint | None] = {}
+        self._return_active: set[_SummaryKey] = set()
+        self._emit_visited: set[_SummaryKey] = set()
+
+    def add(self, rel: str, tree: ast.Module, entries: dict[str, str]) -> None:
+        """Register a module's analyzer under its import fqn (last write wins on collision)."""
+        analyzer = _Analyzer(rel, tree, entries, self)
+        self.modules[analyzer.module_fqn] = _ModuleUnit(analyzer.module_fqn, analyzer)
+
+    def resolve_callable(
+        self, module_fqn: str, symbol: str, seen: set[tuple[str, str]] | None = None
+    ) -> "tuple[_Analyzer, _FuncInfo] | None":
+        """Resolve ``module_fqn.symbol`` to the analyzer + function that defines it.
+
+        Follows re-export chains (``pkg/__init__`` re-exporting ``pkg.helpers.f``). ``None`` when
+        the module is not first-party (third-party / native / unparsed) or it is not a function.
+        """
+        if seen is None:
+            seen = set()
+        key = (module_fqn, symbol)
+        if key in seen:
+            return None
+        seen.add(key)
+        unit = self.modules.get(module_fqn)
+        if unit is None:
+            return None
+        info = unit.analyzer.callable_funcs.get(symbol)
+        if info is not None:
+            return unit.analyzer, info
+        forwarded = unit.analyzer.import_symbols.get(symbol)
+        if forwarded is not None:
+            return self.resolve_callable(forwarded[0], forwarded[1], seen)
+        return None
+
+    def resolve_class(
+        self, module_fqn: str, name: str, seen: set[tuple[str, str]] | None = None
+    ) -> "tuple[_Analyzer, str] | None":
+        """Resolve ``module_fqn.name`` to the analyzer + defining class name (re-export aware)."""
+        if seen is None:
+            seen = set()
+        key = (module_fqn, name)
+        if key in seen:
+            return None
+        seen.add(key)
+        unit = self.modules.get(module_fqn)
+        if unit is None:
+            return None
+        if name in unit.analyzer.class_defs:
+            return unit.analyzer, name
+        forwarded = unit.analyzer.import_symbols.get(name)
+        if forwarded is not None:
+            return self.resolve_class(forwarded[0], forwarded[1], seen)
+        return None
+
+    def run(self) -> tuple[SastFinding, ...]:
+        """Seed every module's roots (deterministic module order) and return the findings."""
+        for fqn in sorted(self.modules):
+            self.modules[fqn].analyzer.seed_roots()
+        return tuple(self.findings)
+
+
 class _Analyzer:
-    """Per-file taint analysis: discovers source->sink flows and records escalated findings."""
+    """Per-module taint analysis: discovers source->sink flows across the import graph."""
 
     def __init__(
         self,
         rel: str,
         tree: ast.Module,
         entry_framework: dict[str, str],
+        project: _Project,
     ) -> None:
         self.rel = rel
+        self.project = project
+        self.module_fqn = _module_fqn(rel)
+        self.is_package = rel.endswith("__init__.py")
         self.bindings = sinks._build_bindings(tree)
         self.flask_names = frozenset(
             local for local, fqn in self.bindings.from_import.items() if fqn == _FLASK_REQUEST_FQN
@@ -194,16 +334,49 @@ class _Analyzer:
         self.entry_framework = entry_framework
         self.callable_funcs: dict[str, _FuncInfo] = {}
         self.all_funcs: list[_FuncInfo] = []
-        self.findings: list[SastFinding] = []
-        self._return_memo: dict[tuple[str, frozenset[str]], _Taint | None] = {}
-        self._return_active: set[tuple[str, frozenset[str]]] = set()
-        self._emit_visited: set[tuple[str, frozenset[str]]] = set()
+        self.class_defs: set[str] = set()
+        self.methods: dict[tuple[str, str], _FuncInfo] = {}
+        # local-imported-name -> (absolute module fqn, original symbol), for first-party resolution.
+        self.import_symbols: dict[str, tuple[str, str]] = {}
+        self._collect_imports(tree)
         self._collect_funcs(tree)
 
     # -- structure -------------------------------------------------------------------------
 
+    def _abs_module(self, level: int, module: str | None) -> str:
+        """Resolve a (possibly relative) ``from`` import to an absolute module fqn.
+
+        ``level`` is the leading-dot count; ``module`` the text after the dots. A relative import is
+        resolved against this module's own package (the module itself if it is a package's
+        ``__init__``, else its parent), walking up one level per extra dot.
+        """
+        if level == 0:
+            return module or ""
+        base = self.module_fqn if self.is_package else self.module_fqn.rpartition(".")[0]
+        for _ in range(level - 1):
+            base = base.rpartition(".")[0]
+        if module:
+            return f"{base}.{module}" if base else module
+        return base
+
+    def _collect_imports(self, tree: ast.Module) -> None:
+        """Record every ``from ... import name`` so first-party callables/classes can be resolved.
+
+        Both absolute and relative imports are captured (relative resolved to an absolute fqn). Each
+        local binding maps to ``(module_fqn, original_symbol)``; resolution against the project's
+        module set decides first-partyness later (a third-party target simply never resolves).
+        """
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                abs_mod = self._abs_module(node.level or 0, node.module)
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    local = alias.asname or alias.name
+                    self.import_symbols[local] = (abs_mod, alias.name)
+
     def _collect_funcs(self, tree: ast.Module) -> None:
-        """Collect top-level functions (call targets + roots) and class methods (roots only)."""
+        """Collect top-level functions (targets + roots) and class methods (roots + targets)."""
         module_body: list[ast.stmt] = []
         for stmt in tree.body:
             if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -212,24 +385,127 @@ class _Analyzer:
                 self.callable_funcs[stmt.name] = info
                 self.all_funcs.append(info)
             elif isinstance(stmt, ast.ClassDef):
+                self.class_defs.add(stmt.name)
                 for item in stmt.body:
                     if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
                         allp, pos = _param_names(item)
-                        self.all_funcs.append(
-                            _FuncInfo(
-                                f"{stmt.name}.{item.name}",
-                                item,
-                                self.rel,
-                                item.lineno,
-                                allp,
-                                pos,
-                                class_name=stmt.name,
-                            )
+                        info = _FuncInfo(
+                            f"{stmt.name}.{item.name}",
+                            item,
+                            self.rel,
+                            item.lineno,
+                            allp,
+                            pos,
+                            class_name=stmt.name,
+                            method_kind=_method_kind(item),
                         )
+                        self.all_funcs.append(info)
+                        self.methods[(stmt.name, item.name)] = info
             else:
                 module_body.append(stmt)
         module_scope = ast.Module(body=module_body, type_ignores=[])
         self.all_funcs.append(_FuncInfo(_MODULE_KEY, module_scope, self.rel, 1, [], []))
+
+    # -- callee resolution (cross-module) --------------------------------------------------
+
+    def _resolve_call_target(self, node: ast.Call) -> "tuple[_Analyzer, _FuncInfo, int] | None":
+        """Resolve a call's callee to ``(owner_analyzer, func, skip)`` or ``None``.
+
+        ``skip`` is the number of leading parameters an implicit bound receiver consumes (``self`` /
+        ``cls``) so call arguments map onto the right parameters. Resolves local functions, imported
+        first-party functions (incl. ``pkg.helpers.f`` and re-export chains), and class methods
+        reached via ``Cls()``/``Cls.static``. Anything unresolved (third-party, native, computed)
+        returns ``None`` and the caller falls back to the conservative unknown-call handling.
+        """
+        func = node.func
+        if isinstance(func, ast.Name):
+            info = self.callable_funcs.get(func.id)
+            if info is not None:
+                return self, info, 0
+            forwarded = self.import_symbols.get(func.id)
+            if forwarded is not None:
+                resolved = self.project.resolve_callable(forwarded[0], forwarded[1])
+                if resolved is not None:
+                    return resolved[0], resolved[1], 0
+            return None
+        if isinstance(func, ast.Attribute):
+            return self._resolve_attr_target(func)
+        return None
+
+    def _resolve_attr_target(
+        self, func: ast.Attribute
+    ) -> "tuple[_Analyzer, _FuncInfo, int] | None":
+        """Resolve an attribute call (``mod.f`` / ``Cls().method`` / ``Cls.static``)."""
+        attr = func.attr
+        base = func.value
+        # 1. module-qualified function via ``import a.b`` then ``a.b.func(...)``.
+        fqn = sinks._resolve_module_fqn(func, self.bindings)
+        if fqn is not None:
+            mod, _, sym = fqn.rpartition(".")
+            if mod:
+                resolved = self.project.resolve_callable(mod, sym)
+                if resolved is not None:
+                    return resolved[0], resolved[1], 0
+        if isinstance(base, ast.Name):
+            # 2. module bound by ``from . import helpers`` then ``helpers.func(...)``.
+            forwarded = self.import_symbols.get(base.id)
+            if forwarded is not None:
+                mod, sym = forwarded
+                module_candidate = f"{mod}.{sym}" if mod else sym
+                resolved = self.project.resolve_callable(module_candidate, attr)
+                if resolved is not None:
+                    return resolved[0], resolved[1], 0
+            # 3. static/class method called on the bare class: ``Cls.static(x)`` / ``Cls.cm(x)``.
+            cls = self._resolve_class_name(base.id)
+            if cls is not None:
+                bound = self._lookup_method(cls, attr)
+                if bound is not None and bound[2] != "instance":
+                    return bound[0], bound[1], 1 if bound[2] == "class" else 0
+        # 4. instance method on an inline construction: ``Cls().method(x)``.
+        if isinstance(base, ast.Call):
+            cls = self._resolve_class_from_callee(base.func)
+            if cls is not None:
+                bound = self._lookup_method(cls, attr)
+                if bound is not None:
+                    return bound[0], bound[1], 0 if bound[2] == "static" else 1
+        return None
+
+    def _resolve_class_name(self, name: str) -> "tuple[_Analyzer, str] | None":
+        """Resolve a local or imported class name to ``(owner_analyzer, class_name)``."""
+        if name in self.class_defs:
+            return self, name
+        forwarded = self.import_symbols.get(name)
+        if forwarded is not None:
+            return self.project.resolve_class(forwarded[0], forwarded[1])
+        return None
+
+    def _resolve_class_from_callee(self, func: ast.expr) -> "tuple[_Analyzer, str] | None":
+        """Resolve the class of a constructor call target (``Cls`` or ``mod.Cls``)."""
+        if isinstance(func, ast.Name):
+            return self._resolve_class_name(func.id)
+        if isinstance(func, ast.Attribute):
+            fqn = sinks._resolve_module_fqn(func, self.bindings)
+            if fqn is not None:
+                mod, _, sym = fqn.rpartition(".")
+                if mod:
+                    return self.project.resolve_class(mod, sym)
+            base = func.value
+            if isinstance(base, ast.Name):
+                forwarded = self.import_symbols.get(base.id)
+                if forwarded is not None:
+                    candidate = f"{forwarded[0]}.{forwarded[1]}" if forwarded[0] else forwarded[1]
+                    return self.project.resolve_class(candidate, func.attr)
+        return None
+
+    def _lookup_method(
+        self, cls: "tuple[_Analyzer, str]", attr: str
+    ) -> "tuple[_Analyzer, _FuncInfo, str] | None":
+        """Find ``attr`` as a method of class ``cls`` -> ``(owner, func, method_kind)``."""
+        owner, class_name = cls
+        info = owner.methods.get((class_name, attr))
+        if info is None:
+            return None
+        return owner, info, info.method_kind or "instance"
 
     # -- source recognition ----------------------------------------------------------------
 
@@ -326,8 +602,9 @@ class _Analyzer:
                 return _Taint(_Source("environment", self.rel, node.lineno), frozenset(), False)
             if func.id in _DYNAMIC_NAMES:
                 return self._dynamic_call(node, tainted)
-            if func.id in self.callable_funcs:
-                return self._call_summary(self.callable_funcs[func.id], node, tainted)
+            resolved = self._resolve_call_target(node)
+            if resolved is not None:
+                return self._call_summary(resolved, node, tainted)
             san = self._sanitizer_cwes(
                 self.bindings.from_import.get(func.id, "")
             ) or self._sanitizer_cwes(func.id)
@@ -341,6 +618,9 @@ class _Analyzer:
             receiver_kind = self._expr_source_kind(func.value)
             if receiver_kind is not None:  # environ.get(...) / stdin.read() / request.args.get(...)
                 return _Taint(_Source(receiver_kind, self.rel, node.lineno), frozenset(), False)
+            resolved = self._resolve_call_target(node)
+            if resolved is not None:
+                return self._call_summary(resolved, node, tainted)
             san = self._sanitizer_cwes(fqn or "") or self._sanitizer_cwes(func.attr)
             if san is not None:
                 return self._apply_sanitizer(node, tainted, san)
@@ -380,25 +660,36 @@ class _Analyzer:
         combined = self._combine(parts)
         if combined is None:
             return None
-        # An unknown transform may undo sanitization, so drop the cleared set (sound direction).
+        # An unknown transform (incl. an FFI/native call we can't see into) may undo sanitization,
+        # so drop the cleared set but keep the taint — the FFI boundary escalates, never clears.
         return _Taint(combined.source, frozenset(), combined.dynamic)
 
     def _call_summary(
-        self, callee: _FuncInfo, node: ast.Call, tainted: dict[str, _Taint]
+        self,
+        resolved: "tuple[_Analyzer, _FuncInfo, int]",
+        node: ast.Call,
+        tainted: dict[str, _Taint],
     ) -> _Taint | None:
-        return self._return_summary(callee, self._map_args(callee, node, tainted))
+        """Taint of a resolved first-party call's return, via the callee's per-function summary."""
+        target, callee, skip = resolved
+        return target._return_summary(callee, self._map_args(callee, node, tainted, skip))
 
     def _map_args(
-        self, callee: _FuncInfo, node: ast.Call, tainted: dict[str, _Taint]
+        self, callee: _FuncInfo, node: ast.Call, tainted: dict[str, _Taint], skip: int = 0
     ) -> dict[str, _Taint]:
-        """Map a call's tainted arguments onto the callee's parameter names."""
+        """Map a call's tainted arguments onto the callee's parameter names.
+
+        ``skip`` drops the leading parameters an implicit bound receiver consumes (``self``/``cls``)
+        so an instance/classmethod call's positional arguments line up with the real parameters.
+        """
         out: dict[str, _Taint] = {}
+        positional = callee.positional[skip:]
         for index, arg in enumerate(node.args):
-            if isinstance(arg, ast.Starred) or index >= len(callee.positional):
+            if isinstance(arg, ast.Starred) or index >= len(positional):
                 continue
             taint = self._eval(arg, tainted)
             if taint is not None:
-                out[callee.positional[index]] = taint
+                out[positional[index]] = taint
         for keyword in node.keywords:
             if keyword.arg in callee.params:
                 taint = self._eval(keyword.value, tainted)
@@ -483,13 +774,17 @@ class _Analyzer:
         return False
 
     def _return_summary(self, func: _FuncInfo, seed: dict[str, _Taint]) -> _Taint | None:
-        """Whether ``func`` returns a tainted value given tainted parameters ``seed`` (memoized)."""
-        key = (func.qualname, frozenset(seed))
-        if key in self._return_active:
+        """Whether ``func`` returns a tainted value given tainted parameters ``seed`` (memoized).
+
+        The memo is project-wide (keyed by module + qualname + tainted-parameter set) so a
+        function's summary is computed once and reused by every caller across the import graph.
+        """
+        key = (self.module_fqn, func.qualname, frozenset(seed))
+        if key in self.project._return_active:
             return None  # recursion: terminate conservatively (a rare recursive-return miss)
-        if key in self._return_memo:
-            return self._return_memo[key]
-        self._return_active.add(key)
+        if key in self.project._return_memo:
+            return self.project._return_memo[key]
+        self.project._return_active.add(key)
         tainted = self._local_state(func, seed)
         returns: list[_Taint | None] = [
             self._eval(node.value, tainted)
@@ -497,39 +792,39 @@ class _Analyzer:
             if isinstance(node, ast.Return) and node.value is not None
         ]
         summary = self._combine(returns)
-        self._return_active.discard(key)
-        self._return_memo[key] = summary
+        self.project._return_active.discard(key)
+        self.project._return_memo[key] = summary
         return summary
 
     # -- sink discovery / emission ---------------------------------------------------------
 
     def _emit_walk(self, func: _FuncInfo, seed: dict[str, _Taint], stack: list[CallStep]) -> None:
-        """Find sinks reachable in ``func`` under ``seed``; recurse into tainted helper calls."""
-        key = (func.qualname, frozenset(seed))
-        if key in self._emit_visited:
+        """Find sinks reachable in ``func`` under ``seed``; recurse into tainted helper calls.
+
+        Recursion crosses module boundaries: a tainted argument flowing into an imported first-party
+        callable (function or method) is followed into its owner module, so a sink in module B
+        reached from a source in module A is escalated with the full cross-module call path.
+        """
+        key = (self.module_fqn, func.qualname, frozenset(seed))
+        if key in self.project._emit_visited:
             return
-        self._emit_visited.add(key)
+        self.project._emit_visited.add(key)
         tainted = self._local_state(func, seed)
         for node in ast.walk(func.scope):
             if not isinstance(node, ast.Call):
                 continue
             self._check_sink(node, tainted, stack)
-            callee_func = self._callee(node)
-            if callee_func is not None:
-                child_seed = self._map_args(callee_func, node, tainted)
+            resolved = self._resolve_call_target(node)
+            if resolved is not None:
+                target, callee_func, skip = resolved
+                child_seed = self._map_args(callee_func, node, tainted, skip)
                 if child_seed:  # demand-driven: only follow a call carrying taint
                     step = CallStep(
                         qualname=callee_func.qualname,
                         file=callee_func.file,
                         line=callee_func.lineno,
                     )
-                    self._emit_walk(callee_func, child_seed, [*stack, step])
-
-    def _callee(self, node: ast.Call) -> _FuncInfo | None:
-        func = node.func
-        if isinstance(func, ast.Name):
-            return self.callable_funcs.get(func.id)
-        return None
+                    target._emit_walk(callee_func, child_seed, [*stack, step])
 
     def _check_sink(
         self, call: ast.Call, tainted: dict[str, _Taint], stack: list[CallStep]
@@ -577,7 +872,7 @@ class _Analyzer:
 
         sink_step = CallStep(qualname=callee, file=self.rel, line=call.lineno)
         flow = CallPath(steps=(*stack, sink_step))
-        self.findings.append(
+        self.project.findings.append(
             SastFinding(
                 cwe=rule.cwe,
                 kind=rule.kind,
@@ -595,7 +890,7 @@ class _Analyzer:
 
     # -- roots -----------------------------------------------------------------------------
 
-    def run(self) -> tuple[SastFinding, ...]:
+    def seed_roots(self) -> None:
         """Seed every root (entry points with tainted params; all functions for inline sources)."""
         for func in sorted(self.all_funcs, key=lambda f: f.qualname):
             framework = self._entry_framework_for(func)
@@ -610,7 +905,6 @@ class _Analyzer:
                 }
             step = CallStep(qualname=func.qualname, file=func.file, line=func.lineno)
             self._emit_walk(func, seed, [step])
-        return tuple(self.findings)
 
     def _entry_framework_for(self, func: _FuncInfo) -> str | None:
         """The framework that makes ``func`` an entry point (params are sources), or ``None``."""
@@ -664,7 +958,8 @@ def analyze_source(
     classifications come from :func:`vulnadvisor.sast.find_sinks` and are merged in by
     :func:`analyze_taint`. Entry points are detected in this file; ``extra_entries`` supplies
     project-wide registrations (e.g. a Django view declared here but routed in a sibling
-    ``urls.py``) so cross-file entry points still seed taint. Malformed source -> ``()``.
+    ``urls.py``) so cross-file entry points still seed taint. This is a single-module analysis;
+    cross-module flow requires :func:`analyze_taint` over the whole project. Malformed -> ``()``.
     """
     try:
         tree = ast.parse(source, filename=rel)
@@ -673,27 +968,32 @@ def analyze_source(
     entries = _entry_maps(tree, rel, plugins)
     for name, framework in (extra_entries or {}).items():
         entries.setdefault(name, framework)
-    analyzer = _Analyzer(rel, tree, entries)
-    return analyzer.run()
+    project = _Project()
+    project.add(rel, tree, entries)
+    return project.run()
 
 
-def _project_entry_maps(root: Path, plugins: Sequence[FrameworkPlugin]) -> dict[str, str]:
-    """Collect the entry-point ``name -> framework`` map across the project (cross-file rooting).
+@dataclass
+class _ParsedModule:
+    rel: str
+    tree: ast.Module = field(repr=False)
 
-    Frameworks register handlers in one file and define them in another (Django's ``urls.py`` vs
-    ``views.py``). Collecting entry-point *names* project-wide — exactly as the SCA call-path search
-    does — lets a view defined here but routed elsewhere still be treated as a taint source.
-    """
-    out: dict[str, str] = {}
+
+def _parse_project(root: Path) -> list[_ParsedModule]:
+    """Parse every first-party ``.py`` under ``root`` (skip unreadable/unparsable files)."""
+    modules: list[_ParsedModule] = []
     for path in _iter_python_files(root):
         rel = path.relative_to(root).as_posix() if root.is_dir() else path.name
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except (OSError, SyntaxError, ValueError):
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
             continue
-        for name, framework in _entry_maps(tree, rel, plugins).items():
-            out.setdefault(name, framework)
-    return out
+        try:
+            tree = ast.parse(source, filename=str(path))
+        except (SyntaxError, ValueError):
+            continue
+        modules.append(_ParsedModule(rel, tree))
+    return modules
 
 
 def analyze_taint(
@@ -701,30 +1001,36 @@ def analyze_taint(
     *,
     plugins: Sequence[FrameworkPlugin] = DEFAULT_PLUGINS,
 ) -> tuple[SastFinding, ...]:
-    """Analyze a project: intra-procedural sinks (16.2) escalated by proven taint flow (16.3).
+    """Analyze a project: intra-procedural sinks (16.2) escalated by proven taint flow (16.3/20.2).
 
     Every sink found by :func:`vulnadvisor.sast.find_sinks` is reported; the taint engine raises a
     sink's tier to ``CONFIRMED_FLOW`` (with a source->sink :class:`CallPath`) or ``DYNAMIC_UNKNOWN``
-    when it can tie the sink to a recognized source. A sink with no proven source keeps its
-    intra-procedural tier. Output is deterministically ordered. Files are read defensively: a file
-    that cannot be read or parsed is skipped, never raised.
+    when it can tie the sink to a recognized source — **across module boundaries**, so a source in
+    one file reaching a sink in another via an imported callable still escalates. A sink with no
+    proven source keeps its intra-procedural tier. Output is deterministically ordered. Files are
+    read defensively: a file that cannot be read or parsed is skipped, never raised.
     """
     root = Path(project_dir)
     baseline = find_sinks(root)
-    entries = _project_entry_maps(root, plugins)
+    modules = _parse_project(root)
+
+    # Entry points are collected project-wide (a view defined in one file, routed in another) and
+    # shared across every module's analyzer, exactly as the SCA call-path search roots cross-file.
+    entries: dict[str, str] = {}
+    for module in modules:
+        for name, framework in _entry_maps(module.tree, module.rel, plugins).items():
+            entries.setdefault(name, framework)
+
+    project = _Project()
+    for module in modules:
+        project.add(module.rel, module.tree, entries)
 
     escalations: dict[tuple[str, int, int, str], SastFinding] = {}
-    for path in _iter_python_files(root):
-        rel = path.relative_to(root).as_posix() if root.is_dir() else path.name
-        try:
-            source = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        for finding in analyze_source(source, rel, plugins=plugins, extra_entries=entries):
-            key = (finding.file, finding.line, finding.col, finding.kind)
-            current = escalations.get(key)
-            if current is None or tier_concern(finding.tier) > tier_concern(current.tier):
-                escalations[key] = finding
+    for finding in project.run():
+        key = (finding.file, finding.line, finding.col, finding.kind)
+        current = escalations.get(key)
+        if current is None or tier_concern(finding.tier) > tier_concern(current.tier):
+            escalations[key] = finding
 
     out: list[SastFinding] = []
     seen: set[tuple[str, int, int, str]] = set()

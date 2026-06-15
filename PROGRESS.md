@@ -4,6 +4,60 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 20.2 — Cross-module / cross-file taint  (2026-06-15)
+
+**Status:** complete. **No new dependency.** Gate green: `ruff check src tests` clean, `ruff format
+--check` clean (129 files), `mypy --strict src` clean (87 files), **full pytest 939 passed / 1
+skipped** (+8 new cross-module tests). SAST soundness gate (`python -m benchmarks --sast`): **PASS,
+0 missed vulns**, exit 0 (detection/scoring untouched). Perf budget held — the SRC taint pass stays
+under the 10 s gate (`test_performance_budget_under_10s` 0.78 s).
+
+**What changed** (`sast/taint.py`, pure, no I/O beyond reading the project files). The per-file
+`_Analyzer` is now coordinated by a project-wide `_Project` that resolves imported callables and
+shares the summary/emit caches across modules, so a source in module A reaching a sink in module B
+via an imported callable escalates to `CONFIRMED_FLOW` with the full cross-module call path.
+
+- **`_Project`** owns `modules: {module_fqn -> _ModuleUnit}`, the accumulated `findings`, and the
+  three memos (`_return_memo` / `_return_active` / `_emit_visited`) now keyed project-wide by
+  `(module_fqn, qualname, frozenset(tainted-params))` — a function's **per-function taint summary**
+  (does a tainted parameter taint the return?) is computed once and reused by every caller, keeping
+  the import-graph search tractable. `resolve_callable` / `resolve_class` follow **re-export chains**
+  (`pkg/__init__` re-exporting `pkg.impl.f`) with a cycle guard. Order-independent: `run()` seeds
+  modules in sorted fqn order; summaries don't depend on discovery order (tested).
+- **`_module_fqn(rel)`** maps a rel path to its importable dotted name (`pkg/helpers.py` ->
+  `pkg.helpers`, `pkg/__init__.py` -> `pkg`, leading `src/` stripped for src-layout). Best-effort:
+  an unresolved import falls back to conservative unknown-call handling, so a wrong guess never
+  causes a missed flow.
+- **`_Analyzer` cross-module resolution.** `_collect_imports` records every `from ... import name`
+  (absolute **and** relative, resolved to an absolute fqn via `_abs_module`) as
+  `local -> (module_fqn, symbol)`. `_resolve_call_target` returns `(owner_analyzer, func, skip)` for:
+  local functions, imported first-party functions (`from pkg.helpers import f`; `pkg.helpers.f(...)`;
+  `from . import helpers; helpers.f(...)`), and **class methods** reached via `Cls().method(...)`
+  (instance, `self` skipped) / `Cls.static(...)` / `Cls.cm(...)` (decorator-aware `skip`). `_eval_call`
+  and `_emit_walk` both route through it, so taint flows through return summaries **and** the emit
+  walk recurses into the callee's owner module — the sink is attributed to module B with the
+  A->...->B path.
+- **FFI boundary policy held.** A callee the engine can't resolve (third-party / native / unparsed)
+  falls to `_unknown_call`, which keeps the value tainted (drops sanitizer claims) — the boundary
+  **escalates**, never silently terminates the trace. `analyze_taint` now builds one `_Project` over
+  all parsed files (was a per-file `analyze_source` loop); `analyze_source` stays a single-module
+  project for back-compat (unchanged behavior — tested by the 44 pre-existing taint tests).
+
+**Fixtures** (`fixtures/projects/taint_xmodule/`, 7 modules incl. a package) + 8 tests: cross-module
+**direct** (`helpers.run_cmd`), **via re-export** (`pkg/__init__` -> `pkg.impl`), **via two-module
+wrapper chain** (`entry -> helpers.wrap1 -> deeper.wrap2`), **sanitized in another module**
+(`safe.sanitize` wraps `shlex.quote` -> caller sink stays POSSIBLE_FLOW, not CONFIRMED),
+**class-method across modules** (`Service().run`), and **not-reachable-across-modules** (an orphan
+sink only called with a literal -> stays POSSIBLE_FLOW). Soundness assertion: the exact set of
+cross-module CONFIRMED sinks is pinned; order-independence/determinism asserted.
+
+**Soundness/scope:** every new resolution is an over-approximation toward a finding; a missed flow
+is impossible by construction (unresolved -> unknown-call keeps taint). **Deferred to Task 20.3:**
+object/attribute & class-state taint (`self.x`, instance-attr round-trips, `inst = Cls(); inst.m()`
+via a tracked variable — only inline `Cls().m()` is resolved here).
+
+---
+
 ## Task 20.1 — Container & data-structure taint propagation  (2026-06-15)
 
 **Status:** complete. **No new dependency.** Gate green: `ruff check src tests` clean, `ruff format
