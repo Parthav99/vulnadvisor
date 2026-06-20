@@ -40,6 +40,13 @@ Changelog = "https://github.com/Parthav99/vulnadvisor/blob/main/CHANGELOG.md"
 mcp = [
     "mcp==1.27.2",
 ]
+# Multi-tool fusion (M21): Semgrep OSS is invoked as a *subprocess only* (never imported), so it
+# never ships in the core wheel — the published distribution stays at 3 runtime deps. Semgrep does
+# not support Windows (it refuses to build/run there), so the requirement is marked off-Windows;
+# the adapter's `available()` PATH check makes the tool a clean no-op anywhere it is absent.
+semgrep = [
+    "semgrep==1.167.0; sys_platform != 'win32'",
+]
 
 [dependency-groups]
 dev = [
@@ -74,6 +81,16 @@ platform = [
 # published `vulnadvisor` distribution stays lean (packaging + pydantic + typer only).
 [tool.uv]
 default-groups = ["dev", "platform"]
+# Semgrep OSS is subprocess-only and vendors its own tight pins (its own `mcp`, `jsonschema`, etc.)
+# that clash with our `[mcp]` extra and the dev/platform groups. It never shares an environment with
+# them (it is invoked as a separate process, never imported), so we declare it pairwise-conflicting
+# with each, letting uv resolve the `[semgrep]` extra in its own fork while dev+platform still sync
+# together normally. The published core wheel is unaffected — semgrep stays an opt-in extra.
+conflicts = [
+    [{ extra = "mcp" }, { extra = "semgrep" }],
+    [{ extra = "semgrep" }, { group = "dev" }],
+    [{ extra = "semgrep" }, { group = "platform" }],
+]
 
 [build-system]
 requires = ["hatchling"]

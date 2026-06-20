@@ -46,19 +46,23 @@ def _payload(result: CallToolResult) -> dict[str, Any]:
 
 
 def test_core_wheel_runtime_deps_unchanged() -> None:
-    """The published wheel still has exactly three runtime deps; mcp is gated behind the extra."""
+    """The published wheel still has exactly three runtime deps; mcp/semgrep are extra-only.
+
+    Both ``mcp`` (the MCP server, 15.3) and ``semgrep`` (the fusion adapter, 21.2) are optional
+    extras invoked out-of-process — they must never leak into the core runtime dependency set.
+    """
     reqs = requires("vulnadvisor") or []
     runtime: set[str] = set()
-    mcp_is_extra_only = False
+    extra_only: set[str] = set()
     for raw in reqs:
         req = Requirement(raw)
-        if "extra" in raw and "mcp" in raw:
-            assert req.name == "mcp"
-            mcp_is_extra_only = True
+        if "extra ==" in raw:  # gated behind an optional extra, not a core runtime dep
+            extra_only.add(req.name)
             continue
         runtime.add(req.name)
     assert runtime == {"packaging", "pydantic", "typer"}
-    assert mcp_is_extra_only, "mcp must be declared only under the [mcp] extra"
+    assert "mcp" in extra_only, "mcp must be declared only under the [mcp] extra"
+    assert "semgrep" in extra_only, "semgrep must be declared only under the [semgrep] extra"
 
 
 def test_server_reports_vulnadvisor_version(

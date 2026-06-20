@@ -4,6 +4,76 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 21.2 — Semgrep OSS adapter  (2026-06-20)
+
+**Status:** complete, Validation Gate green. New **optional** dependency `semgrep==1.167.0` added to a
+`[semgrep]` extra (approved: extra-only, **not** mirrored into the dev group). Semgrep is invoked as a
+**subprocess only**, never imported — the published core wheel stays at exactly 3 runtime deps
+(`packaging`, `pydantic`, `typer`), asserted by the metadata test.
+
+**Why this task.** M21 fuses an external scanner's findings into our list (fusion-design §3). 21.2 is
+the *ingestion* half: run Semgrep, parse its JSON defensively into our model, normalize to
+`SastFinding`s. The reachability overlay that assigns real tiers (21.3) is next; until then every
+normalized external finding sits at the soundness floor (`DYNAMIC_UNKNOWN`, `flow is None`) — never
+silently `SANITIZED`, never dropped.
+
+**What changed.**
+- New package `src/vulnadvisor/sast/external/`:
+  - `base.py` — the tool-agnostic core: `ExternalToolAdapter` Protocol (run → parse → normalize →
+    scan), the `ExternalRawFinding` neutral intermediate, `ParseResult` (records + degraded reasons,
+    same spirit as SCA `degraded_sources`), `ExternalScanResult`, and pure helpers `extract_cwe`
+    (defensive `CWE-\d+` token extraction from string / list / junk) and `cwe_kind_title` (reuse our
+    native rule pack's `(kind, title)` for a known CWE, generic `external-finding` label otherwise).
+    `raw_from_mapping` builds a record with a safe default for every field so construction never
+    raises; an unplaceable record keeps the `<unknown>` sentinel and is **kept**, not discarded.
+  - `semgrep.py` — `SemgrepAdapter`: `available()` (injectable `which`), `run()` (injectable runner;
+    production default shells `semgrep --config p/python --json --quiet --metrics=off
+    --disable-version-check <target>` with a fixed argv, no shell, 300 s timeout, telemetry off, and
+    returns `""` on any `OSError`/`SubprocessError` instead of raising), pure total `parse()`
+    (malformed JSON / non-object root / missing `results` / odd individual result each degrade to a
+    logged reason while keeping every readable record; Semgrep's own `errors[]` surfaced as a
+    degraded reason), and pure `normalize()` (tier `DYNAMIC_UNKNOWN`, Semgrep severity never sets a
+    tier per fusion-design §10). 1-based Semgrep columns stored as our 0-based offset.
+- `pyproject.toml` — `[semgrep]` extra pinned with a `sys_platform != 'win32'` marker (Semgrep
+  refuses to build/run on Windows); `[tool.uv].conflicts` declares the `[semgrep]` extra pairwise
+  mutually-exclusive with the `[mcp]` extra and the dev/platform groups (Semgrep vendors its own tight
+  `mcp`/`jsonschema` pins, and it never shares a process with them), so uv resolves it in its own fork
+  while dev+platform still sync together. `uv.lock` updated.
+- Tests: `tests/test_semgrep_adapter.py` (26 cases) — table-driven `extract_cwe`; parse of single /
+  multi / unknown-rule-no-CWE / malformed-JSON / non-object-root / missing-results / mixed
+  good+malformed / tool-errors / missing-location-kept-with-sentinel; normalize known-CWE / unknown-CWE
+  / determinism; availability via injected `which`; **tool-absent → clean skip** (runner asserted
+  never called); run-when-available; run-failure-degrades-not-crashes; default runner returns `""`
+  when the binary is missing. `tests/test_mcp_server.py` metadata test generalized to assert **both**
+  `mcp` and `semgrep` are extra-only and the core runtime set stays `{packaging, pydantic, typer}`.
+
+**Why these choices.**
+- **Subprocess-only + marker + conflicts** is the only way to honor "Semgrep absent → clean no-op,
+  never crash" *and* keep `uv lock`/`uv sync --frozen` working on this Windows dev box, where Semgrep
+  cannot even build. The `available()` PATH check is the runtime guard; the platform marker is the
+  install-time guard; the conflicts are the resolver guard. End users on Linux/macOS get a real
+  installable `vulnadvisor[semgrep]`.
+- **`ParseResult` carries degraded reasons** rather than `parse` logging or raising — keeps the core
+  pure (no hidden I/O) while satisfying the "logged reason, never an exception" contract; the pipeline
+  (21.4) will fold these into the report's `degraded_sources`.
+- **Normalized tier is the floor, not Semgrep's severity** — fusion-design §10 forbids trusting the
+  external tool's severity; the tier is decided by *our* overlay in 21.3.
+
+**Validation evidence (global gate).**
+- `ruff check src tests benchmarks` — clean; `ruff format --check` — clean (205 files).
+- `mypy --strict src` — clean (90 source files, +3 from the new package).
+- `pytest` — **1020 passed, 2 skipped** (+25 over 21.1; the 2 skips are the Bandit/Semgrep
+  "installed?" benchmark guards).
+- Core-wheel metadata test passes: `semgrep` and `mcp` are extra-only; runtime deps unchanged.
+- `uv sync --frozen` succeeds on Windows with semgrep excluded (`semgrep installed: False`).
+
+**Open questions:** none. The pinned-offline default ruleset packaging and `--config auto` opt-in are
+deferred to 21.4 (CLI wiring), per fusion-design §12.
+
+**Done when:** Semgrep's findings arrive in our model without trusting its shape. **Done.**
+
+---
+
 ## Task 21.1 — Fusion design doc (approval gate)  (2026-06-20)
 
 **Status:** complete. **APPROVED by maintainer 2026-06-20** (no code in this task, per the M21 plan).
