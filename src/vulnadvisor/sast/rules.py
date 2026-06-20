@@ -7,6 +7,8 @@ imports (``import yaml as y``) and ``from`` imports (``from os import system``) 
 the matcher does the resolution, this module only declares the rules.
 """
 
+import hashlib
+import json
 from dataclasses import dataclass
 from enum import Enum
 
@@ -20,6 +22,7 @@ __all__ = [
     "Guard",
     "SecretPattern",
     "SinkRule",
+    "rule_pack_hash",
 ]
 
 
@@ -513,3 +516,54 @@ SECRET_PLACEHOLDERS: frozenset[str] = frozenset(
 
 # Below this length a literal value assigned to a secret-named variable is treated as a placeholder.
 SECRET_MIN_VALUE_LEN = 8
+
+
+def _canonical_rule_pack() -> str:
+    """Serialize the whole rule pack to a deterministic, order-stable JSON string.
+
+    Every set is sorted and every enum reduced to its value so the output depends only on the
+    *content* of the rules, never on Python's set-iteration order or object identity. This is the
+    input to :func:`rule_pack_hash`: two interpreters, or two runs, produce byte-identical text iff
+    the rules are semantically identical. ``RULES`` is a tuple, so its order is itself meaningful
+    and is preserved (a reordering is a real change and *should* bust the cache).
+    """
+    rules_payload = [
+        {
+            "cwe": rule.cwe,
+            "kind": rule.kind,
+            "title": rule.title,
+            "callee_kind": rule.callee_kind.value,
+            "callees": sorted(rule.callees),
+            "tainted_positions": list(rule.tainted_positions),
+            "tainted_keywords": sorted(rule.tainted_keywords),
+            "guard": None if rule.guard is None else [rule.guard.keyword, rule.guard.require_value],
+            "safe_args": sorted(rule.safe_args),
+            "sanitizers": sorted(rule.sanitizers),
+            "intrinsic": rule.intrinsic,
+            "safe_keyword_values": [[kw, val] for kw, val in rule.safe_keyword_values],
+        }
+        for rule in RULES
+    ]
+    secrets_payload = {
+        "patterns": [[p.kind, p.title, p.regex] for p in SECRET_PATTERNS],
+        "assign_names": sorted(SECRET_ASSIGN_NAMES),
+        "placeholders": sorted(SECRET_PLACEHOLDERS),
+        "min_value_len": SECRET_MIN_VALUE_LEN,
+    }
+    return json.dumps(
+        {"rules": rules_payload, "secrets": secrets_payload},
+        sort_keys=True,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def rule_pack_hash() -> str:
+    """Return the SHA-256 fingerprint of the current rule pack (sinks + secret patterns).
+
+    Any edit to a sink rule, sanitizer, guard, secret pattern, or the rule *order* changes this
+    digest. The per-file facts cache (``store/file_facts.py``) folds it into every key, so a rule
+    change re-analyzes every file rather than serving facts computed under the old rules — the
+    correctness obligation in ``docs/incremental-design.md`` that a stale cache never hides a find.
+    """
+    return hashlib.sha256(_canonical_rule_pack().encode("utf-8")).hexdigest()

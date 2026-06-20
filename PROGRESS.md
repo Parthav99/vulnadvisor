@@ -4,6 +4,66 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 22.1 — Content-hash analysis cache: design + store (M22 opener)  (2026-06-20)
+
+**Status:** complete, Validation Gate green. No new dependency (stdlib `hashlib`/`sqlite3`/`json` +
+existing pydantic models). Gate: `ruff check` + `ruff format --check` clean (215 files); `mypy
+--strict src` clean (94 files); **pytest 1068 passed, 2 skipped** (+13 new in
+`tests/test_file_facts_cache.py`).
+
+**Why this task.** M22 makes scans fast enough for pre-commit and monorepos by caching per-file
+analysis and re-doing only what changed — but the cache must *never* let a stale entry hide a
+finding. 22.1 is the foundation: the design contract + the store layer with a **provably sound
+invalidation rule**. The incremental scan (22.2) and parallelism (22.3) build on this schema. The
+existing `AnalysisCache` already caches imports/defs by content hash, but it has **no rule-pack
+component** and doesn't cache SAST facts (sinks, taint summaries) — exactly the gap 22.1 closes.
+
+**What changed.**
+- **New `docs/incremental-design.md`** — the M22 contract. The cacheable unit is per-file
+  `FileFacts` (imports/defs + sinks + taint summaries); the key is
+  `analyzer_version ␀ rule_pack_hash ␀ rel ␀ sha256(content)`; the correctness obligation (a stale
+  entry never hides a finding) is stated and discharged component-by-component; invalidation is
+  **never time-based**. Documents defensive behavior, storage, the 22.2/22.3 roadmap, and non-goals.
+- **`sast/rules.py`** — `rule_pack_hash()`: SHA-256 over a deterministic canonicalization of the
+  whole rule pack (every `SinkRule` + sanitizers/guards/safe-args + secret patterns/constants). Sets
+  are **sorted** (frozenset iteration order isn't stable across interpreters) and enums reduced to
+  values, while `RULES` tuple order is preserved (a reorder is a real change and should bust). Any
+  rule edit changes the digest → busts every cache key.
+- **New `store/file_facts.py`** — `FunctionTaintSummary` + `FileFacts` pydantic models, the
+  rule-pack-aware `facts_cache_key`, `_FACTS_VERSION` (the analyzer-version component), a
+  `FileFactsCache` SQLite store (`file_facts.sqlite`, sibling to `analysis.sqlite`), and
+  `default_facts_cache_path`. Defensive: a missing/corrupt/old-schema row is a **miss** (counted),
+  never a crash — `get` catches `ValidationError` and re-analysis overwrites the bad row.
+- **New `sast/facts.py`** — `build_file_facts(rel, text)`: a pure, single-file builder (imports/defs
+  via the import analyzer + sinks via the sink matcher). `taint_summaries` is left empty here — it is
+  a demand-driven, cross-module fact the taint engine fills in 22.2 under the same content+rule key.
+  Safe on malformed source (parse error captured in `FileAnalysis`, sinks `()`).
+- `store/__init__.py` — re-exports the new symbols.
+
+**Why these choices.**
+1. **Rule-pack hash in the key, not just analyzer version.** Sinks and taint summaries are computed
+   *under* the rules, so a rule edit can surface a finding the old facts lack — folding
+   `rule_pack_hash()` into every key makes a rule change bust everything. Over-invalidation here is
+   deliberate and sound (the imports/defs side is rule-independent, so the legacy `AnalysisCache`
+   correctly omits it).
+2. **Separate `file_facts.sqlite` from `analysis.sqlite`.** The richer facts schema versions
+   independently of the import-only cache; no migration of the existing on-disk cache.
+3. **Empty `taint_summaries` in the 22.1 builder.** Summaries are cross-module/demand-driven, not a
+   pure per-file product — populating them is the dependent-closure work of 22.2. The *schema* caches
+   them now (field round-trips, tested); the engine fills them next task.
+
+**Validation evidence.** Key: content change → different key; rule-pack change → different key;
+identical content at different paths → different keys; `rule_pack_hash()` deterministic, 64-hex.
+Round-trip: `FileFacts` with sinks + summaries survives JSON. Builder: deterministic, finds
+`yaml.load`, no raise on syntax error. Cache: hit then content-edit miss; rule-pack change misses the
+old entry; corrupt row → miss (no crash); old-schema `{}` row → miss; persists across connections;
+default path is `file_facts.sqlite` beside the analysis cache.
+
+**Open questions.** None. Cache eviction/size cap is an explicit non-goal here (documented); `v2.4.0`
+tag lands at the M22 capstone (22.3) per release discipline.
+
+---
+
 ## Task 21.4 — Output / CLI / dashboard integration + fusion benchmark (M21 capstone, CLI v2.3)  (2026-06-20)
 
 **Status:** complete, Validation Gate green. No new dependency. Gate: `ruff check` + `ruff format
