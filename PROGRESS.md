@@ -4,6 +4,55 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 21.1 — Fusion design doc (approval gate)  (2026-06-20)
+
+**Status:** complete. **APPROVED by maintainer 2026-06-20** (no code in this task, per the M21 plan).
+`docs/fusion-design.md` is stamped APPROVED; the three §12 reviewer decisions are resolved to the
+recommendations: (1) **±1 line** merge tolerance; (2) `provenance` added **additively under
+`schema_version` 1.2, no bump**; (3) **pinned offline Semgrep ruleset** default, `--config auto`
+opt-in. Tasks 21.2–21.4 build to this settled contract.
+
+**Why this task.** M21 (Gap 2 II) fuses an external scanner's findings (Semgrep OSS first) into our
+list and re-ranks them through our Python-deep reachability/taint engine. We agree the architecture
+before any code — same approval-gate pattern as the M16 SAST design.
+
+**What changed.** Added `docs/fusion-design.md` only. It covers every item the Task 21.1 validation
+checklist requires:
+- **§3 Adapter protocol** — `run → parse → normalize` three stages, impure `run` isolated so
+  `parse`/`normalize` are unit-testable with no Semgrep installed; `ExternalRawFinding` intermediate;
+  defensive CWE extraction; new code confined to `src/vulnadvisor/sast/external/`.
+- **§4 Overlay contract + soundness proof obligations** — every external finding leaves the overlay
+  with exactly one `SastTier` or escalates; un-overlayable → `DYNAMIC-UNKNOWN`, never dropped, never
+  `SANITIZED`; 5 release-blocking invariants incl. the `count(external_in) == count(external_merged)`
+  no-silent-loss gate and "overlay can only raise, never downgrade on a guess".
+- **§5 Dedup keys** — merge key `(file, ±1-normalized line, cwe)`; richer-evidence survivor; **both**
+  provenances kept; different CWEs at one line stay separate; ordered via existing
+  `engine.sast_scoring.order_unified`.
+- **§6 Provenance** — `["vulnadvisor", "semgrep-oss"]` set; honest "found by Semgrep OSS · ranked by
+  VulnAdvisor reachability"; external severity is metadata, never our priority.
+- **§7 Licensing / subprocess boundary** — Semgrep invoked as a subprocess only, never imported;
+  optional `[semgrep]` extra; core wheel dep count unchanged (metadata test); tool-absent → clean
+  no-op; subprocess boundary doubles as the license boundary.
+- **§10 Non-goals** — don't out-rule Semgrep, no in-process rule execution, no new network/paid
+  service, no silent trust of external tiers, no fabricated reachability, Python-only fusion.
+- **§12 Open questions** for the reviewer: (1) ±1 vs exact merge line tolerance; (2) `provenance`
+  additive under 1.2 vs `1.3` bump (recommend additive, no bump); (3) pinned offline ruleset vs
+  `--config auto` (recommend pinned offline default for reproducibility + local-only guarantee).
+
+**Validation evidence (global gate, doc-only change).**
+- `git status` shows only `docs/fusion-design.md` added — no `src/`/`platform/` production module
+  touched.
+- `ruff check src tests benchmarks` clean; `ruff format --check` clean (140 files).
+- `mypy --strict src` clean (87 files).
+- `pytest` — **995 passed, 2 skipped** (unchanged from 20.5; the 2 skips are the Bandit/Semgrep
+  "installed?" guards).
+
+**Open questions:** none — the three §12 items are resolved (see Status above).
+
+**Done when:** maintainer approval recorded here. **Done — approved 2026-06-20.** No code in this task.
+
+---
+
 ## Task 20.5 — Recall benchmark refresh (M20 capstone -> CLI v2.2)  (2026-06-20)
 
 **Status:** complete. **No new runtime dependency** (Semgrep OSS is an optional *subprocess* the
