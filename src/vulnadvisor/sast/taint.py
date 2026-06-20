@@ -15,8 +15,13 @@ callable is still ``CONFIRMED_FLOW``.
   resolved through imports — ``from pkg.helpers import f`` (incl. relative imports and re-export
   chains), ``pkg.helpers.f(...)``, and class methods reached via ``Cls()``/``Cls.static`` — and a
   reused **per-function taint summary** (does a tainted parameter taint the return value?) keeps the
-  search tractable. When unsure, a value is treated as tainted (over-report, then let the tier
-  speak) — never the reverse.
+  search tractable. **Object state** (Task 20.3) is tracked field-sensitively: ``self.attr`` is a
+  distinct taint slot, a constructor parameter stored on a field propagates to later reads, a
+  dataclass field is seeded from its positional argument, and an instance variable
+  (``svc = Cls(...); svc.m()``) resolves its method and carries its tracked fields in as the
+  method's ``self.*``; a dynamic attribute write (``setattr`` with a computed name) escalates the
+  whole object to ``DYNAMIC_UNKNOWN``. When unsure, a value is treated as tainted (over-report, then
+  let the tier speak) — never the reverse.
 * **Sinks** are the §3 rule pack. A tainted value reaching a sink's dangerous argument with no
   CWE-matching sanitizer on the path -> ``CONFIRMED_FLOW`` with the source->sink :class:`CallPath`
   as evidence. A path crossing a dynamic construct (``eval``/``exec``/``getattr`` dispatch, a
@@ -195,13 +200,61 @@ def _method_kind(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return "instance"
 
 
+def _attr_path(node: ast.expr) -> str | None:
+    """A dotted taint key for a ``Name`` or attribute chain rooted at a ``Name`` (Task 20.3).
+
+    ``x`` -> ``"x"``; ``self.cmd`` -> ``"self.cmd"``; ``obj.a.b`` -> ``"obj.a.b"``. Anything not
+    rooted at a bare name (a subscript or call base) returns ``None``. These dotted strings are used
+    as ordinary keys in the taint state so an instance attribute is tracked field-sensitively
+    alongside plain locals — ``self.cmd`` is a distinct slot from ``self.path``.
+    """
+    parts: list[str] = []
+    cur: ast.expr = node
+    while isinstance(cur, ast.Attribute):
+        parts.append(cur.attr)
+        cur = cur.value
+    if isinstance(cur, ast.Name):
+        parts.append(cur.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def _is_dataclass(node: ast.ClassDef) -> bool:
+    """Whether ``node`` is decorated ``@dataclass`` / ``@dataclasses.dataclass`` (call form too)."""
+    for dec in node.decorator_list:
+        target = dec.func if isinstance(dec, ast.Call) else dec
+        name: str | None = None
+        if isinstance(target, ast.Name):
+            name = target.id
+        elif isinstance(target, ast.Attribute):
+            name = target.attr
+        if name == "dataclass":
+            return True
+    return False
+
+
+def _dataclass_fields(node: ast.ClassDef) -> list[str]:
+    """The declared field names of a dataclass, in definition order (annotated class attributes).
+
+    These are the positional/keyword parameters of the synthesized ``__init__`` — so constructing
+    ``Cmd(tainted)`` maps the tainted argument onto the first field. Best-effort: ``ClassVar`` and
+    ``init=False`` fields are not filtered (over-mapping only ever raises concern, never lowers it).
+    """
+    fields: list[str] = []
+    for item in node.body:
+        if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+            fields.append(item.target.id)
+    return fields
+
+
 def _target_names(target: ast.expr) -> list[str]:
-    """The simple ``Name`` ids that receive an assignment's value taint.
+    """The taint keys that receive an assignment's value taint.
 
     Recurses tuple/list unpacking and ``*starred`` targets. A subscript target ``c[k] = v`` taints
     the *whole container* ``c`` (Task 20.1: index-sensitivity is not tracked, so a tainted element
-    conservatively taints the container — a sound over-approximation, never a downgrade). ``x.y =``
-    attribute writes are still untracked here (object/field taint is Task 20.3).
+    conservatively taints the container — a sound over-approximation, never a downgrade). An
+    attribute target ``self.x = v`` taints the field key ``"self.x"`` (Task 20.3: field-sensitive
+    instance state). A dynamic attribute write (``setattr``) is handled separately and escalates.
     """
     if isinstance(target, ast.Name):
         return [target.id]
@@ -214,20 +267,25 @@ def _target_names(target: ast.expr) -> list[str]:
         return _target_names(target.value)
     if isinstance(target, ast.Subscript):
         return _base_name_ids(target.value)  # c[k] = v -> taint container c (whole-container)
-    return []  # x.y = : attribute/field taint is Task 20.3, not tracked here
+    if isinstance(target, ast.Attribute):
+        path = _attr_path(target)  # self.x = v -> taint the field slot self.x (Task 20.3)
+        return [path] if path is not None else []
+    return []
 
 
 def _base_name_ids(node: ast.expr) -> list[str]:
-    """The root ``Name`` id of a subscript chain (``c[i][j]`` -> ``['c']``), else ``[]``.
+    """The root taint key of a subscript chain (``c[i][j]`` -> ``['c']``), else ``[]``.
 
-    Used for whole-container taint on subscript writes and in-place mutation: the base local that
-    holds the container is the thing taint attaches to. An attribute base (``self.items[i]``) is not
-    a local name, so it yields ``[]`` (object/field taint is Task 20.3).
+    Used for whole-container taint on subscript writes and in-place mutation: the base slot that
+    holds the container is the thing taint attaches to. An attribute base (``self.items[i]``)
+    resolves to its field key ``"self.items"`` (Task 20.3) so container taint survives on object
+    state too; a subscript rooted at a call/other expression yields ``[]``.
     """
     cur: ast.expr = node
     while isinstance(cur, ast.Subscript):
         cur = cur.value
-    return [cur.id] if isinstance(cur, ast.Name) else []
+    path = _attr_path(cur)
+    return [path] if path is not None else []
 
 
 @dataclass
@@ -236,6 +294,20 @@ class _ModuleUnit:
 
     fqn: str
     analyzer: "_Analyzer"
+
+
+@dataclass
+class _BodyState:
+    """The result of analyzing a function body: the tainted slots and the local class environment.
+
+    ``taint`` maps every tainted slot (locals, container bases, and field keys like ``self.cmd`` or
+    ``svc.path``) to its :class:`_Taint`. ``classes`` maps a local variable to the first-party
+    class(es) it was constructed from (``svc = Service(...)``), so a later ``svc.run(...)`` resolves
+    to the right method and seeds that method's ``self.*`` from the instance's tracked fields.
+    """
+
+    taint: dict[str, _Taint]
+    classes: dict[str, set[tuple["_Analyzer", str]]]
 
 
 class _Project:
@@ -253,6 +325,11 @@ class _Project:
         self._return_memo: dict[_SummaryKey, _Taint | None] = {}
         self._return_active: set[_SummaryKey] = set()
         self._emit_visited: set[_SummaryKey] = set()
+        # Per-method instance-attribute summary: which ``self.*`` fields a method taints given a set
+        # of tainted parameters/incoming fields. Memoized project-wide (Task 20.3) and reused by
+        # every constructor call and method write-back, so cross-method field flow stays tractable.
+        self._attr_memo: dict[_SummaryKey, dict[str, _Taint]] = {}
+        self._attr_active: set[_SummaryKey] = set()
 
     def add(self, rel: str, tree: ast.Module, entries: dict[str, str]) -> None:
         """Register a module's analyzer under its import fqn (last write wins on collision)."""
@@ -336,6 +413,10 @@ class _Analyzer:
         self.all_funcs: list[_FuncInfo] = []
         self.class_defs: set[str] = set()
         self.methods: dict[tuple[str, str], _FuncInfo] = {}
+        # @dataclass classes and their declared field order, for synthesizing a generated __init__
+        # (``Cmd(tainted)`` taints field ``Cmd.value``) when no explicit __init__ is written.
+        self.is_dataclass: set[str] = set()
+        self.dataclass_fields: dict[str, list[str]] = {}
         # local-imported-name -> (absolute module fqn, original symbol), for first-party resolution.
         self.import_symbols: dict[str, tuple[str, str]] = {}
         self._collect_imports(tree)
@@ -386,6 +467,9 @@ class _Analyzer:
                 self.all_funcs.append(info)
             elif isinstance(stmt, ast.ClassDef):
                 self.class_defs.add(stmt.name)
+                if _is_dataclass(stmt):
+                    self.is_dataclass.add(stmt.name)
+                    self.dataclass_fields[stmt.name] = _dataclass_fields(stmt)
                 for item in stmt.body:
                     if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
                         allp, pos = _param_names(item)
@@ -538,7 +622,13 @@ class _Analyzer:
             return tainted.get(node.id)
         if isinstance(node, ast.Call):
             return self._eval_call(node, tainted)
-        if isinstance(node, ast.Attribute | ast.Subscript | ast.Starred | ast.Await):
+        if isinstance(node, ast.Attribute):
+            # Field-sensitive read: the attribute's own slot (``self.cmd``) OR taint on the whole
+            # base object (a wholly-tainted instance taints every attribute) — merged, never lost.
+            path = _attr_path(node)
+            direct = tainted.get(path) if path is not None else None
+            return _merge_taint(direct, self._eval(node.value, tainted))
+        if isinstance(node, ast.Subscript | ast.Starred | ast.Await):
             return self._eval(node.value, tainted)
         if isinstance(node, ast.FormattedValue):
             return self._eval(node.value, tainted)
@@ -699,22 +789,30 @@ class _Analyzer:
 
     # -- intra-function state (fixpoint) ---------------------------------------------------
 
-    def _local_state(self, func: _FuncInfo, seed: dict[str, _Taint]) -> dict[str, _Taint]:
-        """Compute the tainted-variable state for ``func`` given its tainted parameters ``seed``."""
+    def _body_state(self, func: _FuncInfo, seed: dict[str, _Taint]) -> _BodyState:
+        """Compute ``func``'s tainted-slot state and local class environment given seed taints.
+
+        Beyond locals and containers (16.3/20.1), this also tracks **object state** (Task 20.3):
+        ``self.x = t`` taints the field slot ``self.x``; ``svc = Service(t)`` binds ``svc``'s class
+        (for later method resolution) and seeds ``svc.<field>`` from the constructor's effect on
+        ``self``; a method call ``svc.configure(t)`` writes the method's tainted ``self.*`` fields
+        back onto ``svc.*``; and ``setattr(obj, n, t)`` escalates ``obj`` to dynamic taint (the
+        attribute name is unknown). The fixpoint is monotone, so these effects are order-free.
+        """
         tainted: dict[str, _Taint] = dict(seed)
+        classes: dict[str, set[tuple[_Analyzer, str]]] = {}
         for _ in range(_MAX_ITERS):
             changed = False
             for stmt in ast.walk(func.scope):
                 if isinstance(stmt, ast.Assign):
                     value = self._eval(stmt.value, tainted)
+                    changed |= self._bind_construction(stmt, tainted, classes)
                     for target in stmt.targets:
                         for name in _target_names(target):
                             changed |= self._add(tainted, name, value)
-                elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
-                    value = self._eval(stmt.value, tainted)
-                    if isinstance(stmt.target, ast.Name):
-                        changed |= self._add(tainted, stmt.target.id, value)
-                elif isinstance(stmt, ast.AugAssign):
+                elif isinstance(stmt, ast.AnnAssign | ast.AugAssign):
+                    if stmt.value is None:
+                        continue  # bare annotation ``x: int`` — no value to propagate
                     value = self._eval(stmt.value, tainted)
                     for name in _target_names(stmt.target):
                         changed |= self._add(tainted, name, value)
@@ -737,21 +835,54 @@ class _Analyzer:
                         for name in _target_names(gen.target):
                             changed |= self._add(tainted, name, value)
                 elif isinstance(stmt, ast.Call):
+                    setattr_eff = self._setattr_effect(stmt, tainted)
+                    if setattr_eff is not None:
+                        changed |= self._add(tainted, setattr_eff[0], setattr_eff[1])
                     target_name, value = self._mutation_effect(stmt, tainted)
                     if target_name is not None:
                         changed |= self._add(tainted, target_name, value)
+                    for slot, taint in self._method_writeback(stmt, tainted, classes).items():
+                        changed |= self._add(tainted, slot, taint)
             if not changed:
                 break
-        return tainted
+        return _BodyState(tainted, classes)
+
+    def _bind_construction(
+        self,
+        stmt: ast.Assign,
+        tainted: dict[str, _Taint],
+        classes: dict[str, set[tuple["_Analyzer", str]]],
+    ) -> bool:
+        """For ``name = Cls(args)``: record ``name``'s class and seed its tainted fields.
+
+        Returns whether anything changed. The whole-instance taint from the generic assignment is
+        still applied by the caller (a conservative backstop for direct uses of ``name``); this adds
+        the *field-precise* slots (``name.<field>``) used to seed methods called on the instance.
+        """
+        if len(stmt.targets) != 1 or not isinstance(stmt.targets[0], ast.Name):
+            return False
+        if not isinstance(stmt.value, ast.Call):
+            return False
+        cls = self._resolve_class_from_callee(stmt.value.func)
+        if cls is None:
+            return False
+        name = stmt.targets[0].id
+        changed = False
+        if cls not in classes.get(name, set()):
+            classes.setdefault(name, set()).add(cls)
+            changed = True
+        for attr, taint in self._construct_attrs(stmt.value, cls, tainted).items():
+            changed |= self._add(tainted, f"{name}.{attr}", taint)
+        return changed
 
     def _mutation_effect(
         self, call: ast.Call, tainted: dict[str, _Taint]
     ) -> tuple[str | None, _Taint | None]:
         """Taint carried into a container by an in-place mutator (``c.append(t)`` -> taint ``c``).
 
-        Returns ``(receiver_name, taint)`` when ``call`` is a recognized mutation method on a local
-        container and an argument carries taint, else ``(None, None)``. The receiver is the base
-        local of the (possibly subscripted) chain; an attribute receiver is left to Task 20.3.
+        Returns ``(receiver_slot, taint)`` when ``call`` is a recognized mutation method on a local
+        or field container and an argument carries taint, else ``(None, None)``. The receiver is the
+        base slot of the (possibly subscripted) chain — a local (``c``) or a field (``self.items``).
         """
         func = call.func
         if not isinstance(func, ast.Attribute) or func.attr not in _MUTATION_METHODS:
@@ -762,6 +893,170 @@ class _Analyzer:
         parts = [self._eval(a, tainted) for a in call.args]
         parts += [self._eval(k.value, tainted) for k in call.keywords]
         return bases[0], self._combine(parts)
+
+    def _setattr_effect(
+        self, call: ast.Call, tainted: dict[str, _Taint]
+    ) -> tuple[str, _Taint] | None:
+        """``setattr(obj, name, t)`` with a tainted value -> taint ``obj`` wholly and dynamically.
+
+        The attribute name is computed, so we cannot pin which field is tainted; the sound move is
+        to taint the whole object and flag it dynamic, so a later read of any of its attributes is
+        not ruled out but is tiered ``DYNAMIC_UNKNOWN`` rather than ``CONFIRMED_FLOW``.
+        """
+        func = call.func
+        if not (isinstance(func, ast.Name) and func.id == "setattr") or len(call.args) < 3:
+            return None
+        value = self._eval(call.args[2], tainted)
+        if value is None:
+            return None
+        base = _attr_path(call.args[0])
+        if base is None:
+            return None
+        return base, _Taint(value.source, frozenset(), True)
+
+    # -- object / class-state taint (Task 20.3) --------------------------------------------
+
+    @staticmethod
+    def _collect_self_attrs(taint: dict[str, _Taint]) -> dict[str, _Taint]:
+        """Extract the direct ``self.<attr>`` field taints from a body's tainted-slot state."""
+        prefix = "self."
+        return {
+            key[len(prefix) :]: value
+            for key, value in taint.items()
+            if key.startswith(prefix) and key.count(".") == 1
+        }
+
+    def _self_attr_summary(self, func: _FuncInfo, seed: dict[str, _Taint]) -> dict[str, _Taint]:
+        """Which ``self.*`` fields ``func`` taints given tainted params/incoming fields (memoized).
+
+        Reused by constructor seeding and method write-back so a class's field-flow summary is
+        computed once per tainted-input shape and shared across every caller.
+        """
+        key = (self.module_fqn, func.qualname, frozenset(seed))
+        if key in self.project._attr_active:
+            return {}  # recursion: terminate conservatively
+        if key in self.project._attr_memo:
+            return self.project._attr_memo[key]
+        self.project._attr_active.add(key)
+        attrs = self._collect_self_attrs(self._body_state(func, seed).taint)
+        self.project._attr_active.discard(key)
+        self.project._attr_memo[key] = attrs
+        return attrs
+
+    def _construct_attrs(
+        self, call: ast.Call, cls: "tuple[_Analyzer, str]", tainted: dict[str, _Taint]
+    ) -> dict[str, _Taint]:
+        """The instance fields tainted by constructing ``cls`` with ``call``'s arguments.
+
+        An explicit ``__init__`` is analyzed via its ``self.*`` summary (mapping the call arguments,
+        skipping ``self``); a dataclass with no ``__init__`` maps the call arguments onto its
+        declared fields in order. An unanalyzable constructor simply yields no precise fields — the
+        whole-instance backstop still keeps direct uses sound.
+        """
+        owner, class_name = cls
+        init = owner.methods.get((class_name, "__init__"))
+        if init is not None:
+            return owner._self_attr_summary(init, self._map_args(init, call, tainted, 1))
+        if class_name in owner.is_dataclass:
+            fields = owner.dataclass_fields.get(class_name, [])
+            out: dict[str, _Taint] = {}
+            for index, arg in enumerate(call.args):
+                if isinstance(arg, ast.Starred) or index >= len(fields):
+                    continue
+                taint = self._eval(arg, tainted)
+                if taint is not None:
+                    out[fields[index]] = taint
+            for keyword in call.keywords:
+                if keyword.arg in fields:
+                    taint = self._eval(keyword.value, tainted)
+                    if taint is not None:
+                        out[keyword.arg] = taint
+            return out
+        return {}
+
+    def _method_writeback(
+        self,
+        call: ast.Call,
+        tainted: dict[str, _Taint],
+        classes: dict[str, set[tuple["_Analyzer", str]]],
+    ) -> dict[str, _Taint]:
+        """Fields a method call writes onto its tracked receiver (``svc.configure(t)`` -> svc.data).
+
+        Resolves ``recv.method(...)`` against ``recv``'s tracked class(es), runs the method's
+        ``self.*`` summary with the mapped arguments **plus** the receiver's currently-tainted
+        fields (so chained setters compose), and returns ``{recv.field: taint}``. Empty when the
+        receiver is not a tracked instance variable or the method is not an instance method.
+        """
+        func = call.func
+        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+            return {}
+        recv = func.value.id
+        candidates = classes.get(recv)
+        if not candidates:
+            return {}
+        prefix = recv + "."
+        incoming = {
+            key[len(prefix) :]: value
+            for key, value in tainted.items()
+            if key.startswith(prefix) and key.count(".") == 1
+        }
+        out: dict[str, _Taint] = {}
+        for owner, class_name in sorted(candidates, key=lambda c: c[1]):
+            bound = self._lookup_method((owner, class_name), func.attr)
+            if bound is None or bound[2] != "instance":
+                continue
+            method_owner, method, _ = bound
+            seed = self._map_args(method, call, tainted, 1)
+            for attr, taint in incoming.items():
+                seed[f"self.{attr}"] = taint
+            for attr, taint in method_owner._self_attr_summary(method, seed).items():
+                slot = f"{recv}.{attr}"
+                merged = _merge_taint(out.get(slot), taint)
+                if merged is not None:
+                    out[slot] = merged
+        return out
+
+    def _resolve_method_on_instance(
+        self, node: ast.Call, body: _BodyState
+    ) -> "tuple[_Analyzer, _FuncInfo, int] | None":
+        """Resolve ``recv.method(...)`` where ``recv`` is a variable bound to a first-party class.
+
+        Complements :meth:`_resolve_call_target` (which handles inline ``Cls().method`` and
+        ``Cls.static``) by using the local class environment to resolve method calls on a tracked
+        instance variable — the ``inst = Cls(); inst.m()`` shape deferred from Task 20.2.
+        """
+        func = node.func
+        if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+            return None
+        candidates = body.classes.get(func.value.id)
+        if not candidates:
+            return None
+        for owner, class_name in sorted(candidates, key=lambda c: c[1]):
+            bound = self._lookup_method((owner, class_name), func.attr)
+            if bound is not None:
+                method_owner, method, kind = bound
+                return method_owner, method, 0 if kind == "static" else 1
+        return None
+
+    def _receiver_self_attrs(self, recv: ast.expr, body: _BodyState) -> dict[str, _Taint]:
+        """The tainted ``self.*`` fields to seed when entering a method called on ``recv``.
+
+        For an instance variable (``svc.run()``) these are the fields tracked on ``svc``; for an
+        inline construction (``Cls(t).run()``) they are the constructor's field effects. ``self`` as
+        the receiver (a method calling ``self.other()``) carries the current ``self.*`` fields on.
+        """
+        if isinstance(recv, ast.Name):
+            prefix = recv.id + "."
+            return {
+                key[len(prefix) :]: value
+                for key, value in body.taint.items()
+                if key.startswith(prefix) and key.count(".") == 1
+            }
+        if isinstance(recv, ast.Call):
+            cls = self._resolve_class_from_callee(recv.func)
+            if cls is not None:
+                return self._construct_attrs(recv, cls, body.taint)
+        return {}
 
     def _add(self, tainted: dict[str, _Taint], name: str, value: _Taint | None) -> bool:
         """Merge ``value`` into ``tainted[name]`` (taint only grows); return whether it changed."""
@@ -785,7 +1080,7 @@ class _Analyzer:
         if key in self.project._return_memo:
             return self.project._return_memo[key]
         self.project._return_active.add(key)
-        tainted = self._local_state(func, seed)
+        tainted = self._body_state(func, seed).taint
         returns: list[_Taint | None] = [
             self._eval(node.value, tainted)
             for node in ast.walk(func.scope)
@@ -809,22 +1104,31 @@ class _Analyzer:
         if key in self.project._emit_visited:
             return
         self.project._emit_visited.add(key)
-        tainted = self._local_state(func, seed)
+        body = self._body_state(func, seed)
+        tainted = body.taint
         for node in ast.walk(func.scope):
             if not isinstance(node, ast.Call):
                 continue
             self._check_sink(node, tainted, stack)
             resolved = self._resolve_call_target(node)
-            if resolved is not None:
-                target, callee_func, skip = resolved
-                child_seed = self._map_args(callee_func, node, tainted, skip)
-                if child_seed:  # demand-driven: only follow a call carrying taint
-                    step = CallStep(
-                        qualname=callee_func.qualname,
-                        file=callee_func.file,
-                        line=callee_func.lineno,
-                    )
-                    target._emit_walk(callee_func, child_seed, [*stack, step])
+            if resolved is None:  # ``inst.m()`` on a tracked instance variable (Task 20.3)
+                resolved = self._resolve_method_on_instance(node, body)
+            if resolved is None:
+                continue
+            target, callee_func, skip = resolved
+            child_seed = self._map_args(callee_func, node, tainted, skip)
+            # Seed the callee's ``self.*`` from the receiver instance's tracked fields, so a sink
+            # reading ``self.cmd`` in the method sees taint set in the constructor/another method.
+            if isinstance(node.func, ast.Attribute) and callee_func.method_kind == "instance":
+                for attr, taint in self._receiver_self_attrs(node.func.value, body).items():
+                    child_seed.setdefault(f"self.{attr}", taint)
+            if child_seed:  # demand-driven: only follow a call carrying taint
+                step = CallStep(
+                    qualname=callee_func.qualname,
+                    file=callee_func.file,
+                    line=callee_func.lineno,
+                )
+                target._emit_walk(callee_func, child_seed, [*stack, step])
 
     def _check_sink(
         self, call: ast.Call, tainted: dict[str, _Taint], stack: list[CallStep]

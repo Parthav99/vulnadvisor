@@ -4,6 +4,55 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 20.3 — Object / attribute & class-state taint  (2026-06-20)
+
+**Status:** complete. **No new dependency.** Gate green: `ruff check src tests` clean, `ruff format
+--check` clean (129 files), `mypy --strict src` clean (87 files), **full pytest 953 passed / 1
+skipped** (+14 new object-state tests). SAST soundness gate (`python -m benchmarks --sast`):
+**PASS, 0 missed vulns**, exit 0 (detection/scoring untouched). Perf held — SRC taint pass **0.73 s**
+(10 s budget), the `taint_object` fixture 0.006 s.
+
+**What changed** (`sast/taint.py`, still pure beyond reading project files). Taint now survives
+*object state*, field-sensitively. An attribute is its own taint slot: `_attr_path` maps a
+Name/attribute chain to a dotted key (`self.cmd`, `svc.path`), and `_target_names` / `_base_name_ids`
+now emit those keys, so `self.x = t` taints the slot `self.x` and `_eval` of an attribute read merges
+the slot's taint with any whole-object taint (a wholly-tainted instance still taints every field —
+never lost).
+
+- **`_BodyState`** replaces the bare taint dict returned by the renamed `_body_state` (was
+  `_local_state`): it also carries a **local class environment** (`var -> {(analyzer, class)}`).
+  `svc = Service(t)` records `svc`'s class via `_bind_construction` and seeds `svc.<field>` from a
+  **constructor summary**; a later `svc.run()` resolves through `_resolve_method_on_instance` (the
+  `inst = Cls(); inst.m()` shape deferred from 20.2) and `_receiver_self_attrs` carries the
+  instance's tracked fields in as the method's `self.*`, so a sink reading `self.cmd` inside the
+  method sees the flow.
+- **`_self_attr_summary`** (project-memoized, recursion-guarded) computes which `self.*` fields a
+  method taints from its tainted params/incoming fields. `_construct_attrs` uses it for an explicit
+  `__init__` (mapping ctor args, skipping `self`) and falls back to **dataclass** field-order
+  mapping when there is no `__init__` (`Cmd(t)` taints field `value`). `_method_writeback` runs the
+  same summary for non-constructor setters, writing `obj.<field>` back onto the receiver var inside
+  the monotone fixpoint, so `obj.configure(t); obj.run()` composes order-independently.
+- **Dynamic attribute writes escalate, never clear.** `_setattr_effect` turns `setattr(obj, n, t)`
+  (computed attribute name) into a whole-object **dynamic** taint, so a later read is
+  `DYNAMIC_UNKNOWN` — not ruled out, never `CONFIRMED`, never silently clean. (`getattr` already
+  flows through the existing `_DYNAMIC_NAMES` path.)
+
+**Fixtures** (`fixtures/projects/taint_object/`: `views.py` Django-routed, `models.py` classes,
+`urls.py`) + 14 tests (7 single-module via `analyze_source`, 7 cross-file via `analyze_taint`):
+intra-method set→get→sink (CONFIRMED), constructor-taint across files/methods (`run_view ->
+Service.execute -> os.system`), dataclass field, non-constructor setter write-back (`setter_view ->
+Mutable.run -> os.system`), dynamic `setattr` (DYNAMIC_UNKNOWN), and two **negatives** — a literal
+dataclass field and a never-tainted field — that stay POSSIBLE_FLOW. The exact CONFIRMED set is
+pinned (zero-missed soundness assertion) and determinism asserted.
+
+**Soundness/scope:** every new resolution over-approximates toward a finding (an unanalyzable
+constructor still leaves the whole-instance backstop; an unresolved method falls to unknown-call).
+**Conservative limitations:** attribute taint is single-level (`self.x`, not deep `self.a.b` field
+chains beyond the first hop) and index-insensitive within containers (inherited from 20.1); a
+dynamic attribute *name* collapses to whole-object dynamic taint rather than a precise field.
+
+---
+
 ## Task 20.2 — Cross-module / cross-file taint  (2026-06-15)
 
 **Status:** complete. **No new dependency.** Gate green: `ruff check src tests` clean, `ruff format

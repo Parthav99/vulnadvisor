@@ -456,6 +456,172 @@ def test_clean_container_yields_no_escalation() -> None:
     )
 
 
+# --- object / attribute & class-state taint (Task 20.3) -------------------------------------
+
+
+def test_constructor_param_taints_field_to_sink() -> None:
+    # __init__ stores a tainted param on self.cmd; a later method reads self.cmd into a sink.
+    f = _one(
+        _ENTRY + "class Svc:\n"
+        "    def __init__(self, c):\n"
+        "        self.cmd = c\n"
+        "    def run(self):\n"
+        "        os.system(self.cmd)\n"
+        "@app.get('/r')\n"
+        "def r(cmd):\n"
+        "    s = Svc(cmd)\n"
+        "    s.run()\n"
+    )
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.cwe == "CWE-78"
+    assert f.flow is not None
+    assert f.flow.render() == "r -> Svc.run -> os.system (m.py:8)"
+
+
+def test_self_attr_set_then_get_within_method() -> None:
+    # attr set -> get -> sink within one method, reached by constructing and calling the instance.
+    f = _one(
+        _ENTRY + "class Svc:\n"
+        "    def handle(self, c):\n"
+        "        self.cmd = c\n"
+        "        os.system(self.cmd)\n"
+        "@app.get('/r')\n"
+        "def r(cmd):\n"
+        "    Svc().handle(cmd)\n"
+    )
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_dataclass_field_taints_to_sink() -> None:
+    # Constructing a dataclass maps the tainted argument onto its first field; reading it sinks.
+    f = _one(
+        "import os\n"
+        "from dataclasses import dataclass\n"
+        "from fastapi import FastAPI\n"
+        "app = FastAPI()\n"
+        "@dataclass\n"
+        "class Cmd:\n"
+        "    value: str\n"
+        "@app.get('/r')\n"
+        "def r(cmd):\n"
+        "    box = Cmd(cmd)\n"
+        "    os.system(box.value)\n"
+    )
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_non_constructor_setter_writes_back_to_instance() -> None:
+    # configure() sets self.data; a later run() on the same variable reads it into the sink.
+    f = _one(
+        _ENTRY + "class Svc:\n"
+        "    def configure(self, v):\n"
+        "        self.data = v\n"
+        "    def run(self):\n"
+        "        os.system(self.data)\n"
+        "@app.get('/r')\n"
+        "def r(cmd):\n"
+        "    s = Svc()\n"
+        "    s.configure(cmd)\n"
+        "    s.run()\n"
+    )
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_setattr_dynamic_attribute_is_blocked_not_dropped() -> None:
+    # The attribute name is computed -> the object is tainted dynamically -> DYNAMIC_UNKNOWN, never
+    # CONFIRMED and never silently clean.
+    f = _one(
+        _ENTRY + "class Box:\n"
+        "    pass\n"
+        "@app.get('/r')\n"
+        "def r(cmd):\n"
+        "    b = Box()\n"
+        "    setattr(b, 'x', cmd)\n"
+        "    os.system(b.x)\n"
+    )
+    assert f.tier is SastTier.DYNAMIC_UNKNOWN
+
+
+def test_literal_constructed_field_yields_no_escalation() -> None:
+    # Soundness floor: a field set from a literal constructor argument is never tainted.
+    assert (
+        _findings(
+            _ENTRY + "class Svc:\n"
+            "    def __init__(self, c):\n"
+            "        self.cmd = c\n"
+            "    def run(self):\n"
+            "        os.system(self.cmd)\n"
+            "@app.get('/r')\n"
+            "def r(cmd):\n"
+            "    Svc('ls').run()\n"
+        )
+        == ()
+    )
+
+
+# --- object / class-state taint across files (Task 20.3 fixture project) --------------------
+
+
+def _xobject() -> dict[tuple[str, int], SastFinding]:
+    return {(f.file, f.line): f for f in analyze_taint(PROJECTS / "taint_object")}
+
+
+def test_xobject_intra_method_attr_set_get_sink() -> None:
+    # Django CBV: self.cmd = request param, then os.system(self.cmd) within the same method.
+    f = _xobject()[("views.py", 23)]
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.source_kind == "http-parameter"
+
+
+def test_xobject_constructor_taint_across_files_and_methods() -> None:
+    # run_view -> Service(raw) (__init__ stores self.cmd) -> svc.execute() sinks self.cmd.
+    f = _xobject()[("models.py", 18)]
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.flow is not None
+    assert f.flow.render() == "run_view -> Service.execute -> os.system (models.py:18)"
+
+
+def test_xobject_dataclass_field() -> None:
+    f = _xobject()[("views.py", 35)]
+    assert f.tier is SastTier.CONFIRMED_FLOW
+
+
+def test_xobject_setter_method_writeback() -> None:
+    # setter_view -> obj.configure(raw) writes self.data -> obj.run() sinks it.
+    f = _xobject()[("models.py", 27)]
+    assert f.tier is SastTier.CONFIRMED_FLOW
+    assert f.flow is not None
+    assert f.flow.render() == "setter_view -> Mutable.run -> os.system (models.py:27)"
+
+
+def test_xobject_dynamic_setattr_is_dynamic_unknown() -> None:
+    f = _xobject()[("views.py", 50)]
+    assert f.tier is SastTier.DYNAMIC_UNKNOWN
+
+
+def test_xobject_negatives_stay_possible() -> None:
+    # The literal-field and never-tainted-field reads must NOT escalate (no flow is invented).
+    by_loc = _xobject()
+    assert by_loc[("views.py", 57)].tier is SastTier.POSSIBLE_FLOW
+    assert by_loc[("views.py", 63)].tier is SastTier.POSSIBLE_FLOW
+
+
+def test_xobject_zero_missed_object_flows() -> None:
+    # Release-blocking soundness: exactly the genuinely reachable object-state sinks are CONFIRMED.
+    by_loc = _xobject()
+    confirmed = {loc for loc, f in by_loc.items() if f.tier is SastTier.CONFIRMED_FLOW}
+    assert confirmed == {
+        ("views.py", 23),
+        ("views.py", 35),
+        ("models.py", 18),
+        ("models.py", 27),
+    }
+
+
+def test_xobject_deterministic() -> None:
+    assert analyze_taint(PROJECTS / "taint_object") == analyze_taint(PROJECTS / "taint_object")
+
+
 # --- merge semantics over a real project (analyze_taint) ------------------------------------
 
 
