@@ -87,6 +87,13 @@ def tier_concern(tier: SastTier) -> int:
     return _TIER_CONCERN[tier]
 
 
+#: Stable provenance id for a finding our own engine located (the default for native findings). An
+#: external adapter overrides :attr:`SastFinding.provenance` with its own tool id (e.g.
+#: ``"semgrep-oss"``); fusion (``sast/external/fusion.py``, Task 21.3) merges the two when both
+#: tools flag the same issue.
+NATIVE_PROVENANCE = "vulnadvisor"
+
+
 class SastFinding(BaseModel):
     """A first-party finding with its proven (or refined) confidence tier and evidence path.
 
@@ -103,6 +110,11 @@ class SastFinding(BaseModel):
         source_kind: The taint source kind for an escalated finding (e.g. ``"http-parameter"``,
             ``"argv"``, ``"environment"``, ``"flask-request"``), or ``None`` when not flow-proven.
         flow: The source->sink call path (same shape as SCA reachability evidence), or ``None``.
+        provenance: The tools that flagged this issue, most-authoritative first. A native finding is
+            ``("vulnadvisor",)``; an external adapter's normalized finding is e.g.
+            ``("semgrep-oss",)``; a corroborated finding fused from both is
+            ``("vulnadvisor", "semgrep-oss")`` (Task 21.3). Additive field — the JSON/SARIF
+            renderers ignore it until Task 21.4 surfaces it.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -118,6 +130,7 @@ class SastFinding(BaseModel):
     reason: str
     source_kind: str | None = None
     flow: CallPath | None = None
+    provenance: tuple[str, ...] = (NATIVE_PROVENANCE,)
 
     @classmethod
     def from_sink_hit(cls, hit: SinkHit) -> "SastFinding":

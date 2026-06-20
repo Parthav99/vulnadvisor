@@ -176,6 +176,7 @@ class SemgrepAdapter:
                     reason=_normalize_reason(record),
                     source_kind=None,
                     flow=None,
+                    provenance=(record.tool,),
                 )
             )
         return tuple(findings)

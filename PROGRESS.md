@@ -4,6 +4,68 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 21.3 — Reachability overlay + dedup/fusion  (2026-06-20)
+
+**Status:** complete, Validation Gate green. No new dependency (pure stdlib + existing models). Gate:
+ruff check + ruff format clean; `mypy --strict src` clean (91 files); **pytest 1037 passed, 2 skipped**
+(+17 new `tests/test_fusion.py`).
+
+**Why this task.** 21.2 ingests Semgrep's findings at the soundness floor (`DYNAMIC_UNKNOWN`,
+`flow is None`). 21.3 is the *overlay + merge* half of fusion (`docs/fusion-design.md` §4–§5): each
+external finding earns one of *our* tiers by corroborating against what the native taint engine
+independently proved at the same location, and native+external are de-duplicated into one ranked list
+with every provenance preserved — **never** silently dropping or quieting an external finding.
+
+**What changed.**
+- `src/vulnadvisor/sast/model.py` — additive `SastFinding.provenance: tuple[str, ...]` (default
+  `("vulnadvisor",)`) plus a `NATIVE_PROVENANCE` constant. The JSON/SARIF renderers build explicit
+  dicts (they don't `model_dump` the finding), so output is byte-identical until 21.4 surfaces the
+  field — existing snapshots untouched (verified: full suite green).
+- `src/vulnadvisor/sast/external/semgrep.py` — `normalize()` now stamps `provenance=(record.tool,)`
+  (`("semgrep-oss",)`) so fusion can attribute and merge.
+- **New `src/vulnadvisor/sast/external/fusion.py`** — pure, deterministic:
+  - `fuse_findings(native, external)` — seeds the merge list with native findings (in stable order),
+    then for each external (stable order) finds the best corroboration target at `(file, line±1, cwe)`
+    and merges, or appends it as an escalated own record.
+  - **Overlay = the native record governs.** `_richer` makes a native record always win over a
+    pre-overlay external one, so corroboration adopts *our* tier/flow (CONFIRMED/POSSIBLE/SANITIZED/
+    DYNAMIC) rather than letting the external's `DYNAMIC_UNKNOWN` *floor* inflate a `POSSIBLE_FLOW`/
+    `SANITIZED` sink. An external with no native match (unknown CWE, or a CWE we don't natively flag)
+    `_escalate_unoverlayable` → stays `DYNAMIC_UNKNOWN` with a reason naming the gap; never SANITIZED.
+  - **Dedup** by `(file, line±1, cwe)` (`merge_provenance` keeps both, vulnadvisor first).
+  - `external_findings_represented` — the §4.1 no-loss invariant as a checkable predicate.
+
+**Why these choices (the two soundness traps I had to close).**
+1. **Native sinks are produced for every sink by `analyze_taint` already**, so the overlay is just
+   *corroboration against native findings* — no separate "is the sink reachable?" path. A Semgrep
+   finding matching a native `POSSIBLE_FLOW`/`SANITIZED`/`CONFIRMED_FLOW` adopts exactly that tier.
+2. **The ±1 tolerance is cross-tool only.** `_best_match` skips any candidate that already carries
+   the external's own tool, so two same-tool findings on adjacent lines stay distinct (collapsing
+   them would silently drop a finding — a false negative). Native↔native never merges either (natives
+   are seeded, never matched against each other). Both are covered by dedicated tests.
+3. **The external floor must not out-rank our determination.** A pre-overlay external is
+   `DYNAMIC_UNKNOWN` (concern 2, full severity); a native `POSSIBLE_FLOW` is concern 1. Letting
+   tier_concern decide would discard our specific finding for the floor, so native-preference is the
+   first tiebreak in `_richer`. This is the overlay contract, and it is sound: SANITIZED is only ever
+   assigned because *our* engine proved it (identical to a native-only SANITIZED), never on a guess.
+
+**Validation evidence.**
+- Overlay: agreement → survivor `CONFIRMED_FLOW` with our path + provenance `(vulnadvisor, semgrep-oss)`;
+  native `POSSIBLE_FLOW`/`SANITIZED`/`DYNAMIC_UNKNOWN` each govern over the external floor (parametrized).
+- Un-overlayable (unknown CWE) and CWE-less external → `DYNAMIC_UNKNOWN`, kept, reason names the gap,
+  never SANITIZED. Different CWE same line → two records (CWE is part of the key).
+- Dedup: ±1 merges (lines 9/10/11), line 12 does not; two same-tool externals on adjacent lines stay
+  two; two native sinks on adjacent lines stay two.
+- Soundness: `external_findings_represented` true across a mixed corroborated/un-overlayable/CWE-less
+  set; false when an external is dropped. Determinism: input order doesn't change the merged set or
+  the `order_unified` ranking.
+
+**Open questions / next.** 21.4 wires this into the pipeline (`scan --with-semgrep`), renders
+`provenance` in the 3-card/JSON/SARIF/dashboard, and adds the fusion benchmark. The
+`provenance`-in-JSON additive bump and platform ingest test land there per fusion-design §12.2.
+
+---
+
 ## Task 21.2 — Semgrep OSS adapter  (2026-06-20)
 
 **Status:** complete, Validation Gate green. New **optional** dependency `semgrep==1.167.0` added to a
