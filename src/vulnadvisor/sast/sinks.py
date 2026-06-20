@@ -32,6 +32,10 @@ _SECRET_REGEXES: tuple[tuple[rules.SecretPattern, re.Pattern[str]], ...] = tuple
 _POSSIBLE_REASON = (
     "called with a non-literal argument; taint not yet proven (pending flow analysis)"
 )
+_INTRINSIC_REASON = (
+    "an inherently unsafe API is used; the call pattern itself is the weakness, "
+    "independent of input"
+)
 
 
 class _Bindings:
@@ -79,49 +83,71 @@ def _attr_chain(func: ast.expr) -> tuple[ast.expr, list[str]]:
 
 
 def _resolve_module_fqn(func: ast.expr, bindings: _Bindings) -> str | None:
-    """Resolve an attribute-call target to a module FQN (``os.path.join``), or ``None``."""
+    """Resolve an attribute-call target to a module FQN (``os.path.join``), or ``None``.
+
+    Two binding shapes resolve a root name to a module: ``import a.b [as c]`` (``alias_to_module``)
+    and ``from pkg import sub`` where ``sub`` is itself a submodule (``from_import``) — the latter
+    is the ubiquitous ``from lxml import etree; etree.fromstring(x)`` idiom, which would otherwise
+    be a silent miss. Concatenating ``module.symbol`` with the trailing attrs yields the FQN
+    (``lxml.etree`` + ``fromstring`` -> ``lxml.etree.fromstring``); a from-imported *function* used
+    as an attribute base is rare and would only ever over-match (the sound direction).
+    """
     root, attrs = _attr_chain(func)
-    if isinstance(root, ast.Name) and attrs and root.id in bindings.alias_to_module:
-        return bindings.alias_to_module[root.id] + "." + ".".join(attrs)
+    if isinstance(root, ast.Name) and attrs:
+        if root.id in bindings.alias_to_module:
+            return bindings.alias_to_module[root.id] + "." + ".".join(attrs)
+        if root.id in bindings.from_import:
+            return bindings.from_import[root.id] + "." + ".".join(attrs)
     return None
 
 
-def _match_rule(call: ast.Call, bindings: _Bindings) -> tuple[rules.SinkRule, str] | None:
-    """Match a call against the rule pack, returning ``(rule, callee_display)`` or ``None``."""
+def _match_rules(call: ast.Call, bindings: _Bindings) -> list[tuple[rules.SinkRule, str]]:
+    """Match a call against the rule pack, returning *every* matching ``(rule, callee_display)``.
+
+    A single call can violate several CWEs at once — ``requests.get(url, verify=False)`` is both
+    SSRF (the tainted URL) and a disabled-TLS finding (``verify=False``) — so the matcher returns
+    all matches, not just the first. For an attribute call, a resolved module FQN takes precedence:
+    if it matches any MODULE rule those are returned; only an *unresolved* receiver falls back to
+    the method heuristic (``cursor.execute``), so a regex ``re.search`` is never also LDAP's
+    ``search``.
+    """
     func = call.func
     if isinstance(func, ast.Name):
         if func.id in bindings.from_import:  # from os import system; system(...)
-            return _module_rule(bindings.from_import[func.id])
-        return _builtin_rule(func.id)  # bare builtin (eval/exec/open), not shadowed by an import
+            return _module_rules(bindings.from_import[func.id])
+        return _builtin_rules(func.id)  # bare builtin (eval/exec/open), not shadowed by an import
     if isinstance(func, ast.Attribute):
         fqn = _resolve_module_fqn(func, bindings)
         if fqn is not None:
-            matched = _module_rule(fqn)
-            if matched is not None:
-                return matched
-        return _method_rule(func.attr)  # unresolved receiver -> method heuristic (cursor.execute)
-    return None
+            module_matches = _module_rules(fqn)
+            if module_matches:
+                return module_matches
+        return _method_rules(func.attr)  # unresolved receiver -> method heuristic (cursor.execute)
+    return []
 
 
-def _module_rule(fqn: str) -> tuple[rules.SinkRule, str] | None:
-    for rule in rules.RULES:
-        if rule.callee_kind is rules.CalleeKind.MODULE and fqn in rule.callees:
-            return rule, fqn
-    return None
+def _module_rules(fqn: str) -> list[tuple[rules.SinkRule, str]]:
+    return [
+        (rule, fqn)
+        for rule in rules.RULES
+        if rule.callee_kind is rules.CalleeKind.MODULE and fqn in rule.callees
+    ]
 
 
-def _builtin_rule(name: str) -> tuple[rules.SinkRule, str] | None:
-    for rule in rules.RULES:
-        if rule.callee_kind is rules.CalleeKind.BUILTIN and name in rule.callees:
-            return rule, name
-    return None
+def _builtin_rules(name: str) -> list[tuple[rules.SinkRule, str]]:
+    return [
+        (rule, name)
+        for rule in rules.RULES
+        if rule.callee_kind is rules.CalleeKind.BUILTIN and name in rule.callees
+    ]
 
 
-def _method_rule(attr: str) -> tuple[rules.SinkRule, str] | None:
-    for rule in rules.RULES:
-        if rule.callee_kind is rules.CalleeKind.METHOD and attr in rule.callees:
-            return rule, attr
-    return None
+def _method_rules(attr: str) -> list[tuple[rules.SinkRule, str]]:
+    return [
+        (rule, attr)
+        for rule in rules.RULES
+        if rule.callee_kind is rules.CalleeKind.METHOD and attr in rule.callees
+    ]
 
 
 def _ident(node: ast.expr) -> str | None:
@@ -185,6 +211,28 @@ def _has_safe_arg(call: ast.Call, safe_args: frozenset[str]) -> bool:
     return any(_ident(value) in safe_args for value in values)
 
 
+def _has_safe_keyword(
+    call: ast.Call, safe_keyword_values: tuple[tuple[str, bool | None], ...]
+) -> bool:
+    """Whether a safe keyword argument is supplied (``usedforsecurity=False`` / ``filter=...``).
+
+    A ``None`` required value means the keyword's *presence* is enough (``filter=`` on
+    ``extractall``); a boolean means the keyword must be a literal whose truthiness matches (only
+    ``usedforsecurity=False`` clears ``hashlib.md5`` — a non-literal cannot be proven safe).
+    """
+    if not safe_keyword_values:
+        return False
+    for name, required in safe_keyword_values:
+        for keyword in call.keywords:
+            if keyword.arg != name:
+                continue
+            if required is None:
+                return True  # presence alone is the safe signal
+            if isinstance(keyword.value, ast.Constant) and bool(keyword.value.value) is required:
+                return True
+    return False
+
+
 def _selected_args(call: ast.Call, rule: rules.SinkRule) -> list[ast.expr]:
     """The dangerous argument nodes for ``rule`` actually present in ``call``."""
     selected: list[ast.expr] = []
@@ -202,7 +250,16 @@ def _classify(
 ) -> tuple[SastTier, str] | None:
     """Assign the intra-procedural tier for a matched sink call, or ``None`` if it is not a sink."""
     if rule.guard is not None and not _guard_satisfied(call, rule.guard):
-        return None  # the safe form (e.g. subprocess without shell=True)
+        return None  # the safe form (e.g. subprocess without shell=True, or verify omitted/True)
+
+    if rule.intrinsic:
+        # The call pattern itself is the vulnerability (weak algorithm / disabled verification /
+        # untrusted-archive extraction): argument taint is irrelevant, so it is CONFIRMED here
+        # unless a recognized safe argument/keyword makes it safe. Decided fully in this pass; the
+        # taint engine never escalates or downgrades an intrinsic finding.
+        if _has_safe_arg(call, rule.safe_args) or _has_safe_keyword(call, rule.safe_keyword_values):
+            return SastTier.SANITIZED, "a safe argument or keyword is supplied"
+        return SastTier.CONFIRMED_FLOW, _INTRINSIC_REASON
 
     has_starred = any(isinstance(arg, ast.Starred) for arg in call.args)
     selected = _selected_args(call, rule)
@@ -227,27 +284,24 @@ def _call_sinks(tree: ast.Module, rel: str, bindings: _Bindings) -> list[SinkHit
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        matched = _match_rule(node, bindings)
-        if matched is None:
-            continue
-        rule, callee = matched
-        classified = _classify(node, rule, bindings)
-        if classified is None:
-            continue
-        tier, reason = classified
-        hits.append(
-            SinkHit(
-                cwe=rule.cwe,
-                kind=rule.kind,
-                title=rule.title,
-                file=rel,
-                line=node.lineno,
-                col=node.col_offset,
-                callee=callee,
-                tier=tier,
-                reason=reason,
+        for rule, callee in _match_rules(node, bindings):
+            classified = _classify(node, rule, bindings)
+            if classified is None:
+                continue
+            tier, reason = classified
+            hits.append(
+                SinkHit(
+                    cwe=rule.cwe,
+                    kind=rule.kind,
+                    title=rule.title,
+                    file=rel,
+                    line=node.lineno,
+                    col=node.col_offset,
+                    callee=callee,
+                    tier=tier,
+                    reason=reason,
+                )
             )
-        )
     return hits
 
 

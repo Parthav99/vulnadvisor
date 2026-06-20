@@ -69,6 +69,16 @@ class SinkRule:
             ``SafeLoader`` for ``yaml.load(..., Loader=SafeLoader)``).
         sanitizers: Callee names (fully-qualified or bare) that clear this CWE when they wrap the
             dangerous argument (e.g. ``shlex.quote`` for command injection).
+        intrinsic: When ``True`` the *call pattern itself* is the vulnerability (a weak algorithm,
+            an insecure RNG, disabled TLS verification) — the danger is independent of argument
+            taint, so a match is reported ``CONFIRMED_FLOW`` regardless of whether the argument is a
+            literal, and the taint engine never tries to escalate or downgrade it (it is decided in
+            the intra-procedural pass, exactly like a hardcoded secret). Honors ``guard`` (e.g.
+            ``verify=False``) and ``safe_keyword_values`` (e.g. ``usedforsecurity=False``).
+        safe_keyword_values: ``(keyword, value)`` pairs that mark the call safe. ``value`` is the
+            literal the keyword must equal (``("usedforsecurity", False)`` for ``hashlib.md5``); a
+            ``None`` value means the keyword's *presence* alone is safe (``("filter", None)`` for
+            ``tarfile.extractall(..., filter="data")`` on Python 3.12+).
     """
 
     cwe: str
@@ -81,6 +91,8 @@ class SinkRule:
     guard: Guard | None = None
     safe_args: frozenset[str] = frozenset()
     sanitizers: frozenset[str] = frozenset()
+    intrinsic: bool = False
+    safe_keyword_values: tuple[tuple[str, bool | None], ...] = ()
 
 
 # Sanitizer names shared across the command-injection rules.
@@ -89,6 +101,31 @@ _SHELL_QUOTE = frozenset({"shlex.quote", "quote", "pipes.quote", "shlex.join"})
 # Safe YAML loader class names (a call referencing any of these is not a CWE-502 sink).
 _SAFE_YAML_LOADERS = frozenset(
     {"SafeLoader", "CSafeLoader", "BaseLoader", "CBaseLoader", "FullLoader", "CFullLoader"}
+)
+
+# HTTP client request callables shared by the SSRF (CWE-918) and disabled-TLS (CWE-295) rules: the
+# tainted URL is the SSRF danger; ``verify=False`` on the very same call is the TLS danger. A single
+# call can therefore be both findings (the matcher returns every matching rule).
+_HTTP_CLIENT_CALLS = frozenset(
+    {
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.patch",
+        "requests.delete",
+        "requests.head",
+        "requests.options",
+        "requests.request",
+        "httpx.get",
+        "httpx.post",
+        "httpx.put",
+        "httpx.patch",
+        "httpx.delete",
+        "httpx.head",
+        "httpx.options",
+        "httpx.request",
+        "httpx.stream",
+    }
 )
 
 RULES: tuple[SinkRule, ...] = (
@@ -206,31 +243,203 @@ RULES: tuple[SinkRule, ...] = (
         kind="ssrf",
         title="Server-side request forgery (SSRF)",
         callee_kind=CalleeKind.MODULE,
+        callees=_HTTP_CLIENT_CALLS
+        | frozenset({"urllib.request.urlopen", "urllib.request.urlretrieve"}),
+        tainted_positions=(0,),
+        tainted_keywords=frozenset({"url"}),
+    ),
+    # --- CWE-1336: server-side template injection (SSTI) ------------------------------------
+    SinkRule(
+        cwe="CWE-1336",
+        kind="ssti",
+        title="Server-side template injection",
+        callee_kind=CalleeKind.MODULE,
         callees=frozenset(
             {
-                "requests.get",
-                "requests.post",
-                "requests.put",
-                "requests.patch",
-                "requests.delete",
-                "requests.head",
-                "requests.options",
-                "requests.request",
-                "httpx.get",
-                "httpx.post",
-                "httpx.put",
-                "httpx.patch",
-                "httpx.delete",
-                "httpx.head",
-                "httpx.options",
-                "httpx.request",
-                "httpx.stream",
-                "urllib.request.urlopen",
-                "urllib.request.urlretrieve",
+                "flask.render_template_string",
+                "jinja2.Template",
+                "jinja2.environment.Template",
+                "django.template.Template",
+                "mako.template.Template",
             }
         ),
         tainted_positions=(0,),
-        tainted_keywords=frozenset({"url"}),
+    ),
+    SinkRule(
+        # ``Environment(...).from_string(user_input)`` — the renderer compiles attacker text.
+        cwe="CWE-1336",
+        kind="ssti",
+        title="Server-side template injection",
+        callee_kind=CalleeKind.METHOD,
+        callees=frozenset({"from_string"}),
+        tainted_positions=(0,),
+    ),
+    # --- CWE-611: XML external entity (XXE) ------------------------------------------------
+    SinkRule(
+        cwe="CWE-611",
+        kind="xxe",
+        title="XML external entity (XXE) injection",
+        callee_kind=CalleeKind.MODULE,
+        callees=frozenset(
+            {
+                "lxml.etree.parse",
+                "lxml.etree.fromstring",
+                "lxml.etree.XML",
+                "xml.etree.ElementTree.parse",
+                "xml.etree.ElementTree.fromstring",
+                "xml.etree.ElementTree.XML",
+                "xml.etree.ElementTree.iterparse",
+                "xml.dom.minidom.parse",
+                "xml.dom.minidom.parseString",
+                "xml.dom.pulldom.parse",
+                "xml.dom.pulldom.parseString",
+                "xml.sax.parse",
+                "xml.sax.parseString",
+            }
+        ),
+        tainted_positions=(0,),
+        # ``defusedxml`` is the safe replacement; its functions live in a different module, so a
+        # call to one simply never matches these callees (the safe path is "not a finding").
+    ),
+    # --- CWE-601: open redirect ------------------------------------------------------------
+    SinkRule(
+        cwe="CWE-601",
+        kind="open-redirect",
+        title="Open redirect",
+        callee_kind=CalleeKind.MODULE,
+        callees=frozenset(
+            {
+                "flask.redirect",
+                "werkzeug.utils.redirect",
+                "django.shortcuts.redirect",
+                "django.http.HttpResponseRedirect",
+                "django.http.HttpResponsePermanentRedirect",
+            }
+        ),
+        tainted_positions=(0,),
+    ),
+    # --- CWE-90: LDAP injection ------------------------------------------------------------
+    SinkRule(
+        cwe="CWE-90",
+        kind="ldap-injection",
+        title="LDAP injection via a non-escaped filter",
+        callee_kind=CalleeKind.METHOD,
+        callees=frozenset({"search", "search_s", "search_st", "search_ext", "search_ext_s"}),
+        # python-ldap: ``conn.search_s(base, scope, filterstr)`` -> filter at index 2; ldap3:
+        # ``conn.search(search_base, search_filter)`` -> filter at index 1. The filter is never at
+        # index 0 (always the base DN), so a regex ``pattern.search(text)`` does not match.
+        tainted_positions=(1, 2),
+        tainted_keywords=frozenset({"filterstr", "search_filter"}),
+        sanitizers=frozenset({"escape_filter_chars", "ldap.filter.escape_filter_chars"}),
+    ),
+    # --- CWE-643: XPath injection ----------------------------------------------------------
+    SinkRule(
+        cwe="CWE-643",
+        kind="xpath-injection",
+        title="XPath injection via a non-parameterized expression",
+        callee_kind=CalleeKind.METHOD,
+        callees=frozenset({"xpath"}),
+        tainted_positions=(0,),
+    ),
+    SinkRule(
+        cwe="CWE-643",
+        kind="xpath-injection",
+        title="XPath injection via a non-parameterized expression",
+        callee_kind=CalleeKind.MODULE,
+        callees=frozenset({"lxml.etree.XPath", "lxml.etree.ETXPath"}),
+        tainted_positions=(0,),
+    ),
+    # --- CWE-1333: regular-expression denial of service (ReDoS) ----------------------------
+    SinkRule(
+        cwe="CWE-1333",
+        kind="redos",
+        title="Regular-expression denial of service (ReDoS)",
+        callee_kind=CalleeKind.MODULE,
+        # The *pattern* (position 0 of every re.* entry point) being attacker-controlled lets a
+        # caller craft a catastrophically backtracking expression. A literal pattern is SANITIZED.
+        callees=frozenset(
+            {
+                "re.compile",
+                "re.match",
+                "re.fullmatch",
+                "re.search",
+                "re.sub",
+                "re.subn",
+                "re.split",
+                "re.findall",
+                "re.finditer",
+            }
+        ),
+        tainted_positions=(0,),
+    ),
+    # --- CWE-22: archive extraction path traversal (tarbomb / zip-slip) --------------------
+    SinkRule(
+        # Intrinsic: ``extractall`` on any untrusted archive can write outside the target dir via
+        # ``../`` members. Python 3.12+'s ``filter=`` argument is the safe form.
+        cwe="CWE-22",
+        kind="archive-path-traversal",
+        title="Archive extraction path traversal (tarbomb / zip-slip)",
+        callee_kind=CalleeKind.METHOD,
+        callees=frozenset({"extractall"}),
+        intrinsic=True,
+        safe_keyword_values=(("filter", None),),
+    ),
+    # --- CWE-327/328: weak cryptographic hash ----------------------------------------------
+    SinkRule(
+        # Intrinsic: MD5/SHA-1 are broken for security regardless of the input. ``usedforsecurity=
+        # False`` (Python 3.9+) declares a non-security use and is the safe form.
+        cwe="CWE-327",
+        kind="weak-hash",
+        title="Weak cryptographic hash (MD5/SHA-1)",
+        callee_kind=CalleeKind.MODULE,
+        callees=frozenset({"hashlib.md5", "hashlib.sha1"}),
+        intrinsic=True,
+        safe_keyword_values=(("usedforsecurity", False),),
+    ),
+    # --- CWE-330: insecure randomness for security-sensitive values ------------------------
+    SinkRule(
+        # Intrinsic: the ``random`` module is a non-cryptographic PRNG; using it for tokens,
+        # passwords, or salts is predictable. ``secrets`` / ``os.urandom`` are the safe forms (a
+        # different module, so they never match).
+        cwe="CWE-330",
+        kind="insecure-randomness",
+        title="Insecure randomness in a security-sensitive context",
+        callee_kind=CalleeKind.MODULE,
+        callees=frozenset(
+            {
+                "random.random",
+                "random.randint",
+                "random.randrange",
+                "random.randbytes",
+                "random.choice",
+                "random.choices",
+                "random.sample",
+                "random.shuffle",
+                "random.uniform",
+                "random.getrandbits",
+            }
+        ),
+        intrinsic=True,
+    ),
+    # --- CWE-295: disabled TLS certificate verification ------------------------------------
+    SinkRule(
+        # Intrinsic + guarded: a finding only when ``verify`` is explicitly falsy (the default,
+        # ``verify=True``, and an absent keyword are the safe forms). Shares callees with SSRF.
+        cwe="CWE-295",
+        kind="disabled-tls-verification",
+        title="Disabled TLS certificate verification",
+        callee_kind=CalleeKind.MODULE,
+        callees=_HTTP_CLIENT_CALLS,
+        guard=Guard(keyword="verify", require_value=False),
+        intrinsic=True,
+    ),
+    SinkRule(
+        cwe="CWE-295",
+        kind="disabled-tls-verification",
+        title="Disabled TLS certificate verification",
+        callee_kind=CalleeKind.MODULE,
+        callees=frozenset({"ssl._create_unverified_context"}),
+        intrinsic=True,
     ),
 )
 

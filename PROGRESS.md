@@ -4,6 +4,53 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 20.4 — New CWE families (breadth)  (2026-06-20)
+
+**Status:** complete. **No new dependency.** Gate green: `ruff check src tests` clean, `ruff format
+--check` clean (130 files), `mypy --strict src` clean (87 files), **full pytest 989 passed / 1
+skipped** (+36 new family tests). SAST soundness gate (`python -m benchmarks --sast`): **PASS, 0
+missed vulns**, exit 0. Perf held — SRC taint pass **0.85 s** (10 s budget).
+
+**What changed.** Roughly doubled the vuln classes (7 → 17 CWE families), all declared as **data**
+in `sast/rules.py`. Two shapes:
+
+- **Taint-based** (fit the existing source→sink model): SSTI (CWE-1336, `render_template_string`/
+  `jinja2.Template`/`from_string`), XXE (CWE-611, `lxml`/`xml.etree`/`xml.dom`/`xml.sax`), open
+  redirect (CWE-601, flask/werkzeug/django redirects), LDAP injection (CWE-90, filter arg at index
+  1–2 + `escape_filter_chars` sanitizer), XPath injection (CWE-643, `.xpath`/`lxml.etree.XPath`),
+  ReDoS (CWE-1333, non-literal **pattern** to `re.*`). A literal argument → `SANITIZED`; an
+  entry-point flow → `CONFIRMED-FLOW`.
+- **Intrinsic** (the call pattern itself is the weakness, like CWE-798 secrets — decided in the
+  intra-procedural pass, never escalated/downgraded by taint): weak hash (CWE-327, `hashlib.md5`/
+  `sha1`, safe via `usedforsecurity=False`), insecure randomness (CWE-330, `random.*` generators),
+  disabled TLS (CWE-295, `verify=False` guard + `ssl._create_unverified_context`), archive path
+  traversal / tarbomb (CWE-22, `extractall`, safe via the 3.12 `filter=`).
+
+**Mechanism additions** (small, data-driven):
+- `SinkRule.intrinsic: bool` + `safe_keyword_values: tuple[(name, bool|None), ...]` — `None` means
+  presence is safe (`filter=` on extractall); a bool means the literal must match
+  (`usedforsecurity=False`). `_classify` gained one intrinsic branch; `_has_safe_keyword` added.
+- **Multi-rule matching**: `_match_rule` → `_match_rules` (returns *every* matching rule). A single
+  call can now be several findings — `requests.get(url, verify=False)` is both SSRF and disabled-TLS.
+  `sinks._call_sinks` and `taint._check_sink` iterate; taint **skips intrinsic** rules (baseline
+  decides them). Existing rules have disjoint callees, so behavior is unchanged for them.
+- **`_resolve_module_fqn` now resolves `from pkg import sub; sub.f(...)`** (the ubiquitous
+  `from lxml import etree; etree.fromstring(x)` idiom) — previously a silent miss / false negative.
+- CWE→severity rows (`engine/sast_scoring.py`) and remediation directions (`sast/remediation.py`)
+  added for every new family.
+
+**Tests** (`tests/test_sast_cwe_families.py`, 36): ≥2 per family (positive + sanitized/negative)
+plus adversarial aliasing (`import x as y`, `from x import f`), the multi-match case (SSRF+TLS on
+one call), and soundness negatives (`re` `.search` is not LDAP; sha256/secrets are not findings;
+verify=True/omitted is safe; md5 `usedforsecurity=True` stays CONFIRMED). **Zero missed** per family.
+
+**Conservative limitation:** weak *ciphers* (DES/RC4 via `Crypto.Cipher.*.new`) are not yet covered —
+their `from-import`-then-`.new()` shape isn't module-resolvable by the binding model; the dominant
+`hashlib.md5`/`sha1` hash case is. ReDoS on a non-literal-but-constant pattern reports `POSSIBLE`/
+`SANITIZED` (14/15 src hits are SANITIZED literals), consistent with the existing constant-fold note.
+
+---
+
 ## Task 20.3 — Object / attribute & class-state taint  (2026-06-20)
 
 **Status:** complete. **No new dependency.** Gate green: `ruff check src tests` clean, `ruff format

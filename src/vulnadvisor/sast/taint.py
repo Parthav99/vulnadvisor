@@ -1133,11 +1133,27 @@ class _Analyzer:
     def _check_sink(
         self, call: ast.Call, tainted: dict[str, _Taint], stack: list[CallStep]
     ) -> None:
+        """Escalate every data-flow rule this call matches if a tainted value reaches it.
+
+        A single call can match several rules (e.g. SSRF *and* disabled-TLS share the same HTTP
+        callee), so each is checked independently. **Intrinsic** rules (weak crypto, insecure RNG,
+        disabled TLS, archive extraction) are skipped here — their tier is decided in the
+        intra-procedural baseline pass and the taint engine neither escalates nor downgrades them.
+        """
+        for rule, callee in sinks._match_rules(call, self.bindings):
+            if rule.intrinsic:
+                continue
+            self._escalate_sink(call, rule, callee, tainted, stack)
+
+    def _escalate_sink(
+        self,
+        call: ast.Call,
+        rule: rules.SinkRule,
+        callee: str,
+        tainted: dict[str, _Taint],
+        stack: list[CallStep],
+    ) -> None:
         """Emit a CONFIRMED_FLOW / DYNAMIC_UNKNOWN finding if a tainted value reaches this sink."""
-        matched = sinks._match_rule(call, self.bindings)
-        if matched is None:
-            return
-        rule, callee = matched
         if rule.guard is not None and not sinks._guard_satisfied(call, rule.guard):
             return  # the safe form (e.g. subprocess without shell=True)
         if sinks._has_safe_arg(call, rule.safe_args):

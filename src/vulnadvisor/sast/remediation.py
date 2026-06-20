@@ -43,6 +43,45 @@ _DIRECTIONS: dict[str, str] = {
         "Remove the secret from source: load it from an environment variable or a secrets manager, "
         "and rotate the exposed credential."
     ),
+    "CWE-1336": (
+        "Never render user input as a template; pass it as template *context* (variables), or "
+        "autoescape and use a fixed, trusted template."
+    ),
+    "CWE-611": (
+        "Parse XML with defusedxml (or disable entity resolution / DTD loading on the parser); "
+        "never resolve external entities from untrusted XML."
+    ),
+    "CWE-601": (
+        "Validate the redirect target against an allowlist of paths/hosts, or only allow relative "
+        "URLs; never redirect to an unvalidated user-supplied URL."
+    ),
+    "CWE-90": (
+        "Escape the LDAP filter with ldap.filter.escape_filter_chars() before interpolating user "
+        "input into the search filter."
+    ),
+    "CWE-643": (
+        "Use a parameterized XPath (variables via the parser), or strictly validate/escape the "
+        "user input before building the expression."
+    ),
+    "CWE-1333": (
+        "Do not compile attacker-controlled regex patterns; use a fixed pattern, or bound input "
+        "size and use a non-backtracking engine (e.g. re2)."
+    ),
+    "CWE-327": (
+        "Use a strong hash (SHA-256+); pass usedforsecurity=False only for non-security checksums, "
+        "and avoid broken ciphers (DES/RC4)."
+    ),
+    "CWE-328": (
+        "Use a strong hash (SHA-256+); pass usedforsecurity=False only for non-security checksums."
+    ),
+    "CWE-330": (
+        "Generate security-sensitive values with the secrets module (or os.urandom), never the "
+        "random module's predictable PRNG."
+    ),
+    "CWE-295": (
+        "Never disable TLS verification (verify=False); keep verification on and supply the proper "
+        "CA bundle if a custom certificate is needed."
+    ),
 }
 
 DEFAULT_DIRECTION = (

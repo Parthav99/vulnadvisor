@@ -55,9 +55,19 @@ CWE_BASE_SEVERITY: dict[str, float] = {
     "CWE-94": 9.5,  # code injection (eval/exec) — direct RCE
     "CWE-95": 9.5,  # code injection (eval of directive) — direct RCE
     "CWE-502": 9.0,  # unsafe deserialization — RCE in practice
-    "CWE-22": 7.5,  # path traversal — arbitrary file read/write
+    "CWE-22": 7.5,  # path traversal (incl. tarbomb / zip-slip) — arbitrary file read/write
     "CWE-918": 7.5,  # SSRF — internal pivot, metadata theft
     "CWE-798": 7.0,  # hardcoded secret — credential exposure
+    "CWE-1336": 9.5,  # server-side template injection — RCE in practice
+    "CWE-611": 8.0,  # XXE — file read, SSRF, DoS
+    "CWE-601": 5.5,  # open redirect — phishing / token leak
+    "CWE-90": 8.5,  # LDAP injection — auth bypass / data exfiltration
+    "CWE-643": 8.0,  # XPath injection — data exfiltration
+    "CWE-1333": 5.5,  # ReDoS — denial of service
+    "CWE-327": 5.0,  # weak crypto / hash — broken confidentiality/integrity
+    "CWE-328": 5.0,  # weak hash — collision / reversal
+    "CWE-330": 6.0,  # insecure randomness — predictable secrets/tokens
+    "CWE-295": 7.0,  # disabled TLS verification — MITM
 }
 DEFAULT_CWE_SEVERITY = 5.0
 

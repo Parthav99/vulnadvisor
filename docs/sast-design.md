@@ -118,6 +118,32 @@ Key properties:
 | **CWE-918** | SSRF | `requests.*` / `urllib.request.urlopen` / `httpx.*` / `aiohttp` with non-literal URL | allowlist/scheme-host validation against a constant set |
 | **CWE-798** | Hardcoded secrets | string literals matching curated secret patterns (AWS keys, private-key headers, high-entropy assignment to `password`/`token`/`secret`) | n/a — a literal-only, non-taint finding (§4 note) |
 
+### Breadth CWE families (Task 20.4)
+
+Added in M20 to roughly double the vuln classes. Taint-based families fit the v1 source→sink model;
+**intrinsic** families (marked) are decided in the intra-procedural pass (the call pattern *is* the
+weakness, independent of argument taint — same posture as CWE-798), honoring `guard` /
+`safe_keyword_values`.
+
+| CWE | Name | Representative sinks (resolved) | Safe form |
+|---|---|---|---|
+| **CWE-1336** | Server-side template injection | `flask.render_template_string`; `jinja2.Template`; `Environment().from_string` on taint | pass user input as template *context*, not as the template |
+| **CWE-611** | XXE | `lxml.etree.*`; `xml.etree.ElementTree.*`; `xml.dom.*`; `xml.sax.*` on taint | `defusedxml` (a different module → not a finding) |
+| **CWE-601** | Open redirect | `flask.redirect`; `werkzeug.utils.redirect`; `django.shortcuts.redirect` / `HttpResponseRedirect` on taint | allowlist / relative-only target |
+| **CWE-90** | LDAP injection | `search` / `search_s` / `search_ext_s` filter arg (index 1–2) on taint | `ldap.filter.escape_filter_chars` |
+| **CWE-643** | XPath injection | `.xpath(...)`; `lxml.etree.XPath` / `ETXPath` on taint | parameterized XPath / strict validation |
+| **CWE-1333** | ReDoS | `re.compile`/`match`/`search`/`sub`/… with a non-literal **pattern** | fixed pattern; bounded input; non-backtracking engine |
+| **CWE-22** (intrinsic) | Archive path traversal (tarbomb/zip-slip) | `extractall` | `filter="data"`/`"tar"` (Python 3.12+) |
+| **CWE-327/328** (intrinsic) | Weak cryptographic hash | `hashlib.md5` / `hashlib.sha1` | SHA-256+; `usedforsecurity=False` for non-security checksums |
+| **CWE-330** (intrinsic) | Insecure randomness | `random.*` generators in a security context | `secrets` / `os.urandom` (a different module → not a finding) |
+| **CWE-295** (intrinsic, guarded) | Disabled TLS verification | `requests.*` / `httpx.*` with `verify=False`; `ssl._create_unverified_context` | keep verification on; supply a CA bundle if needed |
+
+A single call can be **multiple** findings: `requests.get(url, verify=False)` is both SSRF (the
+tainted URL) and disabled-TLS (the keyword), so the matcher returns every matching rule.
+**Conservative limitation:** weak *ciphers* (DES/RC4 via `Crypto.Cipher.*.new`) are not yet covered —
+their `from-import`-then-`.new()` shape is not module-resolvable by the current binding model;
+covering them is future work (the dominant `hashlib.md5`/`sha1` hash case is covered).
+
 CWE-798 is special: it is a **literal-pattern** finding, not a taint flow (the "source" *is* the
 literal). It is reported as a standalone tier (`CONFIRMED-FLOW` meaning "the secret literal is
 present in source"), and does not participate in source→sink propagation. This is documented
