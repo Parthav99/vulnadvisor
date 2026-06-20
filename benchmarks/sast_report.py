@@ -14,6 +14,7 @@ VulnAdvisor reserves ``CONFIRMED-FLOW`` for proven flows and deprioritizes the r
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from benchmarks.fusion_metrics import FusionMetrics
 from benchmarks.sast_metrics import (
     TOOL_BANDIT,
     TOOL_SEMGREP,
@@ -21,8 +22,17 @@ from benchmarks.sast_metrics import (
     SastBenchmarkReport,
     ToolMetrics,
 )
+from vulnadvisor.sast.model import SastTier
 
 __all__ = ["PerfRow", "render_sast_markdown"]
+
+# Display order + labels for the fusion tier breakdown (most -> least concerning).
+_FUSION_TIER_LABELS: tuple[tuple[SastTier, str], ...] = (
+    (SastTier.CONFIRMED_FLOW, "CONFIRMED-FLOW (actionable)"),
+    (SastTier.DYNAMIC_UNKNOWN, "DYNAMIC-UNKNOWN (kept, uncertain)"),
+    (SastTier.POSSIBLE_FLOW, "POSSIBLE-FLOW (deprioritized)"),
+    (SastTier.SANITIZED, "SANITIZED (deprioritized)"),
+)
 
 # Human-readable CWE titles for the per-CWE table (the corpus's full class set: the seven founding
 # classes plus the Task 20.4 families). An id with no entry renders a blank class cell, never fails.
@@ -164,10 +174,52 @@ def _perf_section(perf: Sequence[PerfRow] | None) -> list[str]:
     return lines
 
 
+def _fusion_section(fusion: FusionMetrics) -> list[str]:
+    """Render the M21 fusion story: how much of a pattern scanner's output the overlay quiets.
+
+    Our Python-measured answer to Semgrep's "up to 98% fewer critical false positives" claim,
+    measured on the corpus where pattern scanners are weakest. Deterministic: the modeled external
+    set and the production overlay are both reproducible, so the table regenerates byte for byte.
+    The no-loss invariant (every external finding represented) is asserted in the closing line.
+    """
+    lines = ["## Multi-tool fusion (M21): reachability re-ranks a pattern scanner", ""]
+    lines.append(
+        "A pattern scanner with no Python reachability model (Semgrep OSS, modeled here from the "
+        "corpus's sink sites — it fires on every sink: real flows, sanitized calls, and "
+        "entry-point-unreachable orphans alike) emits "
+        f"**{fusion.external_total}** findings. Fusing them through VulnAdvisor's reachability "
+        f"overlay (`scan --with-semgrep`) keeps **{fusion.actionable}** at the actionable "
+        f"`CONFIRMED-FLOW` tier and **deprioritizes {fusion.deprioritized} "
+        f"({fusion.deprioritized_pct:.0f}%)** to a lower tier — our honest, Python-measured answer "
+        'to Semgrep\'s own "up to 98% fewer critical false positives" claim, on the ecosystem '
+        "where they are weak. Nothing is dropped: every finding is kept, only re-ranked."
+    )
+    lines.append("")
+    lines.append("| Tier after overlay | External findings |")
+    lines.append("|--------------------|------------------:|")
+    for tier, label in _FUSION_TIER_LABELS:
+        lines.append(f"| {label} | {fusion.by_tier.get(tier.value, 0)} |")
+    lines.append("")
+    invariant = "PASS" if fusion.represented else "FAIL"
+    lines.append(
+        f"No-loss invariant (every external finding represented in the fused list): "
+        f"**{invariant}**."
+    )
+    lines.append("")
+    return lines
+
+
 def render_sast_markdown(
-    report: SastBenchmarkReport, *, perf: Sequence[PerfRow] | None = None
+    report: SastBenchmarkReport,
+    *,
+    perf: Sequence[PerfRow] | None = None,
+    fusion: FusionMetrics | None = None,
 ) -> str:
-    """Render ``report`` as the SAST-REPORT.md Markdown (deterministic accuracy + optional perf)."""
+    """Render ``report`` as the SAST-REPORT.md Markdown (deterministic accuracy + optional perf).
+
+    When ``fusion`` is supplied (Task 21.4) the M21 multi-tool-fusion section is appended: how much
+    of a pattern scanner's raw output VulnAdvisor's reachability deprioritizes.
+    """
     real_seeds = sum(1 for s in report.seeds if s.is_real)
     safe_seeds = sum(1 for s in report.seeds if not s.is_real)
     lines: list[str] = []
@@ -238,6 +290,8 @@ def render_sast_markdown(
         ]
     )
     lines.append("")
+    if fusion is not None:
+        lines.extend(_fusion_section(fusion))
     lines.extend(_perf_section(perf))
     verdict = "PASS" if report.missed_seeded_vulns == 0 else "FAIL"
     lines.append(

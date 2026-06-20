@@ -113,6 +113,10 @@ export interface CodeFinding {
   };
   score: { value: number; band: string; verdict: string; rationale: string; cvss_known?: boolean };
   fix: { direction: string; has_fix: boolean };
+  // Multi-tool fusion (Task 21.4): the tools that found this issue, our engine first. ["vulnadvisor"]
+  // natively; ["vulnadvisor", "semgrep-oss"] when corroborated. Optional so pre-21.4 payloads type;
+  // the card shows a provenance line only when an external scanner is present.
+  provenance?: string[];
 }
 
 // A finding of either kind — the dashboard renders both from one ranked list.

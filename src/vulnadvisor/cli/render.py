@@ -29,6 +29,7 @@ from vulnadvisor.model.explanation import Explanation, ExplanationSource
 from vulnadvisor.model.runtime import RuntimeEvidence
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
+from vulnadvisor.sast.external.provenance import provenance_line
 from vulnadvisor.sast.model import ScoredSastFinding
 from vulnadvisor.sast.remediation import remediation_direction
 
@@ -138,8 +139,14 @@ def _render_sast_finding(scored: ScoredSastFinding) -> Panel:
     badge = badge_for_band(score.band)
 
     location = f"{finding.file}:{finding.line}"
+    # Fusion provenance (Task 21.4): a finding an external scanner located but our engine ranked
+    # opens Card A with "Found by Semgrep OSS - ranked by VulnAdvisor reachability"; native-only
+    # findings carry no such line. The middle dot is ASCII-rendered for legacy Windows consoles.
+    provenance = provenance_line(finding.provenance)
+    provenance_prefix = f"{provenance.replace(' · ', ' - ')}\n" if provenance is not None else ""
     card_a = _card(
         "A - Attack summary",
+        f"{provenance_prefix}"
         f"{finding.title} ({finding.cwe}) at {location} via {finding.callee}.\n{finding.reason}",
     )
     card_b = _card("B - Risk", f"Badge: {badge}\n{score.rationale}")

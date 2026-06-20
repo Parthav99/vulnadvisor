@@ -9,6 +9,10 @@ finding. ``level`` maps the priority band (error / warning / note), and
   taxonomy relationship (so GitHub shows the CWE), point at the sink's real ``file:line``, and emit
   the source->sink path as a SARIF ``codeFlow`` so the flow renders inline. Both finding kinds are
   merged into one ranked list of results.
+
+When external scanners are fused in (Task 21.4), each contributing tool is declared as a
+``tool.extensions`` ``toolComponent`` and every finding's ``provenance`` rides in result properties
+— surfacing "who found it" without ever displacing our stable ``ruleId`` or our deterministic rank.
 """
 
 import json
@@ -22,6 +26,7 @@ from vulnadvisor.model.display import display_id
 from vulnadvisor.model.runtime import RuntimeEvidence
 from vulnadvisor.model.score import PriorityBand, ScoredFinding
 from vulnadvisor.output.remediation import fix_command
+from vulnadvisor.sast.external.provenance import external_tools, label_for
 from vulnadvisor.sast.model import ScoredSastFinding
 from vulnadvisor.sast.remediation import remediation_direction
 
@@ -32,6 +37,9 @@ SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
 _INFORMATION_URI = "https://github.com/your-org/vulnadvisor"
 _CWE_TAXONOMY_NAME = "CWE"
 _CWE_INFORMATION_URI = "https://cwe.mitre.org/"
+
+# Information URIs for the external scanners we declare as SARIF tool extensions (Task 21.4).
+_EXTERNAL_TOOL_URIS: dict[str, str] = {"semgrep-oss": "https://semgrep.dev/"}
 
 _LEVELS: dict[PriorityBand, str] = {
     PriorityBand.CRITICAL: "error",
@@ -199,6 +207,8 @@ def _sast_result(scored: ScoredSastFinding) -> dict[str, Any]:
             "tier": finding.tier.value,
             "source_kind": finding.source_kind,
             "remediation": remediation_direction(finding.cwe),
+            # Who found it (Task 21.4 fusion). Always present; ranking stays VulnAdvisor's.
+            "provenance": list(finding.provenance),
         },
     }
     _add_runtime_property(result["properties"], scored.runtime)
@@ -206,6 +216,20 @@ def _sast_result(scored: ScoredSastFinding) -> dict[str, Any]:
     if code_flows:
         result["codeFlows"] = code_flows
     return result
+
+
+def _external_tool_component(tool: str) -> dict[str, Any]:
+    """A SARIF ``toolComponent`` declaring an external scanner whose findings we fused (Task 21.4).
+
+    Surfaces *who* corroborated a finding (Semgrep OSS) as a first-class tool extension, keeping our
+    driver the authority for ``ruleId`` and ranking. The label/URI fall back gracefully for a tool
+    we have not yet named, so a future adapter is valid SARIF before it is added to the maps.
+    """
+    component: dict[str, Any] = {"name": tool, "fullName": label_for(tool)}
+    uri = _EXTERNAL_TOOL_URIS.get(tool)
+    if uri is not None:
+        component["informationUri"] = uri
+    return component
 
 
 def _cwe_taxonomy(cwes: Sequence[str]) -> dict[str, Any]:
@@ -240,6 +264,7 @@ def build_sarif(
     rules: dict[str, dict[str, Any]] = {}
     results: list[dict[str, Any]] = []
     cwes: list[str] = []
+    external: list[str] = []
 
     for finding in order_unified([*findings, *sast_findings]):
         if isinstance(finding, ScoredFinding):
@@ -254,17 +279,23 @@ def build_sarif(
             cwe = finding.finding.cwe
             if cwe not in cwes:
                 cwes.append(cwe)
+            for tool in external_tools(finding.finding.provenance):
+                if tool not in external:
+                    external.append(tool)
             results.append(_sast_result(finding))
 
+    driver: dict[str, Any] = {
+        "name": "VulnAdvisor",
+        "informationUri": _INFORMATION_URI,
+        "version": tool_version,
+        "rules": list(rules.values()),
+    }
+    tool_block: dict[str, Any] = {"driver": driver}
+    if external:
+        tool_block["extensions"] = [_external_tool_component(name) for name in external]
+
     run: dict[str, Any] = {
-        "tool": {
-            "driver": {
-                "name": "VulnAdvisor",
-                "informationUri": _INFORMATION_URI,
-                "version": tool_version,
-                "rules": list(rules.values()),
-            }
-        },
+        "tool": tool_block,
         "properties": {"degraded_sources": list(degraded_sources)},
         "results": results,
     }

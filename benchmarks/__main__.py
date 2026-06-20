@@ -98,14 +98,22 @@ def main() -> int:
 
 
 def _run_sast(out: Path | None, *, measure_perf: bool) -> int:
-    """Run the seeded SAST corpus vs Bandit, write SAST-REPORT.md, return the gate exit code."""
+    """Run the seeded SAST corpus vs Bandit, write SAST-REPORT.md, return the gate exit code.
+
+    The deterministic M21 fusion section (how much of a pattern scanner's output our reachability
+    deprioritizes) is computed and appended in the same run, so one command regenerates the whole
+    report including the fusion story.
+    """
+    from benchmarks.fusion_corpus import run_fusion_corpus
+
     report = run_sast_corpus()
+    fusion = run_fusion_corpus()
     perf = None
     if measure_perf:
         from benchmarks.sast_perf import measure_sast_perf
 
         perf = measure_sast_perf()
-    markdown = render_sast_markdown(report, perf=perf)
+    markdown = render_sast_markdown(report, perf=perf, fusion=fusion)
     target = out or _DEFAULT_SAST_OUT
     target.write_text(markdown, encoding="utf-8")
     _print_safe(markdown)
@@ -114,8 +122,10 @@ def _run_sast(out: Path | None, *, measure_perf: bool) -> int:
         print("NOTE: Bandit was not available - its comparison column was omitted.")
     if not report.semgrep_available:
         print("NOTE: Semgrep OSS was not available - its comparison column was omitted.")
-    # Release-blocking: VulnAdvisor must miss zero seeded, entry-point-reachable vulnerabilities.
-    return 0 if report.missed_seeded_vulns == 0 else 1
+    if not fusion.represented:
+        print("FAIL: a modeled external finding was lost in fusion (no-loss invariant breached).")
+    # Release-blocking: VulnAdvisor must miss zero seeded vulns AND lose no fused external finding.
+    return 0 if report.missed_seeded_vulns == 0 and fusion.represented else 1
 
 
 if __name__ == "__main__":

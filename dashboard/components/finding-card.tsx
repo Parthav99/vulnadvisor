@@ -10,6 +10,7 @@ import {
   bandClass,
   displayId,
   isCodeFinding,
+  provenanceLine,
   sastTierClass,
   sastTierLabel,
   tierClass,
@@ -491,6 +492,9 @@ function CodeFindingCard({
   const { rule, location, flow, score, fix } = finding;
   const tier = flow.tier;
   const sink = `${location.file}:${location.line}`;
+  // Fusion provenance (Task 21.4): the "Found by Semgrep OSS · ranked by VulnAdvisor" credit line,
+  // shown only when an external scanner corroborated/located the finding (null for native-only).
+  const provenance = provenanceLine(finding.provenance);
   const [open, setOpen] = useState(defaultOpen);
   const panelId = useId();
   const cardRef = useRef<HTMLDivElement>(null);
@@ -562,6 +566,14 @@ function CodeFindingCard({
           {proposedFix ? <ProposedFixPanel fix={proposedFix} /> : null}
 
           <Card3 letter="A" title="Attack story">
+            {provenance ? (
+              <p
+                className="mb-2 text-xs font-medium text-muted-foreground"
+                data-testid="finding-provenance"
+              >
+                {provenance}
+              </p>
+            ) : null}
             <p className="leading-relaxed">{story}</p>
             <p className="mt-2 text-muted-foreground">
               {rule.title} ({rule.cwe}) at <span className="mono">{sink}</span>.

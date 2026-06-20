@@ -6,7 +6,7 @@ from enum import Enum
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
@@ -70,6 +70,9 @@ from vulnadvisor.store.dataset import SymbolDataset, default_dataset_path
 from vulnadvisor.symbols.backfill import TOP_PYPI_PACKAGES, backfill
 from vulnadvisor.symbols.extractor import SymbolExtractor
 
+if TYPE_CHECKING:
+    from vulnadvisor.sast.external.base import ExternalToolAdapter
+
 
 class OutputFormat(str, Enum):
     """Supported output formats for ``scan``."""
@@ -77,6 +80,17 @@ class OutputFormat(str, Enum):
     TERMINAL = "terminal"
     JSON = "json"
     SARIF = "sarif"
+
+
+class ExternalScanner(str, Enum):
+    """External SAST scanners whose findings ``scan`` can fuse in (Task 21.4).
+
+    ``none`` keeps the default native-only behavior; ``semgrep`` runs Semgrep OSS as a subprocess
+    (needs the optional ``[semgrep]`` extra) and fuses its findings through our reachability.
+    """
+
+    NONE = "none"
+    SEMGREP = "semgrep"
 
 
 app = typer.Typer(
@@ -205,6 +219,34 @@ _MISSING_GITHUB_TOKEN_MESSAGE = (
 def build_github_http() -> GitHubHttp:
     """Build the GitHub REST client for ``suggest`` (stdlib ``urllib``); test-substitutable."""
     return UrllibGitHubHttp()
+
+
+def build_semgrep_adapter(config: str | None = None) -> "ExternalToolAdapter":
+    """Build the Semgrep OSS adapter for ``scan --with-semgrep`` (Task 21.4); test-substitutable.
+
+    ``config`` overrides the adapter's pinned-offline default ruleset (e.g. ``"auto"`` opts into
+    Semgrep's network-backed registry, per docs/fusion-design §12.3). The adapter shells out to a
+    local ``semgrep`` binary; when it is absent the scan degrades cleanly to native-only.
+    """
+    from vulnadvisor.sast.external.semgrep import SemgrepAdapter
+
+    if config:
+        return SemgrepAdapter(config=config)
+    return SemgrepAdapter()
+
+
+def _resolve_external_adapters(
+    external: ExternalScanner, with_semgrep: bool, semgrep_config: str | None
+) -> list["ExternalToolAdapter"]:
+    """Resolve the CLI external-scanner flags to the adapters the pipeline should fuse in.
+
+    ``--with-semgrep`` is the convenience alias for ``--external semgrep``; either selects the
+    Semgrep adapter. Default (``--external none``, no ``--with-semgrep``) fuses nothing, so the
+    scan is native-only and unchanged for existing users.
+    """
+    if external is ExternalScanner.SEMGREP or with_semgrep:
+        return [build_semgrep_adapter(semgrep_config)]
+    return []
 
 
 def build_symbol_names_for() -> Callable[[Advisory], frozenset[str]] | None:
@@ -339,6 +381,29 @@ def scan(
             help="Only analyze first-party code (SAST); skip dependency matching (works offline).",
         ),
     ] = False,
+    external: Annotated[
+        ExternalScanner,
+        typer.Option(
+            "--external",
+            help="Fuse a second SAST scanner's findings, re-ranked by our reachability "
+            "(none = native-only, the default; semgrep = Semgrep OSS via the [semgrep] extra).",
+        ),
+    ] = ExternalScanner.NONE,
+    with_semgrep: Annotated[
+        bool,
+        typer.Option(
+            "--with-semgrep",
+            help="Shortcut for --external semgrep: fuse Semgrep OSS findings, ranked by us.",
+        ),
+    ] = False,
+    semgrep_config: Annotated[
+        str | None,
+        typer.Option(
+            "--semgrep-config",
+            help="Semgrep ruleset override (default: a pinned offline pack; 'auto' uses the "
+            "network registry).",
+        ),
+    ] = None,
     coverage: Annotated[
         Path | None,
         typer.Option(
@@ -430,6 +495,13 @@ def scan(
         except ValueError as exc:
             raise typer.BadParameter(str(exc), param_hint="--fail-on") from exc
 
+    adapters = _resolve_external_adapters(external, with_semgrep, semgrep_config)
+    if adapters and sca_only:
+        raise typer.BadParameter(
+            "--external/--with-semgrep fuses first-party (SAST) findings, which --sca-only skips",
+            param_hint="--external",
+        )
+
     analysis_cache = None if no_cache else AnalysisCache(default_analysis_cache_path())
     resolver = None if no_types else build_type_resolver()
     frameworks: list[FrameworkPlugin] | None = [] if no_frameworks else None
@@ -443,6 +515,7 @@ def scan(
             frameworks=frameworks,
             run_sca=not sast_only,
             run_sast=not sca_only,
+            external=adapters,
         )
     finally:
         if analysis_cache is not None:

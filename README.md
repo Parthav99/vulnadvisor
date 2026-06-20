@@ -146,6 +146,34 @@ a priority score, or the ranking. Coverage of files outside the scanned project 
 malformed coverage report is a clean usage error, never a crash. The annotation appears in the
 terminal Card C, in the JSON report (additive `runtime` object), and in SARIF result properties.
 
+## Multi-tool fusion (`--with-semgrep`)
+
+VulnAdvisor doesn't just have *its own* rules — it makes **any scanner smarter**. Point it at
+[Semgrep OSS](https://semgrep.dev/) and it ingests Semgrep's findings and **re-ranks them through
+the same Python-deep reachability/taint engine**, turning a flat list of pattern matches into the
+same tiered, evidence-backed, deduplicated output:
+
+```bash
+pip install 'vulnadvisor[semgrep]'       # Semgrep runs as a local subprocess, never imported
+vulnadvisor scan . --with-semgrep        # or: --external semgrep  (default is native-only)
+```
+
+Each finding carries an honest **provenance** line — *"Found by Semgrep OSS · ranked by VulnAdvisor
+reachability"* — surfaced in the terminal Card A, the JSON report (additive `provenance` array), the
+SARIF tool extensions, and the dashboard finding card. The rules are sound:
+
+- **Nothing is dropped.** A Semgrep finding we can't overlay escalates to `DYNAMIC-UNKNOWN` and stays
+  in the list — a reachability we couldn't prove never reads as "safe".
+- **Our engine ranks, always.** Semgrep's severity is metadata; the tier and priority are our
+  deterministic engine's, even when the *detection* came from Semgrep.
+- **Corroboration is shown, not hidden.** A finding both tools flag is one record listing both —
+  "found by both, ranked by VulnAdvisor".
+
+On Python — where pattern scanners have no taint model — our reachability deprioritizes a large
+share of Semgrep's raw output to a sub-actionable tier. The reproducible measurement lives in
+[`benchmarks/SAST-REPORT.md`](benchmarks/SAST-REPORT.md) (regenerate with `python -m benchmarks
+--sast`).
+
 ## Validated fixes (`vulnadvisor fix`)
 
 For a first-party (SAST) finding, VulnAdvisor can ask a language model for the smallest safe patch

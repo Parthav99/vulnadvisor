@@ -60,6 +60,28 @@ export function sastTierLabel(tier: string): string {
   return SAST_TIER_LABELS[tier] ?? tier.toUpperCase();
 }
 
+// Multi-tool fusion provenance (Task 21.4) — mirrors src/vulnadvisor/sast/external/provenance.py.
+// A finding an external scanner located but *our* engine ranked reads "Found by Semgrep OSS · ranked
+// by VulnAdvisor reachability"; a native-only finding gets no such line (we found and ranked it).
+const TOOL_LABELS: Record<string, string> = {
+  vulnadvisor: "VulnAdvisor",
+  "semgrep-oss": "Semgrep OSS",
+};
+
+const NATIVE_PROVENANCE = "vulnadvisor";
+
+function toolLabel(tool: string): string {
+  return TOOL_LABELS[tool] ?? tool;
+}
+
+/** The "Found by … · ranked by VulnAdvisor reachability" line, or null for a native-only finding. */
+export function provenanceLine(provenance: string[] | undefined): string | null {
+  const tools = provenance ?? [];
+  if (!tools.some((t) => t !== NATIVE_PROVENANCE)) return null;
+  const detectors = tools.map(toolLabel).join(" + ");
+  return `Found by ${detectors} · ranked by VulnAdvisor reachability`;
+}
+
 /** Discriminate a first-party (SAST) code finding from a dependency finding. */
 export function isCodeFinding(finding: AnyFinding): finding is CodeFinding {
   return (finding as CodeFinding).finding_type === "code";

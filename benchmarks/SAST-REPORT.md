@@ -51,6 +51,19 @@ _Seeded corpus: 46 labeled sink sites (28 real, 18 safe) across 16 CWE classes. 
 - **Sanitizer clearing does not survive an opaque transform.** A value cleared by `secure_filename(...)` that then passes through `os.path.join(...)` is conservatively re-tainted (16.3: an unknown transform drops the cleared set), so a `secure_filename`-then-`join` path is over-reported as `CONFIRMED-FLOW`. This is soundness-conservative (never a false negative) but can be a false positive; a join-aware sanitizer model is future work. It is excluded from the scored corpus so the precision number is not flattered - documented here instead of hidden.
 - A non-literal but constant-only sink argument (e.g. `os.path.join(BASE, "x.txt")`) is reported `POSSIBLE-FLOW`, not `SANITIZED`, when the intra-procedural detector cannot fold the call - an alarm, but never at the top tier.
 
+## Multi-tool fusion (M21): reachability re-ranks a pattern scanner
+
+A pattern scanner with no Python reachability model (Semgrep OSS, modeled here from the corpus's sink sites — it fires on every sink: real flows, sanitized calls, and entry-point-unreachable orphans alike) emits **46** findings. Fusing them through VulnAdvisor's reachability overlay (`scan --with-semgrep`) keeps **24** at the actionable `CONFIRMED-FLOW` tier and **deprioritizes 22 (48%)** to a lower tier — our honest, Python-measured answer to Semgrep's own "up to 98% fewer critical false positives" claim, on the ecosystem where they are weak. Nothing is dropped: every finding is kept, only re-ranked.
+
+| Tier after overlay | External findings |
+|--------------------|------------------:|
+| CONFIRMED-FLOW (actionable) | 24 |
+| DYNAMIC-UNKNOWN (kept, uncertain) | 4 |
+| POSSIBLE-FLOW (deprioritized) | 2 |
+| SANITIZED (deprioritized) | 16 |
+
+No-loss invariant (every external finding represented in the fused list): **PASS**.
+
 ## Performance
 
 Warm-cache budget for a full SCA + SAST scan: **<= 30 s** (docs/sast-design.md section 12). The SAST pass is offline (no network); the dependency half reuses the warm OSV/EPSS cache. Full SCA + SAST warm/cold split over real OSS apps and the pyscan side-by-side wall time are the live perf run (network- and tool-gated), a documented follow-up. Re-run wall times locally with `python -m benchmarks --sast --perf`.

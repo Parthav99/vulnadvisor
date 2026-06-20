@@ -4,6 +4,70 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 21.4 — Output / CLI / dashboard integration + fusion benchmark (M21 capstone, CLI v2.3)  (2026-06-20)
+
+**Status:** complete, Validation Gate green. No new dependency. Gate: `ruff check` + `ruff format
+--check` clean (212 files); `mypy --strict src` clean (92 files); **pytest 1055 passed, 2 skipped**
+(+18 new across `tests/test_fusion_integration.py` + `tests/test_fusion_benchmark.py`); dashboard
+`npm test` (80) / `lint` / `build` clean; platform ingest tests green (+1 provenance test). One
+**pre-existing, unrelated** platform failure (`test_llm.py::...graceful_noop`, 502) reproduces
+identically on clean HEAD — environmental (LLM proxy), not touched by this task.
+
+**Why this task.** 21.3 made fusion *sound* (overlay + dedup, no external finding lost). 21.4 makes
+it *visible and usable*: a `scan --with-semgrep` flag, honest provenance on every output surface
+(terminal/JSON/SARIF/dashboard), and the reproducible benchmark that measures our M21 pitch — how
+much of a pattern scanner's raw Python output our reachability deprioritizes. CLI v2.3.
+
+**What changed.**
+- **New `src/vulnadvisor/sast/external/provenance.py`** — pure display helper. `provenance_line()`
+  renders *"Found by Semgrep OSS · ranked by VulnAdvisor reachability"*, returning `None` for a
+  native-only finding (no noise line). One stable tool→label map, reused by every surface.
+- `cli/pipeline.py` — `scan_project(..., external=)` runs each adapter, `fuse_findings` overlays its
+  findings onto the native taint output, and tool-degraded reasons join `degraded_sources`. No
+  adapters = byte-identical native-only scan.
+- `cli/main.py` — `--external none|semgrep` + `--with-semgrep` shortcut + `--semgrep-config`
+  (`auto` opts into the network registry; default is the pinned offline pack). `--sca-only` +
+  external is a clean `BadParameter`. `build_semgrep_adapter` is test-substitutable.
+- `output/json_report.py` — additive `provenance` array on the code finding (schema stays **1.2**,
+  per fusion-design §12.2; older consumers ignore it).
+- `output/sarif.py` — `provenance` in each code result's properties + each fused tool declared as a
+  `tool.extensions` `toolComponent` (still validates against the 2.1.0 schema; `ruleId` unchanged).
+- `cli/render.py` — the provenance line opens Card A for a fused SAST finding (ASCII middle-dot).
+- Dashboard — `CodeFinding.provenance?: string[]` (types.ts), `provenanceLine()` mirror
+  (lib/format.ts), and the credit line in the expanded `CodeFindingCard` (finding-card.tsx). The
+  platform stores the finding payload verbatim and the read API returns it, so provenance reaches
+  the card with **no platform code change** (covered by a new ingest+read test).
+- **Benchmark (one command, `python -m benchmarks --sast`)** — `benchmarks/fusion_metrics.py`
+  (pure) + `benchmarks/fusion_corpus.py` model a pattern scanner from the corpus's seeded sink
+  sites (it fires on *every* sink — real, sanitized, and orphan — as Semgrep does on Python), fuse
+  them through the **production** overlay, and measure the tier split. `SAST-REPORT.md` gained a
+  "Multi-tool fusion (M21)" section: **46 modeled findings → 24 actionable, 22 (48%) deprioritized,
+  no-loss invariant PASS** — our honest, Python-measured answer to Semgrep's "up to 98%" claim.
+
+**Why these choices.**
+1. **Modeled, not Semgrep-dependent, benchmark.** The deprioritization number must regenerate for a
+   stranger who doesn't have Semgrep installed, so the *external set* is modeled from ground truth
+   while the *overlay that re-tiers it is the real engine* (`fuse_findings`). Documented as such in
+   the report and module docstrings — honest about the modeling, real about the measurement.
+2. **Provenance is additive under 1.2, no schema bump** (fusion-design §12.2). The platform already
+   stores payloads verbatim, so the field rides through ingest→read→dashboard untouched.
+3. **The benchmark gate also fails on a lost external finding** (`fusion.represented`), extending the
+   release-blocking no-loss invariant from a unit test to the reproducible artifact.
+
+**Validation evidence.** Provenance helper: native→`None`, corroborated→"VulnAdvisor + Semgrep OSS",
+external-only→"Semgrep OSS", all "· ranked by VulnAdvisor reachability". JSON: native `["vulnadvisor"]`,
+fused `["vulnadvisor","semgrep-oss"]`, schema 1.2. SARIF: provenance in properties + semgrep
+`toolComponent` extension, schema-valid; native-only emits no `extensions`. Terminal: line renders
+for fused, absent for native. Pipeline: an un-overlayable external survives with its provenance and
+its degraded reason reaches `degraded_sources`; native-only is unchanged. Benchmark: deterministic
+(`first == second`), `represented` True, `deprioritized > 0`. Platform: a 1.2 code finding with
+`provenance` ingests and the read API returns it verbatim.
+
+**Open questions.** None. (`pip-audit`/Bandit corroborators remain a documented §9 roadmap, not M21
+scope. v2.3.0 tag to be applied by the maintainer per release discipline.)
+
+---
+
 ## Task 21.3 — Reachability overlay + dedup/fusion  (2026-06-20)
 
 **Status:** complete, Validation Gate green. No new dependency (pure stdlib + existing models). Gate:

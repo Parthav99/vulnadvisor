@@ -30,6 +30,7 @@ Schema (``schema_version`` 1.2) — top-level object::
                         "sink": {"kind", "file", "line"}, "path": [...], "sanitizers": [...]},
           "score":    {"value", "band", "verdict", "rationale", "cvss_known": false},
           "fix":      {"direction": <str>, "has_fix": false},
+          "provenance": ["vulnadvisor", ...],    # tools that found it (1.2 additive; fusion, 21.4)
           "runtime":  {"status", "reason", "observed": [...]}   # only when --coverage annotated it
         }
       ]
@@ -43,7 +44,9 @@ the existing SCA shape) and the ``"code"`` finding sub-shape; everything in 1.1 
 ``advisory.display_id``) and 1.0 is unchanged, so 1.0/1.1 consumers can read 1.2 reports. The
 optional ``runtime`` annotation (Task 16.6, present only under ``--coverage``) is additive within
 1.2 — absent unless a coverage overlay confirmed/observed the finding, so reports without coverage
-are byte-for-byte unchanged.
+are byte-for-byte unchanged. The code finding's ``provenance`` array (Task 21.4 multi-tool fusion —
+``["vulnadvisor"]`` natively, ``["vulnadvisor", "semgrep-oss"]`` when corroborated) is likewise
+additive under 1.2 (``docs/fusion-design.md`` §12.2 — no schema bump); older consumers ignore it.
 """
 
 import json
@@ -177,6 +180,9 @@ def _sast_finding_dict(scored: ScoredSastFinding) -> dict[str, Any]:
             "cvss_known": score.cvss_known,
         },
         "fix": {"direction": remediation_direction(finding.cwe), "has_fix": False},
+        # Who found it, who ranked it (Task 21.4 fusion): native is ["vulnadvisor"]; a corroborated
+        # finding lists every tool, our engine first. Additive under 1.2 (fusion-design §12.2).
+        "provenance": list(finding.provenance),
     }
     _add_runtime(result, scored.runtime)
     return result

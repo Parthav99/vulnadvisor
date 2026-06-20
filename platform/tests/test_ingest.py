@@ -305,6 +305,52 @@ async def test_ingest_accepts_code_finding(client: AsyncClient, seeded_key: str)
     assert body["diff_summary"]["introduced"] == 1
 
 
+async def test_ingest_accepts_fused_provenance_field(client: AsyncClient, seeded_key: str) -> None:
+    """A 1.2 code finding carrying the additive ``provenance`` array (Task 21.4 fusion) ingests and
+    survives verbatim in the stored payload, so the dashboard reads it back unchanged."""
+    code_finding = {
+        "finding_type": "code",
+        "rule": {"cwe": "CWE-78", "kind": "command-injection", "title": "OS command injection"},
+        "location": {"file": "app/run.py", "line": 12, "column": 4},
+        "flow": {
+            "tier": "confirmed-flow",
+            "reason": "tainted query parameter reaches os.system",
+            "source": {"kind": "http-parameter", "file": "app/run.py", "line": 8},
+            "sink": {"kind": "command-injection", "file": "app/run.py", "line": 12},
+            "path": ["run -> os.system (app/run.py:12)"],
+            "sanitizers": [],
+        },
+        "score": {
+            "value": 95.0,
+            "band": "critical",
+            "verdict": "Fix now",
+            "rationale": "CWE-78; CONFIRMED-FLOW",
+            "cvss_known": False,
+        },
+        "fix": {"direction": "Avoid shell=True.", "has_fix": False},
+        "provenance": ["vulnadvisor", "semgrep-oss"],
+    }
+    report = {
+        "schema_version": "1.2",
+        "tool": {"name": "vulnadvisor", "version": "2.3.0"},
+        "degraded_sources": [],
+        "summary": {"total": 1, "by_band": {"critical": 1}},
+        "findings": [code_finding],
+    }
+    resp = await client.post(
+        "/v1/orgs/acme/repos/web/scans",
+        headers={_HDR: f"Bearer {seeded_key}"},
+        json=_body(report, sha="fused1"),
+    )
+    assert resp.status_code == 201
+    scan_id = resp.json()["scan_id"]
+
+    findings = (
+        await client.get(f"/v1/scans/{scan_id}/findings", headers={_HDR: f"Bearer {seeded_key}"})
+    ).json()["findings"]
+    assert findings[0]["provenance"] == ["vulnadvisor", "semgrep-oss"]
+
+
 async def test_ingest_rejects_unsupported_schema(client: AsyncClient, seeded_key: str) -> None:
     resp = await client.post(
         "/v1/orgs/acme/repos/web/scans",

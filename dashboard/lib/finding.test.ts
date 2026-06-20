@@ -4,7 +4,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { findingKey, isCodeFinding, sastTierClass, sastTierLabel } from "./format.ts";
+import {
+  findingKey,
+  isCodeFinding,
+  provenanceLine,
+  sastTierClass,
+  sastTierLabel,
+} from "./format.ts";
 import { matchesFocus } from "./copilot-ui.ts";
 import type { AnyFinding, CodeFinding, Finding } from "./types.ts";
 
@@ -58,6 +64,23 @@ test("SAST tier styling: confirmed=risk, dynamic=dashed amber, sanitized=safe", 
   assert.match(sastTierClass("sanitized"), /safe/);
   // Uncertainty is never styled as safe.
   assert.doesNotMatch(sastTierClass("dynamic-unknown"), /safe/);
+});
+
+test("provenanceLine credits external detectors but only for fused findings (Task 21.4)", () => {
+  // Native-only: no provenance line (we found and ranked it — the default).
+  assert.equal(provenanceLine(["vulnadvisor"]), null);
+  assert.equal(provenanceLine(undefined), null);
+  assert.equal(provenanceLine([]), null);
+  // Corroborated: every detector credited, ranking always ours.
+  assert.equal(
+    provenanceLine(["vulnadvisor", "semgrep-oss"]),
+    "Found by VulnAdvisor + Semgrep OSS · ranked by VulnAdvisor reachability",
+  );
+  // Semgrep-only (un-overlayable, escalated): still credited, still ranked by us.
+  assert.equal(
+    provenanceLine(["semgrep-oss"]),
+    "Found by Semgrep OSS · ranked by VulnAdvisor reachability",
+  );
 });
 
 test("matchesFocus handles code findings without crashing on a missing dependency", () => {
