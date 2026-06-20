@@ -6,12 +6,19 @@ first-party code, how each tool does on the two numbers that matter for first-pa
 
 * **recall** on real, seeded vulnerabilities (a missed real vuln is release-blocking), and
 * **top-tier precision** — of the findings a tool presents as *most serious*
-  (VulnAdvisor ``CONFIRMED-FLOW`` / Bandit ``HIGH`` severity), how many are real vs. noise raised on
-  safe or unreachable code.
+  (VulnAdvisor ``CONFIRMED-FLOW`` / Bandit ``HIGH`` severity / Semgrep ``ERROR``), how many are real
+  vs. noise raised on safe or unreachable code.
 
-That second number is the whole pitch: Bandit has no taint/reachability model, so it raises its
-loudest alarm on sanitized and entry-point-unreachable sinks; VulnAdvisor deprioritizes those to
-``SANITIZED`` / ``POSSIBLE-FLOW`` and keeps ``CONFIRMED-FLOW`` for proven flows.
+That second number is the whole pitch: Bandit and Semgrep OSS have no taint/reachability model for
+Python's dynamic flows, so they raise their loudest alarm on sanitized and entry-point-unreachable
+sinks; VulnAdvisor deprioritizes those to ``SANITIZED`` / ``POSSIBLE-FLOW`` and keeps
+``CONFIRMED-FLOW`` for proven flows. (The M21 fusion milestone *re-ranks* Semgrep's raw output
+through this same reachability overlay; this benchmark forward-references it by measuring Semgrep
+side by side here.)
+
+The metric code is deliberately tool-agnostic: each tool's "is this an alarm / is this its top
+tier" judgment is a small per-tool predicate on :class:`Detection`, so adding Semgrep OSS alongside
+Bandit is a predicate and a label, never new metric math.
 
 Ground truth lives in the corpus source as ``# seed:`` marker comments, parsed here, so the labels
 sit next to the code they describe and survive edits (no hand-maintained line numbers).
@@ -26,6 +33,7 @@ __all__ = [
     "EXPECT_SAFE",
     "EXPECT_VULN",
     "TOOL_BANDIT",
+    "TOOL_SEMGREP",
     "TOOL_VULNADVISOR",
     "CweRecall",
     "Detection",
@@ -46,6 +54,7 @@ _EXPECTATIONS = frozenset({EXPECT_VULN, EXPECT_SAFE, EXPECT_POSSIBLE})
 
 TOOL_VULNADVISOR = "vulnadvisor"
 TOOL_BANDIT = "bandit"
+TOOL_SEMGREP = "semgrep"
 
 # VulnAdvisor's tier value that means "we believe this is safe" — the only outcome that counts as a
 # *miss* on a real vuln. Mirrors NOT_IMPORTED on the SCA side.
@@ -53,6 +62,7 @@ _VA_SAFE_TIER = "sanitized"
 # The top tier each tool uses for "most serious"; top-tier precision is measured over these.
 _VA_TOP_TIER = "confirmed-flow"
 _BANDIT_TOP_SEVERITY = "HIGH"
+_SEMGREP_TOP_SEVERITY = "ERROR"
 
 # `# seed: CWE-78 vuln` / `# seed: CWE-502 safe note="yaml.safe_load"`
 _SEED_RE = re.compile(
@@ -86,9 +96,9 @@ class Seed:
 class Detection:
     """One normalized finding from a tool, anchored to a file/line for matching against seeds.
 
-    ``label`` is the tool's own severity word — VulnAdvisor's tier value (``"confirmed-flow"`` …)
-    or Bandit's severity (``"HIGH"`` …) — interpreted by the small per-tool predicates below so the
-    metric code stays tool-agnostic.
+    ``label`` is the tool's own severity word — VulnAdvisor's tier value (``"confirmed-flow"`` …),
+    Bandit's severity (``"HIGH"`` …), or Semgrep's (``"ERROR"`` …) — interpreted by the small
+    per-tool predicates below so the metric code stays tool-agnostic.
     """
 
     tool: str
@@ -101,8 +111,8 @@ class Detection:
     def is_alarm(self) -> bool:
         """Whether the tool is raising this as something to look at (not a 'safe' verdict).
 
-        Bandit has no safe tier — every result is an alarm. VulnAdvisor's ``SANITIZED`` is the one
-        outcome that is *not* an alarm (it is the engine saying "covered on every path").
+        Bandit and Semgrep have no safe tier — every result is an alarm. VulnAdvisor's ``SANITIZED``
+        is the one outcome that is *not* an alarm (it is the engine saying "covered on every path").
         """
         if self.tool == TOOL_VULNADVISOR:
             return self.label != _VA_SAFE_TIER
@@ -113,6 +123,8 @@ class Detection:
         """Whether this is the tool's *most serious* tier (where top-tier precision is measured)."""
         if self.tool == TOOL_VULNADVISOR:
             return self.label == _VA_TOP_TIER
+        if self.tool == TOOL_SEMGREP:
+            return self.label == _SEMGREP_TOP_SEVERITY
         return self.label == _BANDIT_TOP_SEVERITY
 
 
@@ -282,12 +294,13 @@ def compute_cwe_recall(
 
 @dataclass(frozen=True)
 class SastBenchmarkReport:
-    """The full SAST benchmark result: the seeds, every tool's metrics, and whether Bandit ran."""
+    """The full SAST benchmark result: seeds, per-tool metrics, and which comparators ran."""
 
     seeds: tuple[Seed, ...]
     metrics: tuple[ToolMetrics, ...]
     cwe_recall: tuple[CweRecall, ...]
     bandit_available: bool
+    semgrep_available: bool = False
 
     def for_tool(self, tool: str) -> ToolMetrics | None:
         """Return the metrics for ``tool``, or ``None`` if that tool was not run."""
@@ -304,11 +317,21 @@ class SastBenchmarkReport:
 
 
 def build_sast_report(
-    seeds: Iterable[Seed], detections: Sequence[Detection], *, bandit_available: bool
+    seeds: Iterable[Seed],
+    detections: Sequence[Detection],
+    *,
+    bandit_available: bool,
+    semgrep_available: bool = False,
 ) -> SastBenchmarkReport:
-    """Assemble the report: VulnAdvisor always; Bandit only when it was available to run."""
+    """Assemble the report: VulnAdvisor always; a comparator only when it was available to run."""
     ordered_seeds = tuple(sorted(seeds, key=lambda s: (s.file, s.line, s.cwe)))
-    tools = [TOOL_VULNADVISOR] + ([TOOL_BANDIT] if bandit_available else [])
+    tools = (
+        [TOOL_VULNADVISOR]
+        + ([TOOL_BANDIT] if bandit_available else [])
+        + ([TOOL_SEMGREP] if semgrep_available else [])
+    )
     metrics = tuple(compute_tool_metrics(tool, ordered_seeds, detections) for tool in tools)
     cwe_recall = compute_cwe_recall(tools, ordered_seeds, detections)
-    return SastBenchmarkReport(ordered_seeds, metrics, cwe_recall, bandit_available)
+    return SastBenchmarkReport(
+        ordered_seeds, metrics, cwe_recall, bandit_available, semgrep_available
+    )

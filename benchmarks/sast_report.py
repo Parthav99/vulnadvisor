@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from benchmarks.sast_metrics import (
     TOOL_BANDIT,
+    TOOL_SEMGREP,
     TOOL_VULNADVISOR,
     SastBenchmarkReport,
     ToolMetrics,
@@ -23,18 +24,32 @@ from benchmarks.sast_metrics import (
 
 __all__ = ["PerfRow", "render_sast_markdown"]
 
-# Human-readable CWE titles for the per-CWE table (the corpus's seven classes).
+# Human-readable CWE titles for the per-CWE table (the corpus's full class set: the seven founding
+# classes plus the Task 20.4 families). An id with no entry renders a blank class cell, never fails.
 _CWE_TITLE: dict[str, str] = {
     "CWE-78": "OS command injection",
     "CWE-89": "SQL injection",
     "CWE-94": "Code injection (eval/exec)",
     "CWE-502": "Unsafe deserialization",
-    "CWE-22": "Path traversal",
+    "CWE-22": "Path traversal (incl. archive)",
     "CWE-918": "SSRF",
     "CWE-798": "Hardcoded secret",
+    "CWE-1336": "Server-side template injection",
+    "CWE-611": "XML external entity (XXE)",
+    "CWE-601": "Open redirect",
+    "CWE-90": "LDAP injection",
+    "CWE-643": "XPath injection",
+    "CWE-1333": "ReDoS",
+    "CWE-327": "Weak hash (MD5/SHA-1)",
+    "CWE-330": "Insecure randomness",
+    "CWE-295": "Disabled TLS verification",
 }
 
-_TOOL_LABEL: dict[str, str] = {TOOL_VULNADVISOR: "VulnAdvisor", TOOL_BANDIT: "Bandit"}
+_TOOL_LABEL: dict[str, str] = {
+    TOOL_VULNADVISOR: "VulnAdvisor",
+    TOOL_BANDIT: "Bandit",
+    TOOL_SEMGREP: "Semgrep OSS",
+}
 
 # The warm-cache wall-time budget for a full SCA + SAST scan (docs/sast-design.md section 12).
 WARM_BUDGET_SECONDS = 30.0
@@ -53,12 +68,21 @@ def _label(tool: str) -> str:
     return _TOOL_LABEL.get(tool, tool)
 
 
+def _competitor_clause(metrics: ToolMetrics, top_word: str) -> str:
+    """One honest sentence comparing a competitor's recall and top-tier noise to ours."""
+    return (
+        f" {_label(metrics.tool)}, with no taint or reachability model for Python's dynamic flows, "
+        f"caught {metrics.caught_vuln}/{metrics.vuln_total} ({metrics.recall_pct:.0f}%) at "
+        f"{metrics.top_precision_pct:.0f}% top-tier precision ({metrics.top_on_safe} of its "
+        f"{top_word} findings land on sanitized code)."
+    )
+
+
 def _headline(report: SastBenchmarkReport) -> str:
     """Lead with recall and top-tier precision - what decides first-party security."""
     va = report.for_tool(TOOL_VULNADVISOR)
     if va is None:  # pragma: no cover - VulnAdvisor always runs
         return "_No VulnAdvisor metrics available._"
-    bandit = report.for_tool(TOOL_BANDIT)
     base = (
         f"**{va.recall_pct:.0f}% recall on seeded vulnerabilities at "
         f"{va.top_precision_pct:.0f}% top-tier precision** - VulnAdvisor surfaced "
@@ -67,14 +91,15 @@ def _headline(report: SastBenchmarkReport) -> str:
         f"keeping its top `CONFIRMED-FLOW` tier free of alarms on sanitized code "
         f"({va.top_on_safe} false top-tier alarms)."
     )
-    if bandit is None:
-        return base + " _(Bandit not installed - comparison omitted; run with it on PATH.)_"
-    return base + (
-        f" Bandit, with no taint or reachability model, caught {bandit.caught_vuln}/"
-        f"{bandit.vuln_total} ({bandit.recall_pct:.0f}%) at {bandit.top_precision_pct:.0f}% "
-        f"top-tier precision ({bandit.top_on_safe} of its HIGH-severity findings land on "
-        f"sanitized code)."
-    )
+    bandit = report.for_tool(TOOL_BANDIT)
+    semgrep = report.for_tool(TOOL_SEMGREP)
+    if bandit is not None:
+        base += _competitor_clause(bandit, "HIGH-severity")
+    if semgrep is not None:
+        base += _competitor_clause(semgrep, "ERROR-severity")
+    if bandit is None and semgrep is None:
+        base += " _(No comparator installed - run with Bandit and/or Semgrep OSS on PATH.)_"
+    return base
 
 
 def _tool_table(report: SastBenchmarkReport) -> list[str]:
@@ -146,12 +171,13 @@ def render_sast_markdown(
     real_seeds = sum(1 for s in report.seeds if s.is_real)
     safe_seeds = sum(1 for s in report.seeds if not s.is_real)
     lines: list[str] = []
-    lines.append("# VulnAdvisor SAST Benchmark vs Bandit")
+    lines.append("# VulnAdvisor SAST Benchmark vs Bandit and Semgrep OSS")
     lines.append("")
     lines.append(
         f"_Seeded corpus: {len(report.seeds)} labeled sink sites "
         f"({real_seeds} real, {safe_seeds} safe) across {len(report.cwe_recall)} CWE classes. "
-        f"Bandit {'ran' if report.bandit_available else 'not available'}._"
+        f"Bandit {'ran' if report.bandit_available else 'not available'}; "
+        f"Semgrep OSS {'ran' if report.semgrep_available else 'not available'}._"
     )
     lines.append("")
     lines.append(_headline(report))
@@ -164,11 +190,11 @@ def render_sast_markdown(
     lines.append("")
     lines.extend(_cwe_table(report))
     lines.append("")
-    lines.append("## Where Bandit wins or ties (honest notes)")
+    lines.append("## Where a competitor wins or ties (honest notes)")
     lines.append("")
     lines.extend(
         [
-            "- **SQLi, eval/exec, yaml.load, pickle** - both tools catch these. Bandit reports "
+            "- **SQLi, eval/exec, yaml.load, pickle** - all tools catch these. Bandit reports "
             "them at `MEDIUM` severity (no taint), VulnAdvisor at `CONFIRMED-FLOW` with the "
             "source->sink path. Comparable recall; the difference is evidence and ranking.",
             "- **Path traversal & SSRF** - Bandit has no taint-based path-traversal check and "
@@ -182,6 +208,15 @@ def render_sast_markdown(
             "- **Import-level lint** - Bandit emits low-severity warnings on `import "
             "subprocess` / `import yaml` themselves (off-target noise); VulnAdvisor only "
             "reports at sink sites.",
+            "- **Semgrep OSS** - a strong, broad rule-based engine: on these sink sites its "
+            "community rules generally fire (comparable raw recall on the classic CWEs), and on "
+            "some patterns its rule library is wider than our pack. But like Bandit it has no "
+            "Python-deep taint/reachability model, so it cannot tell a reachable flow from an "
+            "entry-point-unreachable orphan or see a sanitizer clear a path - it raises the same "
+            "alarm on both. We do not out-rule Semgrep; **M21 re-ranks its raw output through "
+            "this reachability overlay**, turning its findings into the same tiered, "
+            "evidence-backed, deduplicated list. (When Semgrep is not installed its column is "
+            "omitted; install the `[semgrep]` extra to populate it.)",
         ]
     )
     lines.append("")

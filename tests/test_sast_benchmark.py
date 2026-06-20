@@ -6,13 +6,24 @@ top-tier-precision math independent of the engine, and the corpus tests prove th
 (when installed) Bandit produce the numbers the report publishes.
 """
 
+import json
+from pathlib import Path
+
 import pytest
-from benchmarks.sast_corpus import CORPUS, bandit_available, run_sast_corpus
+from benchmarks.sast_corpus import (
+    CORPUS,
+    SastCase,
+    _parse_semgrep_results,
+    bandit_available,
+    run_sast_corpus,
+    semgrep_available,
+)
 from benchmarks.sast_metrics import (
     EXPECT_POSSIBLE,
     EXPECT_SAFE,
     EXPECT_VULN,
     TOOL_BANDIT,
+    TOOL_SEMGREP,
     TOOL_VULNADVISOR,
     Detection,
     Seed,
@@ -73,6 +84,15 @@ def test_bandit_every_result_is_an_alarm_high_is_top() -> None:
     med = Detection(TOOL_BANDIT, "f", 1, "CWE-78", "MEDIUM")
     assert high.is_alarm and med.is_alarm
     assert high.is_top and not med.is_top
+
+
+def test_semgrep_every_result_is_an_alarm_error_is_top() -> None:
+    err = Detection(TOOL_SEMGREP, "f", 1, "CWE-78", "ERROR")
+    warn = Detection(TOOL_SEMGREP, "f", 1, "CWE-78", "WARNING")
+    assert err.is_alarm and warn.is_alarm
+    # Semgrep's top tier is ERROR, not Bandit's "HIGH" — each tool keeps its own predicate.
+    assert err.is_top and not warn.is_top
+    assert not Detection(TOOL_SEMGREP, "f", 1, "CWE-78", "HIGH").is_top
 
 
 # --- pure metric math (engine-independent) -------------------------------------------------------
@@ -154,13 +174,14 @@ def test_corpus_case_names_are_unique() -> None:
     assert len(names) == len(set(names))
 
 
-def test_corpus_covers_all_seven_cwe_classes() -> None:
+def test_corpus_covers_all_cwe_classes() -> None:
     cwes = {
         s.cwe
         for case in CORPUS
         for rel, src in case.files.items()
         for s in parse_seeds(case.name, f"{case.name}/{rel}", src)
     }
+    # The seven founding classes (M16) plus the Task 20.4 families (M20) — 16 in all.
     assert cwes == {
         "CWE-78",
         "CWE-89",
@@ -169,7 +190,24 @@ def test_corpus_covers_all_seven_cwe_classes() -> None:
         "CWE-22",
         "CWE-918",
         "CWE-798",
+        "CWE-1336",
+        "CWE-611",
+        "CWE-601",
+        "CWE-90",
+        "CWE-643",
+        "CWE-1333",
+        "CWE-327",
+        "CWE-330",
+        "CWE-295",
     }
+
+
+def test_corpus_has_recall_depth_cases() -> None:
+    """Task 20.5: container / cross-module / attribute recall cases are present and multi-file."""
+    names = {case.name for case in CORPUS}
+    assert {"container_taint", "cross_module_taint", "attribute_taint"} <= names
+    cross = next(c for c in CORPUS if c.name == "cross_module_taint")
+    assert set(cross.files) == {"app.py", "helpers.py"}  # the source and the sink live apart
 
 
 def test_corpus_has_safe_and_possible_decoys() -> None:
@@ -232,5 +270,72 @@ def test_render_without_bandit_omits_comparison() -> None:
     detections = [Detection(TOOL_VULNADVISOR, "f", 1, "CWE-78", "confirmed-flow")]
     report = build_sast_report(seeds, detections, bandit_available=False)
     md = render_sast_markdown(report)
-    assert "Bandit not installed" in md or "not available" in md
+    assert "not available" in md
     assert report.for_tool(TOOL_BANDIT) is None
+    assert report.for_tool(TOOL_SEMGREP) is None
+
+
+# --- Semgrep OSS comparator (forward-references M21) ---------------------------------------------
+
+
+_SEMGREP_CASE = SastCase("cmd_injection", {"app.py": "import os\nos.system(x)\n"})
+
+
+def test_parse_semgrep_results_normalizes_path_line_severity_and_cwe(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("import os\nos.system(x)\n", encoding="utf-8")
+    payload = json.dumps(
+        {
+            "results": [
+                {
+                    "path": (tmp_path / "app.py").as_posix(),
+                    "start": {"line": 2, "col": 1},
+                    "extra": {
+                        "severity": "ERROR",
+                        "metadata": {"cwe": ["CWE-78: OS Command Injection"]},
+                    },
+                }
+            ]
+        }
+    )
+    dets = _parse_semgrep_results(payload, _SEMGREP_CASE, tmp_path)
+    assert len(dets) == 1
+    det = dets[0]
+    assert det.tool == TOOL_SEMGREP
+    assert det.file == "cmd_injection/app.py"
+    assert det.line == 2 and det.cwe == "CWE-78" and det.label == "ERROR"
+    assert det.is_alarm and det.is_top
+
+
+def test_parse_semgrep_results_handles_multiple_and_unknown_cwe(tmp_path: Path) -> None:
+    payload = (
+        '{"results": ['
+        '{"path": "a.py", "start": {"line": 1}, "extra": {"severity": "WARNING", '
+        '"metadata": {"cwe": "CWE-89: SQLi"}}}, '
+        '{"path": "b.py", "start": {"line": 5}, "extra": {"severity": "INFO", "metadata": {}}}]}'
+    )
+    dets = _parse_semgrep_results(payload, _SEMGREP_CASE, tmp_path)
+    assert [(d.line, d.cwe, d.label) for d in dets] == [(1, "CWE-89", "WARNING"), (5, "", "INFO")]
+
+
+def test_parse_semgrep_results_is_defensive(tmp_path: Path) -> None:
+    # Malformed JSON, wrong shape, and entries missing required fields all degrade to no detection.
+    assert _parse_semgrep_results("not json", _SEMGREP_CASE, tmp_path) == []
+    assert _parse_semgrep_results("[1, 2, 3]", _SEMGREP_CASE, tmp_path) == []
+    assert _parse_semgrep_results('{"results": "nope"}', _SEMGREP_CASE, tmp_path) == []
+    partial = '{"results": [{"start": {"line": 2}}, {"path": "x.py"}, "junk"]}'
+    assert _parse_semgrep_results(partial, _SEMGREP_CASE, tmp_path) == []
+
+
+def test_run_sast_corpus_can_skip_semgrep() -> None:
+    # Skipping is honored regardless of install state; the gate still passes without the comparator.
+    report = run_sast_corpus(run_semgrep=False)
+    assert report.semgrep_available is False
+    assert report.for_tool(TOOL_SEMGREP) is None
+    assert report.missed_seeded_vulns == 0
+
+
+@pytest.mark.skipif(not semgrep_available(), reason="semgrep not installed")
+def test_semgrep_is_run_when_available() -> None:
+    report = run_sast_corpus()
+    assert report.semgrep_available
+    assert report.for_tool(TOOL_SEMGREP) is not None

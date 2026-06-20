@@ -4,6 +4,63 @@ Running log of state + decisions. Newest entry on top. Updated after every task.
 
 ---
 
+## Task 20.5 — Recall benchmark refresh (M20 capstone -> CLI v2.2)  (2026-06-20)
+
+**Status:** complete. **No new runtime dependency** (Semgrep OSS is an optional *subprocess* the
+benchmark shells out to, never imported; the published core wheel is unchanged). Gate green: `ruff
+check src tests benchmarks` clean, `ruff format --check` clean (140 files), `mypy --strict src`
+clean (87 files) **and** `mypy --strict benchmarks` clean (10 files), **full pytest 995 passed / 2
+skipped** (+6 over 20.4; the 2 skips are the Bandit/Semgrep "installed?" guards). SAST soundness
+gate (`python -m benchmarks --sast`): **PASS, 0 missed vulns**, exit 0. Perf: corpus SAST pass
+**0.19 s** / own-`src/` **2.88 s** (both far under the 10 s SAST budget and the 30 s warm SCA+SAST
+budget).
+
+**Why this task.** M20.1-20.4 widened the engine (containers, cross-module, object state, ~10 new
+CWE families) but the benchmark still only exercised the seven founding classes over ten cases. This
+task proves the recall lift reproducibly and honestly, and forward-references M21 by measuring
+**Semgrep OSS** side by side.
+
+**What changed.**
+- **Corpus tripled (10 -> 23 cases, 7 -> 16 CWE classes, 46 labeled sink sites: 26 vuln + 2
+  possible + 18 safe).** New recall-depth cases that a line/AST scanner cannot rank:
+  `container_taint` (taint through a list element and a dict value, 20.1), `cross_module_taint`
+  (source in `app.py`, sink in `helpers.py` via an imported callable, plus an unreachable orphan ->
+  `POSSIBLE`, 20.2), `attribute_taint` (taint stored on `self.cmd` in a constructor reaching a sink
+  in a method, 20.3). New family cases (20.4), each positive + safe decoy: SSTI, XXE, open redirect,
+  LDAP, XPath, ReDoS (taint-based) and weak-crypto, insecure-random, disabled-TLS, archive-extract
+  (intrinsic). **Every case was first validated through the real engine** (a throwaway probe) to
+  guarantee the zero-missed-vuln gate before being committed.
+- **Semgrep OSS comparator** (`benchmarks/sast_corpus.py`): `semgrep_available()` +
+  `_semgrep_detections()` shelling `semgrep --config auto --json` (fixed argv, no shell, defensive
+  timeout), with a **pure** `_parse_semgrep_results()` / `_semgrep_cwe()` split so the JSON parse is
+  unit-tested without Semgrep installed (single / multi / unknown-CWE / malformed -> safe skip). The
+  metric layer was already tool-agnostic: added `TOOL_SEMGREP`, its top tier (`ERROR`), and the
+  `is_top` predicate; `build_sast_report(..., semgrep_available=...)`/`SastBenchmarkReport` gained
+  the flag. Both comparators are optional and column-omitted when absent; the release-blocking gate
+  is VulnAdvisor's alone.
+- **Report** (`benchmarks/SAST-REPORT.md` regenerated): retitled "vs Bandit and Semgrep OSS",
+  CWE-title map extended to all 16 classes, headline generalized to one honest clause per available
+  competitor, and a Semgrep paragraph in "Where a competitor wins or ties" (we don't out-rule it;
+  **M21 re-ranks its raw output through our reachability overlay**).
+
+**The numbers (this run, Bandit installed, Semgrep not).** VulnAdvisor **100% recall (26/26)** at
+**100% top-tier precision**, **0** false top-tier alarms, **0/18** alarms on safe code. Bandit
+**73% (19/26)** at **81%** top-tier precision, **3** false top-tier alarms, **6/18** alarms on safe
+code, **7 missed** real vulns — precisely the families it has no Python taint model for (SSTI, XXE,
+open redirect, LDAP, XPath, ReDoS, and one archive/path case). The recall lift is the M20 story,
+measured.
+
+**Honest note (kept out of the scored decoys).** A sanitizer that flows *through a local variable*
+(`safe = escape(uid); sink(safe)`) is read `POSSIBLE-FLOW` by the intra-procedural baseline, not
+`SANITIZED` (the baseline only recognizes an inline sanitizer call). The LDAP safe decoy is written
+inline so it scores `SANITIZED`; the through-variable conservatism is the same family already in the
+report's "Known limitations". Real OSS-app runs and the pyscan side-by-side remain the documented,
+network/tool-gated live follow-up (unchanged from 16.5).
+
+**Done when (CLI v2.2):** recall is materially higher with zero fixture misses. Tag **v2.2.0**.
+
+---
+
 ## Task 20.4 — New CWE families (breadth)  (2026-06-20)
 
 **Status:** complete. **No new dependency.** Gate green: `ruff check src tests` clean, `ruff format

@@ -111,7 +111,9 @@ def _run_sast(out: Path | None, *, measure_perf: bool) -> int:
     _print_safe(markdown)
     print(f"\nWrote {target}")
     if not report.bandit_available:
-        print("NOTE: Bandit was not available - comparison columns omitted.")
+        print("NOTE: Bandit was not available - its comparison column was omitted.")
+    if not report.semgrep_available:
+        print("NOTE: Semgrep OSS was not available - its comparison column was omitted.")
     # Release-blocking: VulnAdvisor must miss zero seeded, entry-point-reachable vulnerabilities.
     return 0 if report.missed_seeded_vulns == 0 else 1
 
